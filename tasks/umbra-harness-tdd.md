@@ -26,7 +26,8 @@ Goals, each checked by a test or a recorded run:
 | MCP servers from every harness's config file, started and usable | `tests/mcp.rs` (fake server in both protocol eras) and live runs against blender, chordical, code-search and inillucent |
 | Works with Claude Haiku and the local model | Recorded runs, below |
 
-Non goals for this version: a full screen terminal UI, context compaction, subagents, hooks,
+Non goals for this version: a full screen terminal UI, context compaction (added later by
+task-2562, see `umbra-compaction-tdd.md`), subagents, hooks,
 dedicated file edit tools, web search, image input, session resume, MCP OAuth, and running rules
 that apply only to some file paths. The README's feature table lists these.
 

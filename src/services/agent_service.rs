@@ -9,13 +9,15 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use super::action_parser::{parse_text_action, parse_tool_actions};
+use super::compaction_service::{apply_mask, budget_for, estimate_request_tokens, estimate_tools_tokens, mask_record, plan_mask, resolve_window, summarize, summary_record, ReportedSize, SummaryInputs};
 use super::environment::{submission_from, Environment};
 use super::interaction_service::{show_assistant, show_notice, show_observation, Decision, HumanInput, Interaction};
 use super::mcp::McpManager;
 use super::prompt_service::{render, render_format_error, render_observation, Templates};
 use super::providers::anthropic::RAW_CONTENT_KEY;
-use super::providers::{Provider, ToolSpec};
+use super::providers::{Provider, ProviderError, ToolSpec};
 use crate::models::action::{Action, Observation};
+use crate::models::compaction::{CompactionReason, CompactionRecord};
 use crate::models::config::{ActionFormat, Mode, UmbraConfig};
 use crate::models::context::McpTool;
 use crate::models::message::{Message, Role};
@@ -64,6 +66,19 @@ pub struct Agent {
     format_errors: u32,
     started: Instant,
     exit: (String, String),
+    compaction: CompactionState,
+}
+
+/// What the agent tracks for compaction.
+#[derive(Default)]
+struct CompactionState {
+    /// The context window, looked up on first use.
+    window: Option<u64>,
+    /// The size of the last request as the provider reported it. None after a compaction.
+    reported: Option<ReportedSize>,
+    /// The estimate for the tool definitions, added when there is no reported size.
+    tools_tokens: u64,
+    records: Vec<CompactionRecord>,
 }
 
 impl Agent {
@@ -73,7 +88,8 @@ impl Agent {
         let templates = Templates::resolve(&parts.config.templates, parts.config.action_format);
         let mcp_tools = parts.mcp.tools();
         let tools = if parts.config.action_format == ActionFormat::Tools { tool_specs(&mcp_tools) } else { Vec::new() };
-        Agent { parts, templates, tools, mcp_tools, messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()) }
+        let compaction = CompactionState { tools_tokens: estimate_tools_tokens(&tools), ..Default::default() };
+        Agent { parts, templates, tools, mcp_tools, messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction }
     }
 
     /// Renders the system prompt for a task without running anything, for `umbra prompt`.
@@ -111,7 +127,11 @@ impl Agent {
     /// @param submission - the final output
     fn finish_or_continue(&mut self, status: String, submission: String) -> bool {
         if status == "Submitted" {
-            if let Some(task) = self.parts.interaction.follow_up_task() {
+            while let Some(task) = self.parts.interaction.follow_up_task() {
+                if let Some(focus) = compact_command(&task) {
+                    self.compact_by_summary(CompactionReason::Manual, focus);
+                    continue;
+                }
                 self.messages.push(Message::user(format!("The user added a new task: {task}")).with_extra(json!({ "interrupt_type": "UserNewTask" })));
                 return false;
             }
@@ -129,8 +149,9 @@ impl Agent {
         if let Some(exit) = self.check_limits() {
             return Ok(exit);
         }
+        self.compact_if_needed();
         self.stats.api_calls += 1;
-        let response = self.parts.provider.complete(&self.messages, &self.tools).map_err(|e| anyhow::anyhow!("model call failed: {}", e.message))?;
+        let response = self.call_model()?;
         self.record_usage(&response);
         let actions = match self.parse_actions(&response) {
             Ok(actions) => actions,
@@ -169,6 +190,109 @@ impl Agent {
             }
             None => Some(Step::Exit("LimitsExceeded".into(), String::new())),
         }
+    }
+
+    /// Calls the model with the history. When the provider says the request is longer than the
+    /// context window, the history is compacted with a summary and the call is made once more.
+    fn call_model(&mut self) -> Result<ModelResponse> {
+        match self.call_model_once() {
+            Err(error) if error.context_overflow && self.parts.config.compaction.enabled => {
+                show_notice("compaction", &format!("the model refused the request as too long ({}), so the session is being summarized and the call sent again", error.message.lines().next().unwrap_or("")));
+                if !self.compact_by_summary(CompactionReason::Overflow, "") {
+                    return Err(anyhow::anyhow!("model call failed: {}", error.message));
+                }
+                self.call_model_once().map_err(|e| anyhow::anyhow!("model call failed: {}", e.message))
+            }
+            other => other.map_err(|e| anyhow::anyhow!("model call failed: {}", e.message)),
+        }
+    }
+
+    /// Calls the model once and keeps the request size it reports, for the next estimate.
+    fn call_model_once(&mut self) -> Result<ModelResponse, ProviderError> {
+        let sent = self.messages.len();
+        let response = self.parts.provider.complete(&self.messages, &self.tools)?;
+        let usage = &response.usage;
+        let tokens = usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+        self.compaction.reported = (tokens > 0).then_some(ReportedSize { tokens, messages: sent });
+        Ok(response)
+    }
+
+    /// The context window, asked of the config or the provider the first time it is needed.
+    fn context_window(&mut self) -> u64 {
+        if let Some(window) = self.compaction.window {
+            return window;
+        }
+        let window = resolve_window(&self.parts.config.compaction, self.parts.provider.as_mut());
+        self.compaction.window = Some(window);
+        window
+    }
+
+    /// The estimated size of the next request in tokens.
+    fn request_estimate(&self) -> u64 {
+        estimate_request_tokens(&self.messages, self.compaction.tools_tokens, self.compaction.reported)
+    }
+
+    /// Before a model call: past the trigger, masks old outputs, and when that leaves the
+    /// estimate above the target, replaces the middle of the history with a summary.
+    fn compact_if_needed(&mut self) {
+        if !self.parts.config.compaction.enabled {
+            return;
+        }
+        let window = self.context_window();
+        let budget = budget_for(&self.parts.config.compaction, window);
+        if self.request_estimate() < budget.trigger {
+            return;
+        }
+        self.compact_by_masking(CompactionReason::Threshold);
+        if self.request_estimate() > budget.target {
+            self.compact_by_summary(CompactionReason::Threshold, "");
+        }
+    }
+
+    /// Replaces old command outputs with placeholders, when that frees enough tokens to be
+    /// worth one prompt cache miss.
+    /// @param reason - why the compaction runs
+    fn compact_by_masking(&mut self, reason: CompactionReason) {
+        let window = self.context_window();
+        let budget = budget_for(&self.parts.config.compaction, window);
+        let before = self.request_estimate();
+        let (indexes, _) = plan_mask(&self.messages, &budget, self.parts.config.compaction.mask_min_chars);
+        if indexes.is_empty() {
+            return;
+        }
+        apply_mask(&mut self.messages, &indexes);
+        self.compaction.reported = None;
+        let after = self.request_estimate();
+        show_notice("compaction", &format!("removed {} old command outputs: about {before} to {after} tokens of a {window} token window", indexes.len()));
+        self.compaction.records.push(mask_record(reason, self.stats.api_calls, (before, after, window), indexes));
+        self.stats.compactions += 1;
+    }
+
+    /// Asks the model for a summary of the middle of the history and continues from it. A failed
+    /// summary is reported and the history is left as it was. Returns true when it compacted.
+    /// @param reason - why the compaction runs
+    /// @param focus - what the person asked the summary to focus on, or empty
+    fn compact_by_summary(&mut self, reason: CompactionReason, focus: &str) -> bool {
+        let window = self.context_window();
+        let keep_recent = budget_for(&self.parts.config.compaction, window).keep_recent;
+        let before = self.request_estimate();
+        let vars = self.template_vars("");
+        let inputs = SummaryInputs { provider: self.parts.provider.as_mut(), tools: &self.tools, vars: &vars, summary_template: &self.templates.compact_summary, resume_template: &self.templates.compact_resume, focus };
+        let outcome = match summarize(&self.messages, keep_recent, inputs) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                show_notice("compaction", &format!("could not summarize the session: {error:#}"));
+                return false;
+            }
+        };
+        self.record_usage(&outcome.response);
+        self.messages = outcome.history.clone();
+        self.compaction.reported = None;
+        let after = self.request_estimate();
+        show_notice("compaction", &format!("summarized {} messages: about {before} to {after} tokens of a {window} token window", outcome.removed.len()));
+        self.compaction.records.push(summary_record(reason, self.stats.api_calls, (before, after, window), &outcome));
+        self.stats.compactions += 1;
+        true
     }
 
     /// Adds a call's tokens and cost to the totals.
@@ -291,7 +415,7 @@ impl Agent {
         let last = self.messages.iter().rev().find(|m| m.role == Role::Exit);
         let exit_status = last.and_then(|m| m.extra["exit_status"].as_str()).unwrap_or("").to_string();
         let submission = last.map(|m| m.content.clone()).unwrap_or_default();
-        let info = TrajectoryInfo { model_stats: self.stats.clone(), config: self.parts.config_record.clone(), umbra_version: env!("CARGO_PKG_VERSION").into(), exit_status, submission };
+        let info = TrajectoryInfo { model_stats: self.stats.clone(), config: self.parts.config_record.clone(), umbra_version: env!("CARGO_PKG_VERSION").into(), exit_status, submission, compactions: self.compaction.records.clone() };
         let trajectory = Trajectory { info, messages: self.messages.clone(), trajectory_format: "mini-swe-agent-1.1".into() };
         if let Err(error) = save_trajectory(&self.parts.trajectory_path, &trajectory) {
             eprintln!("umbra: could not save the trajectory: {error:#}");
@@ -328,7 +452,28 @@ fn assistant_message(response: &ModelResponse, actions: &[Action]) -> Message {
     message.with_extra(extra)
 }
 
+/// Reads `/compact` or `/compact <focus>` typed at the follow up prompt. Returns the focus text,
+/// empty when there is none, or None for any other text.
+/// @param text - what the person typed
+fn compact_command(text: &str) -> Option<&str> {
+    let rest = text.trim().strip_prefix("/compact")?;
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
+}
+
 /// Seconds since the Unix epoch, as a float.
 fn now_seconds() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compact_command;
+
+    #[test]
+    fn reads_the_compact_command_and_its_focus() {
+        assert_eq!(compact_command("/compact"), Some(""));
+        assert_eq!(compact_command("  /compact keep the test names  "), Some("keep the test names"));
+        assert_eq!(compact_command("/compaction is broken"), None);
+        assert_eq!(compact_command("fix the build"), None);
+    }
 }

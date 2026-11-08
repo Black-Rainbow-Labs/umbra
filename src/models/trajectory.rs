@@ -4,6 +4,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
+use super::compaction::CompactionRecord;
 use super::message::Message;
 
 /// Running totals for the model calls in one run.
@@ -13,6 +14,8 @@ pub struct ModelStats {
     pub api_calls: u32,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// How many times the history was compacted.
+    pub compactions: u32,
 }
 
 /// The `info` block of a trajectory.
@@ -23,6 +26,8 @@ pub struct TrajectoryInfo {
     pub umbra_version: String,
     pub exit_status: String,
     pub submission: String,
+    /// Every compaction in the run, oldest first.
+    pub compactions: Vec<CompactionRecord>,
 }
 
 /// A whole trajectory file.

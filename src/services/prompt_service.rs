@@ -16,13 +16,15 @@ const OBSERVATION_TOOLS: &str = include_str!("../templates/observation_tools.jin
 const OBSERVATION_TEXT: &str = include_str!("../templates/observation_text.jinja");
 const FORMAT_ERROR_TOOLS: &str = include_str!("../templates/format_error_tools.jinja");
 const FORMAT_ERROR_TEXT: &str = include_str!("../templates/format_error_text.jinja");
+const COMPACT_SUMMARY: &str = include_str!("../templates/compact_summary.jinja");
+const COMPACT_RESUME: &str = include_str!("../templates/compact_resume.jinja");
 
 /// The regex that finds a bash command in text mode.
 pub const DEFAULT_BASH_REGEX: &str = r"(?s)```umbra_bash\s*\n(.*?)\n```";
 /// The regex that finds an MCP call in text mode.
 pub const DEFAULT_MCP_REGEX: &str = r"(?s)```umbra_mcp\s*\n(.*?)\n```";
 
-/// The four templates in use for a run.
+/// The templates in use for a run.
 #[derive(Debug, Clone)]
 pub struct Templates {
     pub system: String,
@@ -30,6 +32,10 @@ pub struct Templates {
     pub observation: String,
     pub format_error: String,
     pub action_regex: String,
+    /// The request for a summary when the history is compacted.
+    pub compact_summary: String,
+    /// The message that carries the summary into the compacted history.
+    pub compact_resume: String,
 }
 
 impl Templates {
@@ -45,6 +51,8 @@ impl Templates {
             observation: pick(&config.observation, OBSERVATION_TOOLS, OBSERVATION_TEXT),
             format_error: pick(&config.format_error, FORMAT_ERROR_TOOLS, FORMAT_ERROR_TEXT),
             action_regex: if config.action_regex.is_empty() { DEFAULT_BASH_REGEX.to_string() } else { config.action_regex.clone() },
+            compact_summary: pick(&config.compact_summary, COMPACT_SUMMARY, COMPACT_SUMMARY),
+            compact_resume: pick(&config.compact_resume, COMPACT_RESUME, COMPACT_RESUME),
         }
     }
 }

@@ -100,6 +100,20 @@ instance = ""
 observation = ""
 format_error = ""
 action_regex = ""                      # text mode; one capture group for the command
+compact_summary = ""                   # the request for a summary when the history is compacted
+compact_resume = ""                    # the message that carries the summary
+
+[compaction]                           # ratios are shares of the model's context window
+enabled = true                         # --no-compact turns it off for one run
+context_window = 0                     # tokens; 0 asks the server, then a table, then 128000
+trigger_ratio = 0.8                    # compact when the request estimate passes this
+target_ratio = 0.6                     # a mask pass that leaves more than this is followed by a summary
+protect_recent_ratio = 0.2             # the newest seen outputs worth this are never masked
+protect_recent_max = 40000             # ...and never more than this many tokens
+min_reclaim_ratio = 0.1                # a mask pass must free at least this
+min_reclaim_max = 20000                # ...capped at this many tokens
+keep_recent_ratio = 0.1                # the newest turns kept word for word after a summary
+mask_min_chars = 400                   # shorter outputs are never masked
 ```
 
 ## Settings
@@ -122,6 +136,9 @@ action_regex = ""                      # text mode; one capture group for the co
 | `instructions.max_bytes` | 262144 | Stop adding instruction files after this many bytes. |
 | `skills.disabled` | empty | Skill names to leave out. |
 | `mcp.only`, `mcp.disabled` | empty | Which MCP servers to start. `--mcp a,b` and `--no-mcp` do the same for one run. |
+| `compaction.enabled` | true | Compact the history when it nears the context window. `--no-compact` turns it off for one run. |
+| `compaction.context_window` | 0 | The window in tokens. 0 asks the provider (llama.cpp's `/props`, a server's `/models`) or uses the built in table. `--context-window <tokens>` sets it for one run. |
+| `compaction.*` | see above | When to compact and how much to keep. See [compaction](architecture.md#compaction). |
 
 ## Templates
 
@@ -133,6 +150,8 @@ Jinja. An undefined variable is an error, as in mini-swe-agent, so a typo shows 
 | `system`, `instance` | `task`, `system`, `release`, `version`, `machine`, `cwd`, `shell`, `timeout`, `model_name`, `action_format`, `instructions` (path, source, scope, content), `skills` (name, description, path, source), `mcp_tools` (qualified_name, description, input_schema), `mcp_instructions`, `n_model_calls`, `model_cost`, `elapsed_seconds` |
 | `observation` | all of the above plus `output.output`, `output.returncode`, `output.exception_info` |
 | `format_error` | `error`, `actions`, `finish_reason`, `has_tool_calls` |
+| `compact_summary` | the `system` variables plus `focus`, the text after `/compact` |
+| `compact_resume` | the `system` variables plus `summary`, the text the model wrote |
 
 The built in templates are in `src/templates/`. `umbra prompt "<task>"` shows exactly what a task
 would receive.

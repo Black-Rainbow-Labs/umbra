@@ -1,0 +1,22 @@
+The conversation so far is about to be compacted to save context. Older messages will be removed
+and replaced by the summary you write now. The system prompt, the original task and your most
+recent turns will be kept as they are.
+
+Do not call any tools and do not run any commands. Reply with the summary as plain text only.
+
+Write the summary so that you could continue the task from it alone, without the removed
+messages. If the conversation contains an earlier summary, include everything in it that still
+matters. Use these headings:
+
+1. Task and requests: the task and every request or correction the user made, word for word.
+2. Work done: what has been done so far, in order.
+3. Files: every file created, changed or read that matters, with its full path and what changed.
+4. Commands and findings: the important commands, what they showed, and facts you learned about
+   the code, the environment or the tools.
+5. Errors and fixes: each error you hit and how it was fixed, or that it is still open.
+6. Current state: what is true right now, including tests that pass or fail.
+7. Next step: exactly what you were about to do next.
+{%- if focus %}
+
+The user asked the summary to focus on: {{ focus }}
+{%- endif %}

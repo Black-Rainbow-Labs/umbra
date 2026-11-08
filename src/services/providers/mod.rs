@@ -29,7 +29,13 @@ pub struct ToolSpec {
 pub struct ProviderError {
     pub message: String,
     pub retryable: bool,
+    /// True when the server refused the request because it is longer than the context window.
+    pub context_overflow: bool,
 }
+
+/// Phrases servers use when a request is longer than the model's context window: Anthropic,
+/// OpenAI, llama.cpp, vLLM and OpenRouter.
+const OVERFLOW_PHRASES: &[&str] = &["prompt is too long", "context length", "context_length_exceeded", "maximum context", "exceeds the available context size", "too many tokens", "context window"];
 
 impl ProviderError {
     /// Builds an error from an HTTP status and body. 408, 409, 429 and 5xx are retryable;
@@ -38,20 +44,28 @@ impl ProviderError {
     /// @param body - the response body
     pub fn from_status(status: u16, body: &str) -> Self {
         let retryable = matches!(status, 408 | 409 | 429 | 500..=599);
-        ProviderError { message: format!("HTTP {status}: {}", body.chars().take(2000).collect::<String>()), retryable }
+        let context_overflow = matches!(status, 400 | 413) && is_overflow_text(body);
+        ProviderError { message: format!("HTTP {status}: {}", body.chars().take(2000).collect::<String>()), retryable: retryable && !context_overflow, context_overflow }
     }
 
     /// Builds a retryable error for a request that never reached the server.
     /// @param message - the network error
     pub fn network(message: impl Into<String>) -> Self {
-        ProviderError { message: message.into(), retryable: true }
+        ProviderError { message: message.into(), retryable: true, context_overflow: false }
     }
 
     /// Builds an error that retrying will not fix.
     /// @param message - the error text
     pub fn fatal(message: impl Into<String>) -> Self {
-        ProviderError { message: message.into(), retryable: false }
+        ProviderError { message: message.into(), retryable: false, context_overflow: false }
     }
+}
+
+/// Returns true when an error body says the request was longer than the context window.
+/// @param body - the error text from the server
+pub fn is_overflow_text(body: &str) -> bool {
+    let lower = body.to_lowercase();
+    OVERFLOW_PHRASES.iter().any(|phrase| lower.contains(phrase))
 }
 
 /// One model behind one API.
@@ -66,6 +80,11 @@ pub trait Provider {
 
     /// The settings recorded in the trajectory, without secrets.
     fn describe(&self) -> Value;
+
+    /// The model's context window in tokens, when the provider can find it out.
+    fn context_window(&mut self) -> Option<u64> {
+        None
+    }
 }
 
 /// Builds the provider for a `provider/model` string such as `anthropic/claude-haiku-5-5`.

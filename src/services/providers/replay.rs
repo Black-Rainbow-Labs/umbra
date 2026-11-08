@@ -2,7 +2,12 @@
 //! without a network, which is how Umbra's own tests drive the agent loop.
 //!
 //! The file is a JSON array. Each entry is either a string (the reply text) or an object
-//! `{"content": "...", "tool_calls": [{"name": "bash", "arguments": {"command": "ls"}}]}`.
+//! `{"content": "...", "tool_calls": [{"name": "bash", "arguments": {"command": "ls"}}]}`, or
+//! `{"error": {"status": 400, "body": "prompt is too long"}}` to make that call fail the way a
+//! server would.
+//!
+//! When `UMBRA_REPLAY_RECORD` names a file, every request is appended to it as one JSON line
+//! holding the messages and tool names, so a test can read exactly what the model was sent.
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -38,11 +43,16 @@ impl Provider for ReplayProvider {
     /// Returns the next scripted reply, or an error when the script has run out.
     /// @param _messages - ignored
     /// @param _tools - ignored
-    fn complete(&mut self, _messages: &[Message], _tools: &[ToolSpec]) -> Result<ModelResponse, ProviderError> {
+    fn complete(&mut self, messages: &[Message], tools: &[ToolSpec]) -> Result<ModelResponse, ProviderError> {
+        record_request(messages, tools);
         let Some(entry) = self.replies.get(self.next).cloned() else {
             return Err(ProviderError::fatal(format!("replay file {} has no reply number {}", self.file, self.next + 1)));
         };
         self.next += 1;
+        if let Some(error) = entry.get("error") {
+            let status = error["status"].as_u64().unwrap_or(500) as u16;
+            return Err(ProviderError::from_status(status, error["body"].as_str().unwrap_or("")));
+        }
         Ok(scripted_response(&entry, self.next))
     }
 
@@ -54,6 +64,21 @@ impl Provider for ReplayProvider {
     /// The settings recorded in the trajectory.
     fn describe(&self) -> Value {
         json!({ "provider": "replay", "model_name": self.model, "replay_file": self.file })
+    }
+}
+
+/// Appends one request to the file named by `UMBRA_REPLAY_RECORD`, when it is set. A failure to
+/// write is printed and otherwise ignored, since recording only serves tests.
+/// @param messages - the messages the agent sent
+/// @param tools - the tools it offered
+fn record_request(messages: &[Message], tools: &[ToolSpec]) {
+    let Ok(path) = std::env::var("UMBRA_REPLAY_RECORD") else { return };
+    let sent: Vec<Value> = messages.iter().map(|m| json!({ "role": m.role, "content": m.content, "tool_call_id": m.tool_call_id, "tool_calls": m.tool_calls })).collect();
+    let line = json!({ "messages": sent, "tools": tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>() }).to_string();
+    let written = std::fs::OpenOptions::new().create(true).append(true).open(&path).and_then(|mut file| std::io::Write::write_all(&mut file, format!("{line}
+").as_bytes()));
+    if let Err(error) = written {
+        eprintln!("umbra: could not record the replay request to {path}: {error}");
     }
 }
 

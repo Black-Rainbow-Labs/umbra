@@ -99,6 +99,10 @@ fn apply_run_args(config: &mut UmbraConfig, args: &RunArgs) -> Result<()> {
     if args.exit_immediately {
         config.confirm_exit = false;
     }
+    config.compaction.enabled &= !args.no_compact;
+    if let Some(window) = args.context_window {
+        config.compaction.context_window = window;
+    }
     Ok(())
 }
 
@@ -154,7 +158,7 @@ fn build_agent(config: UmbraConfig, cwd: &Path, context: &RunContext, interactio
     merge_values(&mut vars, context_vars(context));
     vars["mcp_instructions"] = json!(mcp.instructions().into_iter().map(|(name, instructions)| json!({ "name": name, "instructions": instructions })).collect::<Vec<_>>());
     vars["model_name"] = json!(provider.model_name());
-    let config_record = json!({ "agent": { "mode": config.mode, "action_format": config.action_format, "step_limit": config.step_limit, "cost_limit": config.cost_limit }, "model": provider.describe(), "environment": environment.describe(), "mcp_servers": mcp.connected(), "skills": context.skills.len(), "instruction_files": context.instructions.iter().map(|i| i.path.display().to_string()).collect::<Vec<_>>() });
+    let config_record = json!({ "agent": { "mode": config.mode, "action_format": config.action_format, "step_limit": config.step_limit, "cost_limit": config.cost_limit, "compaction": config.compaction }, "model": provider.describe(), "environment": environment.describe(), "mcp_servers": mcp.connected(), "skills": context.skills.len(), "instruction_files": context.instructions.iter().map(|i| i.path.display().to_string()).collect::<Vec<_>>() });
     let trajectory_path = trajectory_path(&config.output);
     Ok(Agent::new(AgentParts { config, provider, environment, mcp, interaction, vars, trajectory_path, config_record }))
 }
@@ -196,7 +200,7 @@ fn report(result: &RunResult, quiet: bool) {
         print!("{}", result.submission);
         return;
     }
-    let summary = format!("exit status: {}\nmodel calls: {}, cost: ${:.4}, tokens in/out: {}/{}\ntrajectory: {}", result.exit_status, result.stats.api_calls, result.stats.instance_cost, result.stats.input_tokens, result.stats.output_tokens, result.trajectory_path.display());
+    let summary = format!("exit status: {}\nmodel calls: {}, cost: ${:.4}, tokens in/out: {}/{}, compactions: {}\ntrajectory: {}", result.exit_status, result.stats.api_calls, result.stats.instance_cost, result.stats.input_tokens, result.stats.output_tokens, result.stats.compactions, result.trajectory_path.display());
     show_notice("finished", &summary);
     if !result.submission.trim().is_empty() {
         show_notice("final output", &result.submission);

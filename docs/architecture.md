@@ -12,6 +12,7 @@ flowchart TD
       RUN[run_service<br/>puts a run together]
       INSPECT[inspect_service<br/>the listing commands]
       AGENT[agent_service<br/>the loop]
+      COMPACT[compaction_service<br/>mask and summary passes]
       CTX[context_service<br/>instructions, skills, commands, MCP definitions]
       PROMPT[prompt_service<br/>Jinja templates]
       PARSE[action_parser]
@@ -29,13 +30,14 @@ flowchart TD
       TRJ[trajectory_repository]
     end
     subgraph Models
-      DATA[message, action, config, context, trajectory]
+      DATA[message, action, config, context, compaction, trajectory]
     end
     MAIN --> RUN & INSPECT
     RUN --> CFG & CTX & AGENT & PROV & ENV & MCP
     INSPECT --> CTX & MCP
     CTX --> INS & SKL & CMD & MCF
-    AGENT --> PROMPT & PARSE & ASK & PROV & ENV & MCP & TRJ
+    AGENT --> PROMPT & PARSE & ASK & PROV & ENV & MCP & TRJ & COMPACT
+    COMPACT --> PROMPT & PROV
     Services --> DATA
     Repositories --> DATA
 ```
@@ -100,12 +102,17 @@ Each provider converts the list into its own format just before sending it:
 stateDiagram-v2
     [*] --> CheckLimits
     CheckLimits --> Exit: step, cost or time limit reached
-    CheckLimits --> CallModel
+    CheckLimits --> CheckSize
+    CheckSize --> CallModel: under the trigger
+    CheckSize --> Compact: over the trigger
+    Compact --> CallModel
     CallModel --> Exit: model call failed after retries (ModelError)
     CallModel --> Parse
     Parse --> FormatError: no usable action
     FormatError --> Exit: third in a row (RepeatedFormatError)
     FormatError --> [*]: next step
+    CallModel --> Compact: request too long
+    Compact --> CallModel: once more with the summary
     Parse --> Confirm
     Confirm --> Rejected: person typed a reason
     Rejected --> [*]: next step
@@ -117,6 +124,50 @@ stateDiagram-v2
     FollowUp --> Done: person pressed Enter
     Exit --> Done
 ```
+
+## Compaction
+
+Before each model call Umbra estimates the size of the request: the size the provider reported for
+the last call, plus four bytes per token for the messages added since. When there is no reported
+size, as right after a compaction, the whole history is estimated the same way. When the estimate
+passes `trigger_ratio` of the context window (80% by default), Umbra compacts in two steps.
+
+```mermaid
+flowchart LR
+    A[over the trigger] --> B[mask pass:<br/>old outputs become placeholders]
+    B --> C{over the target?}
+    C -- no --> D[call the model]
+    C -- yes --> E[summary pass:<br/>the model summarizes the middle]
+    E --> D
+```
+
+1. **Mask pass.** Old command outputs are replaced by a one line placeholder that gives the size
+   and return code and says to run the command again if it is needed. The command, the model's
+   reasoning and the Anthropic content blocks are not touched, and `extra.raw_output` still holds
+   the full output. The newest outputs the model has seen are kept (`protect_recent_*`), and the
+   outputs of the newest reply are always kept, because the model has not been shown them yet.
+   Short outputs and SKILL.md reads are kept too. A pass that would free less than
+   `min_reclaim_*` masks nothing, because changing an earlier message makes the provider's prompt
+   cache miss from that message on.
+2. **Summary pass.** When masking leaves the estimate above `target_ratio`, the model is sent the
+   history with the `compact_summary` prompt and the same tools, and writes a summary under fixed
+   headings. The new history is the system prompt, the task, any follow up tasks the person typed,
+   the summary (a user message from `compact_resume`), and the newest turns worth
+   `keep_recent_ratio` of the window. The kept turns always start at an assistant message, so every
+   tool result still follows its tool call. The summary call's cost is added to the run and it does
+   not count as a step.
+
+When a provider refuses a request as too long (Anthropic's "prompt is too long", llama.cpp's
+"exceeds the available context size", OpenAI's `context_length_exceeded`), Umbra runs a summary
+pass and sends the request once more. At the follow up prompt after a run finishes, `/compact` or
+`/compact <what to keep>` runs a summary pass by hand.
+
+The window comes from `compaction.context_window`, then the provider (llama.cpp and NInfer report
+`n_ctx` at `/props`, vLLM, llama.cpp and OpenRouter list a size per model at `/models`), then a
+table (Claude models 200,000, or 1,000,000 for an id ending in `[1m]`), then 128,000.
+
+The design, the research behind it and the measurements are in
+[the compaction design document](../tasks/umbra-compaction-tdd.md).
 
 ## Commands and their output
 
@@ -142,11 +193,12 @@ record up to the last step. Its shape follows mini-swe-agent's `mini-swe-agent-1
 ```json
 {
   "info": {
-    "model_stats": { "instance_cost": 0.0037, "api_calls": 2, "input_tokens": 51293, "output_tokens": 427 },
+    "model_stats": { "instance_cost": 0.0037, "api_calls": 2, "input_tokens": 51293, "output_tokens": 427, "compactions": 0 },
     "config": { "agent": {}, "model": {}, "environment": {}, "mcp_servers": [], "skills": 42, "instruction_files": [] },
     "umbra_version": "0.1.0",
     "exit_status": "Submitted",
-    "submission": "5050\n"
+    "submission": "5050\n",
+    "compactions": []
   },
   "messages": [
     { "role": "system", "content": "..." },
@@ -158,3 +210,8 @@ record up to the last step. Its shape follows mini-swe-agent's `mini-swe-agent-1
   "trajectory_format": "mini-swe-agent-1.1"
 }
 ```
+
+`messages` is always what the model was sent on the last call. Each entry in `info.compactions`
+records one compaction: `kind` (`mask` or `summary`), `reason` (`threshold`, `overflow` or
+`manual`), the step, the estimate before and after, the window, the masked positions, and for a
+summary the summary text, its cost and every message it replaced, in full.

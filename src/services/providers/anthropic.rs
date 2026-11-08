@@ -11,6 +11,7 @@ use crate::models::config::ProviderConfig;
 use crate::models::message::{Message, Role, ToolCall};
 use crate::models::model_response::{ModelResponse, Usage};
 use crate::utils::http::{http_agent, post_json};
+use crate::utils::tokens::known_context_window;
 
 /// The system text a Claude Code login must send first. Requests made with that login are
 /// refused (HTTP 429) without it.
@@ -121,6 +122,12 @@ impl Provider for AnthropicProvider {
     /// The settings recorded in the trajectory.
     fn describe(&self) -> Value {
         json!({ "provider": "anthropic", "model_name": self.model, "base_url": self.config.base_url, "auth": self.credential.kind(), "max_tokens": self.config.max_tokens.unwrap_or(16000) })
+    }
+
+    /// The window from the built in table: one million tokens for a `[1m]` model id, 200,000
+    /// for other Claude models.
+    fn context_window(&mut self) -> Option<u64> {
+        known_context_window(&self.model)
     }
 }
 

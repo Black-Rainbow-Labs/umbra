@@ -26,7 +26,7 @@ $ umbra -m anthropic/claude-haiku-5-5 "add a --verbose flag to the CLI and test 
 - [Project layout](#project-layout)
 - More detail: [architecture](docs/architecture.md), [configuration](docs/configuration.md),
   [where files are found](docs/discovery.md), [MCP](docs/mcp.md), [models](docs/providers.md),
-  [design document](tasks/umbra-harness-tdd.md)
+  [design document](tasks/umbra-harness-tdd.md), [compaction design](tasks/umbra-compaction-tdd.md)
 
 ## Quick start
 
@@ -87,6 +87,10 @@ A few rules shape everything else:
 - **Every command runs in a new shell.** `cd` and `export` do not carry over to the next command,
   so the model writes `cd src && make` in one command. This keeps each step simple to repeat.
 - **The history is one list.** What you see in the trajectory file is exactly what the model saw.
+- **Long runs are compacted.** Near 80% of the context window, old command outputs are replaced
+  by a short placeholder, and if that is not enough the model summarizes the middle of the session.
+  Every compaction is recorded in the trajectory with the messages it removed. See
+  [compaction](docs/architecture.md#compaction).
 - **The run ends** when a command prints `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` as its first line
   and exits with code 0, or when a step limit, cost limit or time limit is reached.
 
@@ -152,6 +156,7 @@ The full list, the order, and the rules for duplicates are in [where files are f
 
 At the confirm prompt, `/y` switches to yolo, `/u` to human mode and `/h` shows help. When the
 agent finishes in a terminal, Umbra asks for a follow up task; `--exit-immediately` turns that off.
+At that prompt, `/compact` or `/compact <what to keep>` summarizes the session before the next task.
 If stdin is not a terminal, Umbra refuses to start in confirm mode and asks for `-y`, so it never
 waits for an answer nobody can give.
 
@@ -187,7 +192,7 @@ project's documentation as of November 2026.
 | MCP config from other tools' files | yes | no | no | no | no |
 | MCP OAuth sign in | no | no | yes | yes | yes |
 | Rules that apply only to some file paths | no, only rules for every file | no | yes | no | no |
-| Context compaction | no | no | yes | yes | yes |
+| Context compaction | yes: mask old outputs, then summarize | no | yes | yes | yes |
 | Subagents | no | no | yes | yes | yes |
 | Hooks | no | no | yes | yes | yes |
 | Plan mode | no | no | yes | not documented | yes |
@@ -232,6 +237,8 @@ The listing commands take `--json`. The options used most:
 | `-o, --output <file>` | Where to write the trajectory |
 | `--exit-immediately` | Do not ask for a follow up task |
 | `-q, --quiet` | Print only the final answer |
+| `--no-compact` | Never compact the history |
+| `--context-window <tokens>` | The model's context window, for compaction |
 
 On Windows, Git Bash rewrites an argument that starts with `/` into a Windows path. To run a slash
 command from Git Bash, write `MSYS_NO_PATHCONV=1 umbra /review`. PowerShell and cmd do not do this.

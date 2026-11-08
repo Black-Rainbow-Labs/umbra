@@ -2,6 +2,7 @@
 
 pub mod action_parser;
 pub mod agent_service;
+pub mod compaction_service;
 pub mod context_service;
 pub mod environment;
 pub mod inspect_service;

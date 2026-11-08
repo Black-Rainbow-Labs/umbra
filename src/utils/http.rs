@@ -47,6 +47,19 @@ pub fn post_json(agent: &ureq::Agent, url: &str, headers: &[(String, String)], b
     read_reply(response)
 }
 
+/// Sends a GET request and reads the whole reply as text.
+/// @param agent - the HTTP agent
+/// @param url - the endpoint
+/// @param headers - request headers
+pub fn get_text(agent: &ureq::Agent, url: &str, headers: &[(String, String)]) -> Result<HttpReply, String> {
+    let mut request = agent.get(url);
+    for (key, value) in headers {
+        request = request.header(key.as_str(), value.as_str());
+    }
+    let response = request.call().map_err(|e| e.to_string())?;
+    read_reply(response)
+}
+
 /// Converts a ureq response into an `HttpReply`, reading the body as text.
 /// @param response - the response from ureq
 pub fn read_reply(mut response: ureq::http::Response<ureq::Body>) -> Result<HttpReply, String> {

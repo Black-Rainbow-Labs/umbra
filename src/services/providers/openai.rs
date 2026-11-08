@@ -5,11 +5,12 @@ use serde_json::{json, Value};
 
 use super::credentials::api_key;
 use super::pricing::{cost_of, price_for};
-use super::{apply_extra_body, retry_count, with_retries, Provider, ProviderError, ToolSpec};
+use super::{apply_extra_body, is_overflow_text, retry_count, with_retries, Provider, ProviderError, ToolSpec};
 use crate::models::config::ProviderConfig;
 use crate::models::message::{Message, Role, ToolCall};
 use crate::models::model_response::{ModelResponse, Usage};
-use crate::utils::http::{http_agent, post_json};
+use crate::utils::http::{get_text, http_agent, post_json};
+use crate::utils::tokens::known_context_window;
 
 /// A model behind an OpenAI compatible endpoint.
 pub struct OpenAiProvider {
@@ -64,6 +65,9 @@ impl OpenAiProvider {
         }
         let raw: Value = serde_json::from_str(&reply.body).map_err(|e| ProviderError::fatal(format!("bad JSON from {url}: {e}")))?;
         if let Some(error) = raw.get("error") {
+            if is_overflow_text(&error.to_string()) {
+                return Err(ProviderError { message: format!("server error: {error}"), retryable: false, context_overflow: true });
+            }
             return Err(ProviderError::network(format!("server error: {error}")));
         }
         let mut response = parse_response(&raw);
@@ -90,6 +94,59 @@ impl Provider for OpenAiProvider {
     fn describe(&self) -> Value {
         json!({ "provider": "openai", "model_name": self.model, "base_url": self.config.base_url })
     }
+
+    /// The window from the built in table for known models. Otherwise the server is asked: a
+    /// llama.cpp or NInfer server on this machine reports `n_ctx` at `/props`, and vLLM,
+    /// llama.cpp and OpenRouter list a size for each model at `/models`.
+    fn context_window(&mut self) -> Option<u64> {
+        if let Some(window) = known_context_window(&self.model) {
+            return Some(window);
+        }
+        let base = self.config.base_url.trim_end_matches('/');
+        let agent = http_agent(10);
+        let headers = self.headers();
+        if is_local_url(base) {
+            let props_url = format!("{}/props", base.trim_end_matches("/v1"));
+            if let Some(window) = fetch_json(&agent, &props_url, &headers).as_ref().and_then(window_from_props) {
+                return Some(window);
+            }
+        }
+        fetch_json(&agent, &format!("{base}/models"), &headers).and_then(|models| window_from_models(&models, &self.model))
+    }
+}
+
+/// Returns true for a server on this machine.
+/// @param url - the base URL
+fn is_local_url(url: &str) -> bool {
+    ["://localhost", "://127.0.0.1", "://[::1]", "://0.0.0.0"].iter().any(|host| url.contains(host))
+}
+
+/// GETs a URL and parses the reply as JSON. Any failure gives None.
+/// @param agent - the HTTP agent
+/// @param url - the endpoint
+/// @param headers - request headers
+fn fetch_json(agent: &ureq::Agent, url: &str, headers: &[(String, String)]) -> Option<Value> {
+    let reply = get_text(agent, url, headers).ok()?;
+    if reply.status != 200 {
+        return None;
+    }
+    serde_json::from_str(&reply.body).ok()
+}
+
+/// Reads the context size from a llama.cpp `/props` reply.
+/// @param props - the reply JSON
+fn window_from_props(props: &Value) -> Option<u64> {
+    props["n_ctx"].as_u64().or_else(|| props["default_generation_settings"]["n_ctx"].as_u64()).filter(|n| *n > 0)
+}
+
+/// Finds the model in a `/models` reply and reads its context size. A server that lists one
+/// model is taken to be serving it, whatever name the run used.
+/// @param models - the reply JSON
+/// @param model - the model id the run sends
+fn window_from_models(models: &Value, model: &str) -> Option<u64> {
+    let list = models["data"].as_array()?;
+    let entry = list.iter().find(|m| m["id"] == model).or(if list.len() == 1 { list.first() } else { None })?;
+    ["max_model_len", "context_length", "context_window"].iter().find_map(|key| entry[*key].as_u64()).or_else(|| entry["meta"]["n_ctx_train"].as_u64()).filter(|n| *n > 0)
 }
 
 /// Converts the history into Chat Completions messages.
@@ -157,6 +214,15 @@ fn parse_tool_call(index: usize, call: &Value) -> ToolCall {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_context_sizes_from_server_replies() {
+        assert_eq!(window_from_props(&json!({"default_generation_settings": {"n_ctx": 32768}})), Some(32768));
+        let models = json!({"data": [{"id": "a", "max_model_len": 1000}, {"id": "b", "context_length": 2000}]});
+        assert_eq!(window_from_models(&models, "b"), Some(2000));
+        assert_eq!(window_from_models(&models, "c"), None);
+        assert_eq!(window_from_models(&json!({"data": [{"id": "x", "meta": {"n_ctx_train": 4096}}]}), "qwen"), Some(4096));
+    }
 
     #[test]
     fn round_trips_tool_calls() {

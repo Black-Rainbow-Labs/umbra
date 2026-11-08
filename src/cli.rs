@@ -65,6 +65,13 @@ pub struct RunArgs {
     /// Print only the final output (and errors), for scripts.
     #[arg(short, long)]
     pub quiet: bool,
+    /// Never compact the history, even when it nears the model's context window.
+    #[arg(long)]
+    pub no_compact: bool,
+    /// The model's context window in tokens, for compaction. By default Umbra asks the server
+    /// or uses a built in table.
+    #[arg(long)]
+    pub context_window: Option<u64>,
 }
 
 /// Options shared by every subcommand.

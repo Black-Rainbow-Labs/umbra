@@ -57,6 +57,7 @@ pub struct UmbraConfig {
     /// MCP servers defined in Umbra's own config, in the same shape as Claude Code's `mcpServers`.
     pub mcp_servers: BTreeMap<String, Value>,
     pub templates: TemplatesConfig,
+    pub compaction: CompactionConfig,
 }
 
 impl Default for UmbraConfig {
@@ -82,6 +83,7 @@ impl Default for UmbraConfig {
             mcp: McpConfig::default(),
             mcp_servers: BTreeMap::new(),
             templates: TemplatesConfig::default(),
+            compaction: CompactionConfig::default(),
         }
     }
 }
@@ -263,4 +265,53 @@ pub struct TemplatesConfig {
     pub format_error: String,
     /// Text mode only: the regex that finds the command. It must have one capture group.
     pub action_regex: String,
+    /// The request that asks the model to summarize the session when it is compacted.
+    pub compact_summary: String,
+    /// The message that carries the summary into the compacted history.
+    pub compact_resume: String,
+}
+
+/// Context compaction. Sizes given as a ratio are shares of the model's context window, so
+/// the same settings work for a 32,000 token local model and a 1,000,000 token Claude model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionConfig {
+    pub enabled: bool,
+    /// The model's context window in tokens. 0 means ask the provider, then a built in table.
+    pub context_window: u64,
+    /// Compact when the estimated request size passes this share of the window.
+    pub trigger_ratio: f64,
+    /// A mask pass that leaves the estimate above this share is followed by a summary.
+    pub target_ratio: f64,
+    /// The newest command outputs worth this share of the window are never masked.
+    pub protect_recent_ratio: f64,
+    /// The protected newest outputs are never more than this many tokens.
+    pub protect_recent_max: u64,
+    /// A mask pass must free at least this share of the window, or it masks nothing.
+    pub min_reclaim_ratio: f64,
+    /// The minimum a mask pass must free is never more than this many tokens.
+    pub min_reclaim_max: u64,
+    /// The newest turns worth this share of the window are kept word for word by a summary.
+    pub keep_recent_ratio: f64,
+    /// Command outputs shorter than this many characters are never masked.
+    pub mask_min_chars: usize,
+}
+
+impl Default for CompactionConfig {
+    /// On, compacting at 80% of the window, with opencode's 40,000 and 20,000 token prune sizes
+    /// as upper limits.
+    fn default() -> Self {
+        CompactionConfig {
+            enabled: true,
+            context_window: 0,
+            trigger_ratio: 0.8,
+            target_ratio: 0.6,
+            protect_recent_ratio: 0.2,
+            protect_recent_max: 40_000,
+            min_reclaim_ratio: 0.1,
+            min_reclaim_max: 20_000,
+            keep_recent_ratio: 0.1,
+            mask_min_chars: 400,
+        }
+    }
 }
