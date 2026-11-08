@@ -1,0 +1,171 @@
+//! Any server that speaks the OpenAI Chat Completions API (`POST /chat/completions`): OpenAI,
+//! OpenRouter, llama.cpp's `llama-server`, Ollama, vLLM and others.
+
+use serde_json::{json, Value};
+
+use super::credentials::api_key;
+use super::pricing::{cost_of, price_for};
+use super::{apply_extra_body, retry_count, with_retries, Provider, ProviderError, ToolSpec};
+use crate::models::config::ProviderConfig;
+use crate::models::message::{Message, Role, ToolCall};
+use crate::models::model_response::{ModelResponse, Usage};
+use crate::utils::http::{http_agent, post_json};
+
+/// A model behind an OpenAI compatible endpoint.
+pub struct OpenAiProvider {
+    config: ProviderConfig,
+    model: String,
+    agent: ureq::Agent,
+}
+
+impl OpenAiProvider {
+    /// Builds the provider.
+    /// @param config - the provider settings, including `base_url`
+    /// @param model - the model id the server expects
+    pub fn new(config: ProviderConfig, model: &str) -> Self {
+        OpenAiProvider { config, model: model.to_string(), agent: http_agent(1800) }
+    }
+
+    /// Builds the request body.
+    /// @param messages - the conversation
+    /// @param tools - the tools offered to the model
+    fn request_body(&self, messages: &[Message], tools: &[ToolSpec]) -> Value {
+        let mut body = json!({ "model": self.model, "messages": convert_messages(messages) });
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(tools.iter().map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.input_schema } })).collect());
+        }
+        if let Some(max_tokens) = self.config.max_tokens {
+            body["max_tokens"] = json!(max_tokens);
+        }
+        if let Some(temperature) = self.config.temperature {
+            body["temperature"] = json!(temperature);
+        }
+        apply_extra_body(&mut body, &self.config);
+        body
+    }
+
+    /// Builds the request headers.
+    fn headers(&self) -> Vec<(String, String)> {
+        let mut headers: Vec<(String, String)> = Vec::new();
+        if let Some(key) = api_key(&self.config) {
+            headers.push(("authorization".into(), format!("Bearer {key}")));
+        }
+        headers.extend(self.config.headers.iter().map(|(k, v)| (k.clone(), v.clone())));
+        headers
+    }
+
+    /// Sends one request and parses the reply.
+    /// @param body - the request body
+    fn send(&self, body: &Value) -> Result<ModelResponse, ProviderError> {
+        let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
+        let reply = post_json(&self.agent, &url, &self.headers(), body).map_err(ProviderError::network)?;
+        if reply.status != 200 {
+            return Err(ProviderError::from_status(reply.status, &reply.body));
+        }
+        let raw: Value = serde_json::from_str(&reply.body).map_err(|e| ProviderError::fatal(format!("bad JSON from {url}: {e}")))?;
+        if let Some(error) = raw.get("error") {
+            return Err(ProviderError::network(format!("server error: {error}")));
+        }
+        let mut response = parse_response(&raw);
+        response.cost = cost_of(&response.usage, price_for(&self.model, &self.config));
+        Ok(response)
+    }
+}
+
+impl Provider for OpenAiProvider {
+    /// Sends the conversation, retrying rate limits, server errors and network failures.
+    /// @param messages - the conversation
+    /// @param tools - the tools offered to the model
+    fn complete(&mut self, messages: &[Message], tools: &[ToolSpec]) -> Result<ModelResponse, ProviderError> {
+        let body = self.request_body(messages, tools);
+        with_retries(retry_count(&self.config), || self.send(&body))
+    }
+
+    /// The model id.
+    fn model_name(&self) -> &str {
+        &self.model
+    }
+
+    /// The settings recorded in the trajectory.
+    fn describe(&self) -> Value {
+        json!({ "provider": "openai", "model_name": self.model, "base_url": self.config.base_url })
+    }
+}
+
+/// Converts the history into Chat Completions messages.
+/// @param messages - the conversation
+pub fn convert_messages(messages: &[Message]) -> Value {
+    let converted = messages.iter().filter(|m| m.role != Role::Exit).map(convert_message).collect();
+    Value::Array(converted)
+}
+
+/// Converts one message. Tool call arguments are sent as JSON text, as the API requires.
+/// @param message - one history entry
+fn convert_message(message: &Message) -> Value {
+    match message.role {
+        Role::System => json!({ "role": "system", "content": message.content }),
+        Role::User | Role::Exit => json!({ "role": "user", "content": message.content }),
+        Role::Tool => json!({ "role": "tool", "tool_call_id": message.tool_call_id.clone().unwrap_or_default(), "content": message.content }),
+        Role::Assistant => {
+            let mut out = json!({ "role": "assistant", "content": message.content });
+            if !message.tool_calls.is_empty() {
+                out["tool_calls"] = Value::Array(message.tool_calls.iter().map(tool_call_json).collect());
+            }
+            out
+        }
+    }
+}
+
+/// Encodes one tool call in the Chat Completions shape.
+/// @param call - the tool call
+fn tool_call_json(call: &ToolCall) -> Value {
+    let arguments = match &call.arguments {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    json!({ "id": call.id, "type": "function", "function": { "name": call.name, "arguments": arguments } })
+}
+
+/// Reads the reply. Tool call arguments that are not valid JSON are kept as a string, so the
+/// action parser can tell the model what was wrong.
+/// @param raw - the response JSON
+pub fn parse_response(raw: &Value) -> ModelResponse {
+    let choice = &raw["choices"][0];
+    let message = &choice["message"];
+    let tool_calls = message["tool_calls"].as_array().map(|calls| calls.iter().enumerate().map(|(i, c)| parse_tool_call(i, c)).collect()).unwrap_or_default();
+    let usage = &raw["usage"];
+    let cached = usage["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0);
+    let usage = Usage {
+        input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0).saturating_sub(cached),
+        output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
+        cache_read_tokens: cached,
+        cache_write_tokens: 0,
+    };
+    ModelResponse { content: message["content"].as_str().unwrap_or("").to_string(), tool_calls, finish_reason: choice["finish_reason"].as_str().unwrap_or("").to_string(), usage, cost: 0.0, raw: raw.clone() }
+}
+
+/// Reads one tool call, giving it an id when the server sent none.
+/// @param index - the call's position, used for a missing id
+/// @param call - the tool call JSON
+fn parse_tool_call(index: usize, call: &Value) -> ToolCall {
+    let text = call["function"]["arguments"].as_str().unwrap_or("{}");
+    let arguments = serde_json::from_str::<Value>(text).unwrap_or_else(|_| Value::String(text.to_string()));
+    let id = call["id"].as_str().filter(|s| !s.is_empty()).map(String::from).unwrap_or_else(|| format!("call_{index}"));
+    ToolCall { id, name: call["function"]["name"].as_str().unwrap_or("").to_string(), arguments }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_tool_calls() {
+        let raw = json!({"choices": [{"message": {"content": null, "tool_calls": [{"id": "x", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}}]}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 7, "completion_tokens": 3}});
+        let parsed = parse_response(&raw);
+        assert_eq!(parsed.tool_calls[0].arguments["command"], "ls");
+        let mut assistant = Message::new(Role::Assistant, "");
+        assistant.tool_calls = parsed.tool_calls.clone();
+        let sent = convert_messages(&[assistant]);
+        assert_eq!(sent[0]["tool_calls"][0]["function"]["arguments"], "{\"command\":\"ls\"}");
+    }
+}
