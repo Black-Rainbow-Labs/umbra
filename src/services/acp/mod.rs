@@ -122,8 +122,16 @@ impl Server {
         let shows = ClientShows { notices: capabilities["session"]["notices"].is_object() };
         self.shared = Some(Arc::new(ServerShared { wire: self.wire.clone(), args: self.args.clone(), shows, sessions: Mutex::new(Default::default()) }));
         let mut methods = vec![json!({ "id": "umbra-config", "name": "Use Umbra's configured model", "description": "Uses the model in ~/.umbra/config.toml or the -m option, with ANTHROPIC_API_KEY, your Claude Code login, another provider's API key, or a local model server", "type": "agent" })];
-        if capabilities["auth"]["terminal"].as_bool().unwrap_or(false) {
-            methods.push(json!({ "id": "umbra-setup", "name": "Set up Umbra in a terminal", "description": "Choose a model and save it in ~/.umbra/config.toml", "type": "terminal", "args": ["--setup"] }));
+        // `auth.terminal` is the protocol's flag; `_meta["terminal-auth"]` is the older one some
+        // clients still send, which also wants the whole command line in the method's `_meta`.
+        let legacy = capabilities["_meta"]["terminal-auth"].as_bool().unwrap_or(false);
+        if capabilities["auth"]["terminal"].as_bool().unwrap_or(false) || legacy {
+            let mut method = json!({ "id": "umbra-setup", "name": "Set up Umbra in a terminal", "description": "Choose a model and save it in ~/.umbra/config.toml", "type": "terminal", "args": ["--setup"] });
+            if legacy {
+                let program = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "umbra".into());
+                method["_meta"] = json!({ "terminal-auth": { "command": program, "args": ["acp", "--setup"], "label": "Umbra setup" } });
+            }
+            methods.push(method);
         }
         json!({
             "protocolVersion": PROTOCOL_VERSION,

@@ -50,8 +50,10 @@ $targets = @('aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-unknown-linu
 $registryPlatforms = [ordered]@{
     'darwin-aarch64'  = 'aarch64-apple-darwin'
     'darwin-x86_64'   = 'x86_64-apple-darwin'
-    'linux-aarch64'   = 'aarch64-unknown-linux-musl'
-    'linux-x86_64'    = 'x86_64-unknown-linux-musl'
+    'linux-aarch64'      = 'aarch64-unknown-linux-musl'
+    'linux-x86_64'       = 'x86_64-unknown-linux-musl'
+    'linux-aarch64-musl' = 'aarch64-unknown-linux-musl'
+    'linux-x86_64-musl'  = 'x86_64-unknown-linux-musl'
     'windows-aarch64' = 'aarch64-pc-windows-msvc'
     'windows-x86_64'  = 'x86_64-pc-windows-msvc'
 }
@@ -206,7 +208,7 @@ function Write-RegistryEntry {
     foreach ($platform in $registryPlatforms.Keys) {
         $target = $registryPlatforms[$platform]
         $name = Archive-Name $target
-        $cmd = if ($target -like '*windows*') { 'umbra.exe' } else { './umbra' }
+        $cmd = if ($target -like '*windows*') { './umbra.exe' } else { './umbra' }
         $binary[$platform] = [ordered]@{ archive = "https://github.com/$repo/releases/download/v$Version/$name"; sha256 = $Sums[$name]; cmd = $cmd; args = @('acp') }
     }
     $entry = [ordered]@{

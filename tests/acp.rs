@@ -204,6 +204,9 @@ fn initialize_offers_sessions_images_and_sign_in_methods() {
     assert_eq!(methods.len(), 2);
     assert_eq!(methods[0]["type"], "agent");
     assert_eq!(methods[1]["args"], json!(["--setup"]));
+    let legacy = editor.call("initialize", json!({ "protocolVersion": 1, "clientCapabilities": { "_meta": { "terminal-auth": true } } }));
+    let setup = &legacy["result"]["authMethods"][1];
+    assert_eq!(setup["_meta"]["terminal-auth"]["args"], json!(["acp", "--setup"]), "{legacy}");
     let unknown = editor.call("session/fly", json!({}));
     assert_eq!(unknown["error"]["code"], -32601);
     let missing = editor.call("session/prompt", prompt("nope", "hi"));
