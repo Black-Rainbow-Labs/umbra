@@ -136,7 +136,8 @@ function Wait-Release {
     while ((Get-Date) -lt $deadline) {
         $assets = & gh release view $Tag --repo $repo --json assets --jq '.assets[].name' 2>$null
         if ($LASTEXITCODE -eq 0 -and ($assets -contains 'SHA256SUMS')) { return }
-        $failed = & gh run list --repo $repo --workflow release.yml --branch $Tag --json conclusion --jq '.[0].conclusion' 2>$null
+        # The newest run of the workflow: the tag's own run, or a manual run of it after a failure.
+        $failed = & gh run list --repo $repo --workflow release.yml --limit 1 --json conclusion --jq '.[0].conclusion' 2>$null
         if ($failed -eq 'failure') { throw "The release workflow for $Tag failed: gh run list --repo $repo --workflow release.yml" }
         Write-Host "  waiting for the $Tag release ($(Get-Date -Format HH:mm:ss))"
         Start-Sleep -Seconds 30
