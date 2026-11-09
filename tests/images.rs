@@ -125,6 +125,6 @@ fn an_image_in_a_follow_up_task_is_attached_to_it() {
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let messages = requests[1]["messages"].as_array().unwrap();
     let follow_up = messages.last().unwrap();
-    assert_eq!(follow_up["content"], "The user added a new task: now look at later.png");
+    assert_eq!(follow_up["content"], "now look at later.png");
     assert_eq!(follow_up["images"][0]["width"], 12);
 }

@@ -17,6 +17,17 @@ pub enum ActionFormat {
     Text,
 }
 
+/// How a turn ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Finish {
+    /// A reply with no command ends the turn and goes to the person, as in Claude Code.
+    Reply,
+    /// Every reply needs a command, and a command that prints COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+    /// ends the run. The mini-swe-agent behavior, for benchmark runs.
+    Submit,
+}
+
 /// Whether a person approves each action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -39,6 +50,8 @@ pub struct UmbraConfig {
     pub models: Vec<String>,
     pub mode: Mode,
     pub action_format: ActionFormat,
+    /// How a turn ends: `reply` (a reply with no command) or `submit` (the submit command).
+    pub finish: Finish,
     pub step_limit: u32,
     pub cost_limit: f64,
     pub wall_time_limit_seconds: u64,
@@ -52,6 +65,9 @@ pub struct UmbraConfig {
     pub status_bar: bool,
     /// Draw the UMBRA banner with the version, model and folder when a run starts in a terminal.
     pub banner: bool,
+    /// Open on the terminal's alternate screen with a scrollable transcript, as Claude Code's
+    /// fullscreen mode does. Only in an interactive terminal.
+    pub fullscreen: bool,
     /// Print every detail of the run: step headings with the cost, whole command outputs, full
     /// format errors and every compaction attempt. Off, routine events take one line each.
     pub verbose: bool,
@@ -81,6 +97,7 @@ impl Default for UmbraConfig {
             models: Vec::new(),
             mode: Mode::Confirm,
             action_format: ActionFormat::Tools,
+            finish: Finish::Reply,
             step_limit: 0,
             cost_limit: 3.0,
             wall_time_limit_seconds: 0,
@@ -89,6 +106,7 @@ impl Default for UmbraConfig {
             keep_open: false,
             status_bar: true,
             banner: true,
+            fullscreen: true,
             verbose: false,
             whitelist_actions: Vec::new(),
             output: String::new(),

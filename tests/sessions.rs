@@ -112,7 +112,7 @@ fn resume_by_id_continues_the_same_session_file() {
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let request = setup.requests().last().unwrap().clone();
     assert_eq!(roles(&request), ["system", "user", "assistant", "tool", "assistant", "tool", "user"], "the old history is sent without its exit marker");
-    assert_eq!(request["messages"][6]["content"], "The user added a new task: read the note");
+    assert_eq!(request["messages"][6]["content"], "read the note");
     let path = trajectory_from_output(&output);
     assert!(path.to_string_lossy().contains(&id), "the same session file is written");
     let trajectory = read_trajectory(&path);
@@ -255,7 +255,7 @@ fn a_resume_without_a_task_asks_for_one() {
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     assert!(text(&output).contains("What next?"), "{}", text(&output));
     let request = setup.requests().last().unwrap().clone();
-    assert_eq!(request["messages"].as_array().unwrap().last().unwrap()["content"], "The user added a new task: the typed task");
+    assert_eq!(request["messages"].as_array().unwrap().last().unwrap()["content"], "the typed task");
     let output = setup.umbra(&["-m", &model, "--resume", &session_id(&first)], "", false);
     assert_eq!(output.status.code(), Some(2), "with no terminal and no task it fails: {}", text(&output));
 }

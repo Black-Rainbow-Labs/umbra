@@ -154,6 +154,10 @@ pub struct CommonArgs {
     /// Ask for actions in plain text instead of tool calls.
     #[arg(long)]
     pub text: bool,
+    /// How a turn ends: reply (a reply with no command ends it, as in Claude Code) or submit
+    /// (every reply runs a command until the submit command, as in mini-swe-agent).
+    #[arg(long, value_name = "STYLE")]
+    pub finish: Option<String>,
     /// The working folder. Defaults to the current folder.
     #[arg(long)]
     pub cwd: Option<PathBuf>,

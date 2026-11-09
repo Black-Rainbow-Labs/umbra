@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::json;
 
 use super::agent_events::{AgentEvents, NoEvents};
-use super::agent_service::{now_seconds, Agent, AgentParts, Opening, RunResult, INTERRUPTED_STATUS};
+use super::agent_service::{is_success, now_seconds, Agent, AgentParts, Opening, RunResult, INTERRUPTED_STATUS};
 use super::context_service::{context_vars, discovery_context, expand_slash_command, load_run_context, RunContext};
 use super::environment::create_environment;
 use super::image_service::{images_in_text, load_image};
@@ -54,6 +54,9 @@ fn apply_common(config: &mut UmbraConfig, common: &CommonArgs) -> Result<()> {
     }
     if common.text {
         config.action_format = ActionFormat::Text;
+    }
+    if let Some(finish) = &common.finish {
+        config.finish = serde_json::from_value(json!(finish)).with_context(|| format!("unknown finish style '{finish}'. Use reply or submit"))?;
     }
     if let Some(image) = &common.docker {
         config.environment.kind = "docker".into();
@@ -166,7 +169,7 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     report(&result, args.quiet);
     finish_status(Phase::Finished);
     Ok(match result.exit_status.as_str() {
-        "Submitted" => 0,
+        status if is_success(status) => 0,
         INTERRUPTED_STATUS => 130,
         _ => 1,
     })

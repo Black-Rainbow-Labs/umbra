@@ -40,15 +40,25 @@ fn run(scratch: &Scratch, replies: Value, extra: &[&str], envs: &[(&str, &str)])
 fn a_compaction_that_cannot_shrink_the_history_warns_once() {
     let scratch = Scratch::new("stuck-compaction");
     let call = json!({ "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo hi" } }] });
-    let output = run(&scratch, json!([call, call, call, submit()]), &["--context-window", "1000"], &[]);
+    let output = run(&scratch, json!([call, call, call, submit()]), &["--context-window", "500"], &[]);
     assert_eq!(output.matches("compaction cannot shrink it").count(), 1, "said once, not before every call:\n{output}");
     assert!(!output.contains("could not summarize"), "{output}");
 }
 
 #[test]
-fn a_reply_without_a_command_is_shown_with_one_note() {
+fn a_reply_without_a_command_ends_the_turn_and_is_shown_once() {
+    let scratch = Scratch::new("reply");
+    let output = run(&scratch, json!(["Hello. What would you like me to do?"]), &[], &[]);
+    assert_eq!(output.matches("● Hello. What would you like me to do?").count(), 1, "{output}");
+    assert_eq!(output.matches("What would you like me to do?").count(), 1, "the turn summary does not repeat the reply:\n{output}");
+    assert!(output.contains("✔ Done · 1 step"), "{output}");
+    assert!(!output.contains("asked the model again"), "{output}");
+}
+
+#[test]
+fn a_reply_without_a_command_is_shown_with_one_note_in_the_submit_style() {
     let scratch = Scratch::new("no-command");
-    let output = run(&scratch, json!(["Hello. What would you like me to do?", submit()]), &[], &[]);
+    let output = run(&scratch, json!(["Hello. What would you like me to do?", submit()]), &["--finish", "submit"], &[]);
     assert!(output.contains("● Hello. What would you like me to do?"), "the reply is shown like any reply:\n{output}");
     assert!(output.contains("↺ no tool calls found in the response; asked the model again (1 of 3)"), "{output}");
     assert!(!output.contains("MUST include"), "the full error is only in verbose output:\n{output}");
@@ -59,7 +69,7 @@ fn a_reply_without_a_command_is_shown_with_one_note() {
 #[test]
 fn verbose_output_shows_the_whole_error_and_the_steps() {
     let scratch = Scratch::new("verbose");
-    let output = run(&scratch, json!(["Hello.", submit()]), &["--verbose"], &[]);
+    let output = run(&scratch, json!(["Hello.", submit()]), &["--verbose", "--finish", "submit"], &[]);
     assert!(output.contains("MUST include at least one tool call"), "{output}");
     assert!(output.contains("step 2 · $0.0000"), "{output}");
 }

@@ -5,6 +5,7 @@ use regex::Regex;
 
 use crate::models::action::{Action, Observation};
 use crate::models::config::Mode;
+use super::agent_service::REPLIED_STATUS;
 use crate::utils::status_bar::short_duration;
 use crate::utils::console::{clip, emit, is_quiet, is_verbose, paint, prompt_line, read_line, stdin_is_terminal, stdout_is_terminal, terminal_width, Input};
 
@@ -294,7 +295,8 @@ pub fn show_reply_text(content: &str) {
     if text.is_empty() {
         return;
     }
-    emit(&format!("{} {}", paint(CYAN, "●"), indent_after_first(&wrap(&clip(text, 4000), 2), "  ")));
+    // A reply is often the final answer of a turn, so it is shown nearly whole.
+    emit(&format!("{} {}", paint(CYAN, "●"), indent_after_first(&wrap(&clip(text, 20_000), 2), "  ")));
 }
 
 /// Prints one action: `$ command` for a shell command, `→ server.tool arguments` for an MCP tool.
@@ -484,6 +486,8 @@ pub fn show_turn_end(summary: &TurnSummary) {
 fn turn_headline(status: &str, submission: &str) -> (&'static str, String, bool) {
     match status {
         "Submitted" => (GREEN, "✔ Done".into(), true),
+        // The reply that ended the turn is already on screen.
+        REPLIED_STATUS => (GREEN, "✔ Done".into(), false),
         "UserQuit" => (DIM, "■ Ended".into(), false),
         "Interrupted" => (YELLOW, "▲ Interrupted".into(), false),
         "LimitsExceeded" => (RED, "✖ Stopped: the step or cost limit was reached".into(), true),

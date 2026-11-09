@@ -1,6 +1,8 @@
 //! The agent loop. It follows mini-swe-agent's DefaultAgent: one linear list of messages, a
-//! model call per step, the actions run in order, the observations appended, and the run ends
-//! when a command prints COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT or a limit is reached.
+//! model call per step, the actions run in order and the observations appended. In the reply
+//! style (the default) a turn ends when the model replies without a command, as in Claude Code.
+//! In the submit style it ends when a command prints COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT.
+//! Either way a limit also ends it.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -8,7 +10,7 @@ use std::time::Instant;
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use super::action_parser::{parse_text_action, parse_tool_actions};
+use super::action_parser::{parse_text_reply, parse_tool_reply, Parsed};
 use super::agent_events::AgentEvents;
 use super::compaction_service::{apply_mask, budget_for, estimate_request_tokens, estimate_tools_tokens, find_cut, mask_record, plan_mask, resolve_window, summarize, summary_record, ReportedSize, SummaryInputs};
 use super::environment::{submission_from, Environment};
@@ -21,7 +23,7 @@ use super::providers::anthropic::RAW_CONTENT_KEY;
 use super::providers::{Provider, ProviderError, ToolSpec};
 use crate::models::action::{Action, Observation};
 use crate::models::compaction::{CompactionKind, CompactionReason, CompactionRecord};
-use crate::models::config::{ActionFormat, Mode, UmbraConfig};
+use crate::models::config::{ActionFormat, Finish, Mode, UmbraConfig};
 use crate::models::context::McpTool;
 use crate::models::image::ImageData;
 use crate::models::message::{Message, Role};
@@ -54,6 +56,16 @@ pub enum Opening {
 
 /// The exit status of a run the person ended with Ctrl+C.
 pub const INTERRUPTED_STATUS: &str = "Interrupted";
+
+/// The exit status of a turn the model ended by replying without a command. It is a successful
+/// ending like `Submitted`, but the answer is already shown, so it is not shown again.
+pub const REPLIED_STATUS: &str = "Replied";
+
+/// Returns true for the exit statuses that mean the turn finished its work.
+/// @param status - the exit status
+pub fn is_success(status: &str) -> bool {
+    status == "Submitted" || status == REPLIED_STATUS
+}
 
 /// The result given to actions that did not run because the person pressed Ctrl+C.
 pub const NOT_RUN_INTERRUPTED: &str = "This action was not executed because the user interrupted the run (Ctrl+C).";
@@ -126,7 +138,7 @@ impl Agent {
     /// Prepares a run: picks the templates and builds the tool list for tool mode.
     /// @param parts - the provider, environment, MCP servers and settings
     pub fn new(parts: AgentParts) -> Self {
-        let templates = Templates::resolve(&parts.config.templates, parts.config.action_format);
+        let templates = Templates::resolve(&parts.config.templates, parts.config.action_format, parts.config.finish);
         let mcp_tools = parts.mcp.tools();
         let tools = if parts.config.action_format == ActionFormat::Tools { tool_specs(&mcp_tools) } else { Vec::new() };
         let compaction = CompactionState { tools_tokens: estimate_tools_tokens(&tools), ..Default::default() };
@@ -160,7 +172,7 @@ impl Agent {
         loop {
             let end = self.run_turn();
             self.show_turn_end(&end);
-            if end.status == "Submitted" && self.follow_up() {
+            if is_success(&end.status) && self.follow_up() {
                 continue;
             }
             self.end_turn(&end);
@@ -197,7 +209,7 @@ impl Agent {
         while self.messages.last().is_some_and(|m| m.role == Role::Exit) {
             self.messages.pop();
         }
-        self.messages.push(new_task_message(task).with_images(images));
+        self.messages.push(new_task_message(task, self.parts.config.finish).with_images(images));
     }
 
     /// Makes the step, cost and time limits count from now, for a front end that runs one turn
@@ -313,7 +325,8 @@ impl Agent {
         self.record_usage(&response);
         self.report_usage();
         let actions = match self.parse_actions(&response) {
-            Ok(actions) => actions,
+            Ok(Parsed::Actions(actions)) => actions,
+            Ok(Parsed::Reply) => return Ok(self.reply_ends_turn(&response)),
             Err(error) => return self.format_error(&response, &error),
         };
         self.format_errors = 0;
@@ -596,13 +609,26 @@ impl Agent {
         self.stats.output_tokens += response.usage.output_tokens;
     }
 
-    /// Reads the actions out of a reply in the run's action format.
+    /// Reads the actions out of a reply in the run's action format, or finds that it is a reply
+    /// to the person with no command.
     /// @param response - the model reply
-    fn parse_actions(&self, response: &ModelResponse) -> Result<Vec<Action>, String> {
+    fn parse_actions(&self, response: &ModelResponse) -> Result<Parsed, String> {
+        let finish = self.parts.config.finish;
         match self.parts.config.action_format {
-            ActionFormat::Tools => parse_tool_actions(response, &self.mcp_tools),
-            ActionFormat::Text => parse_text_action(response, &self.templates.action_regex, &self.mcp_tools),
+            ActionFormat::Tools => parse_tool_reply(response, &self.mcp_tools, finish),
+            ActionFormat::Text => parse_text_reply(response, &self.templates.action_regex, &self.mcp_tools, finish),
         }
+    }
+
+    /// A reply with no command: it is kept in the history, shown, and ends the turn. The reply
+    /// text is the turn's final output.
+    /// @param response - the model reply
+    fn reply_ends_turn(&mut self, response: &ModelResponse) -> Step {
+        self.format_errors = 0;
+        self.messages.push(assistant_message(response, &[]));
+        show_assistant(self.stats.api_calls, self.stats.instance_cost, &response.content, &[]);
+        self.parts.events.reply(&response.content, &[]);
+        Step::Exit(REPLIED_STATUS.into(), response.content.trim().to_string())
     }
 
     /// Tells the model its reply could not be used. As in mini-swe-agent, the bad reply itself is
@@ -731,6 +757,7 @@ impl Agent {
         vars["model_cost"] = json!(self.stats.instance_cost);
         vars["elapsed_seconds"] = json!(self.started.elapsed().as_secs());
         vars["action_format"] = json!(self.parts.config.action_format);
+        vars["finish"] = json!(self.parts.config.finish);
         vars["mcp_tools"] = json!(self.mcp_tools.iter().map(|t| json!({ "qualified_name": t.qualified_name(), "description": t.description, "input_schema": t.input_schema })).collect::<Vec<_>>());
         vars
     }
@@ -799,11 +826,18 @@ fn show_queued_message(text: &str) {
     show_user_text("›", text);
 }
 
-/// The message that gives the model a follow up task, or the next task of a resumed session. The
-/// person's own words are kept in `extra.user_text`.
+/// The message that gives the model a follow up task, or the next task of a resumed session. In
+/// the reply style it is the person's words as they typed them, the next message of a
+/// conversation; the submit style keeps mini-swe-agent's "new task" framing. The person's own
+/// words are kept in `extra.user_text` either way.
 /// @param task - the task text
-fn new_task_message(task: &str) -> Message {
-    Message::user(format!("The user added a new task: {task}")).with_extra(json!({ "interrupt_type": "UserNewTask", "user_text": task }))
+/// @param finish - how a turn ends
+fn new_task_message(task: &str, finish: Finish) -> Message {
+    let content = match finish {
+        Finish::Reply => task.to_string(),
+        Finish::Submit => format!("The user added a new task: {task}"),
+    };
+    Message::user(content).with_extra(json!({ "interrupt_type": "UserNewTask", "user_text": task }))
 }
 
 /// The first sentence of an error, without its final full stop and starting lowercase, for a

@@ -7,7 +7,7 @@ use minijinja::{Environment, UndefinedBehavior};
 use serde_json::{json, Value};
 
 use crate::models::action::Observation;
-use crate::models::config::{ActionFormat, TemplatesConfig};
+use crate::models::config::{ActionFormat, Finish, TemplatesConfig};
 
 const SYSTEM: &str = include_str!("../templates/system.jinja");
 const INSTANCE_TOOLS: &str = include_str!("../templates/instance_tools.jinja");
@@ -16,6 +16,8 @@ const OBSERVATION_TOOLS: &str = include_str!("../templates/observation_tools.jin
 const OBSERVATION_TEXT: &str = include_str!("../templates/observation_text.jinja");
 const FORMAT_ERROR_TOOLS: &str = include_str!("../templates/format_error_tools.jinja");
 const FORMAT_ERROR_TEXT: &str = include_str!("../templates/format_error_text.jinja");
+const INSTANCE_REPLY: &str = include_str!("../templates/instance_reply.jinja");
+const FORMAT_ERROR_REPLY: &str = include_str!("../templates/format_error_reply.jinja");
 const COMPACT_SUMMARY: &str = include_str!("../templates/compact_summary.jinja");
 const COMPACT_RESUME: &str = include_str!("../templates/compact_resume.jinja");
 
@@ -39,17 +41,21 @@ pub struct Templates {
 }
 
 impl Templates {
-    /// Picks each template from the config, or the built in one for the action format.
+    /// Picks each template from the config, or the built in one for the action format and the
+    /// finish style. The reply style gives the model the person's words as they are; the submit
+    /// style keeps mini-swe-agent's issue solving prompts.
     /// @param config - the template overrides
     /// @param format - tools or text
-    pub fn resolve(config: &TemplatesConfig, format: ActionFormat) -> Self {
+    /// @param finish - how a turn ends
+    pub fn resolve(config: &TemplatesConfig, format: ActionFormat, finish: Finish) -> Self {
         let text = format == ActionFormat::Text;
         let pick = |custom: &str, tools: &str, texts: &str| if custom.is_empty() { (if text { texts } else { tools }).to_string() } else { custom.to_string() };
+        let reply = finish == Finish::Reply;
         Templates {
             system: pick(&config.system, SYSTEM, SYSTEM),
-            instance: pick(&config.instance, INSTANCE_TOOLS, INSTANCE_TEXT),
+            instance: if reply { pick(&config.instance, INSTANCE_REPLY, INSTANCE_REPLY) } else { pick(&config.instance, INSTANCE_TOOLS, INSTANCE_TEXT) },
             observation: pick(&config.observation, OBSERVATION_TOOLS, OBSERVATION_TEXT),
-            format_error: pick(&config.format_error, FORMAT_ERROR_TOOLS, FORMAT_ERROR_TEXT),
+            format_error: if reply { pick(&config.format_error, FORMAT_ERROR_REPLY, FORMAT_ERROR_REPLY) } else { pick(&config.format_error, FORMAT_ERROR_TOOLS, FORMAT_ERROR_TEXT) },
             action_regex: if config.action_regex.is_empty() { DEFAULT_BASH_REGEX.to_string() } else { config.action_regex.clone() },
             compact_summary: pick(&config.compact_summary, COMPACT_SUMMARY, COMPACT_SUMMARY),
             compact_resume: pick(&config.compact_resume, COMPACT_RESUME, COMPACT_RESUME),
@@ -115,6 +121,21 @@ mod tests {
         assert!(message.contains("output token limit"));
         let message = render_format_error(FORMAT_ERROR_TEXT, "Expected exactly 1 action, found 2.", "stop", false).unwrap();
         assert!(message.contains("Expected exactly 1 action"));
+    }
+
+    #[test]
+    fn the_reply_style_sends_the_persons_words_as_they_are() {
+        let vars = json!({ "task": "Hello", "finish": "reply", "action_format": "tools", "system": "Darwin", "release": "", "version": "", "machine": "arm64", "cwd": "/w", "shell": "bash", "mcp_tools": [], "instructions": [], "skills": [], "mcp_instructions": [] });
+        let reply = Templates::resolve(&TemplatesConfig::default(), ActionFormat::Tools, Finish::Reply);
+        assert_eq!(render(&reply.instance, &vars).unwrap(), "Hello");
+        let system = render(&reply.system, &vars).unwrap();
+        assert!(system.contains("ends your turn") && system.contains("Working directory: /w") && system.contains("sed -i ''"));
+        assert!(!system.contains("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"));
+        let submit = Templates::resolve(&TemplatesConfig::default(), ActionFormat::Tools, Finish::Submit);
+        assert!(render(&submit.instance, &vars).unwrap().starts_with("Please solve this issue: Hello"));
+        assert!(render(&submit.system, &json!({ "action_format": "tools", "mcp_tools": [], "instructions": [], "skills": [], "mcp_instructions": [] })).unwrap().starts_with("You are a helpful assistant"));
+        let error = render_format_error(&reply.format_error, "Unknown tool 'edit'.", "stop", true).unwrap();
+        assert!(error.contains("Unknown tool 'edit'.") && !error.contains("COMPLETE_TASK"));
     }
 
     #[test]

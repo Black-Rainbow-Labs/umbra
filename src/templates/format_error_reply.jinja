@@ -1,0 +1,11 @@
+{% if finish_reason is defined and (finish_reason == "length" or (finish_reason == "tool_calls" and not has_tool_calls)) -%}
+Your previous reply reached the output token limit (finish_reason={{ finish_reason }}) and was cut off, so it was not used. Write a shorter reply. If you are still working, run a command; if you are finished, give a brief answer.
+{%- else -%}
+Your previous reply could not be used:
+
+<error>
+{{error}}
+</error>
+
+Fix it and send the reply again. If you are still working, run one command in the format the system prompt describes. If you are finished, reply in plain text without running a command, which ends your turn.
+{%- endif %}

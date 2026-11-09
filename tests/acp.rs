@@ -260,6 +260,23 @@ fn a_turn_in_yolo_mode_sends_messages_tool_calls_and_the_answer() {
 }
 
 #[test]
+fn a_reply_without_a_command_ends_the_prompt_and_is_sent_once() {
+    let s = Scratch::new("acp-reply");
+    let work = s.path("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let model = replay_model(&s, "reply.json", &json!(["Hi! What would you like to work on?", run("Listing.", "echo listed"), "One file."]));
+    let mut editor = Editor::start(&s.path("home"), &["-m", &model, "--yolo"], &[]);
+    editor.initialize();
+    let session = editor.new_session(&work);
+    assert_eq!(editor.call("session/prompt", prompt(&session, "Hello"))["result"]["stopReason"], "end_turn");
+    assert_eq!(editor.call("session/prompt", prompt(&session, "list the files"))["result"]["stopReason"], "end_turn");
+    let messages: Vec<String> = editor.updates_of("agent_message_chunk").iter().map(|u| u["content"]["text"].as_str().unwrap().to_string()).collect();
+    assert_eq!(messages, vec!["Hi! What would you like to work on?", "Listing.", "One file."]);
+    assert_eq!(editor.updates_of("tool_call").len(), 1);
+    editor.finish();
+}
+
+#[test]
 fn confirm_mode_asks_before_each_command_and_remembers_always_allow() {
     let s = Scratch::new("acp-confirm");
     let work = s.path("work");
@@ -354,7 +371,7 @@ fn a_session_continues_in_another_process_with_resume_and_load() {
     let texts: Vec<&str> = sent.as_array().unwrap().iter().filter_map(|m| m["content"].as_str()).collect();
     assert!(texts.iter().any(|t| t.contains("list the files")), "the old task reached the model");
     assert!(texts.iter().any(|t| t.contains("listed")), "the old output reached the model");
-    assert!(texts.last().unwrap().contains("The user added a new task: and then?"));
+    assert_eq!(*texts.last().unwrap(), "and then?", "a follow up is the person's words as they typed them");
     let listed = editor.call("session/list", json!({ "cwd": slash(&work) }));
     let entry = listed["result"]["sessions"].as_array().unwrap().iter().find(|e| e["sessionId"] == session.as_str()).cloned().expect("listed");
     assert_eq!(entry["title"], "list the files");

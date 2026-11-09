@@ -5,8 +5,64 @@ use serde_json::Value;
 
 use super::prompt_service::DEFAULT_MCP_REGEX;
 use crate::models::action::Action;
+use crate::models::config::Finish;
 use crate::models::context::McpTool;
 use crate::models::model_response::ModelResponse;
+
+/// What a usable reply asks for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Parsed {
+    /// Commands or MCP calls to run.
+    Actions(Vec<Action>),
+    /// A reply to the person with no command, which ends the turn in the reply style.
+    Reply,
+}
+
+/// Reads a reply that has no command. In the reply style it is an answer that ends the turn,
+/// unless it is empty or was cut off by the output limit. In the submit style it is an error.
+/// @param response - the model reply
+/// @param finish - how a turn ends
+/// @param submit_error - the error the submit style gives
+fn reply_without_action(response: &ModelResponse, finish: Finish, submit_error: &str) -> Result<Parsed, String> {
+    if finish == Finish::Submit {
+        return Err(submit_error.into());
+    }
+    if response.finish_reason == "length" {
+        return Err("Your reply was cut off by the output token limit before it was complete.".into());
+    }
+    if response.content.trim().is_empty() {
+        return Err("Your reply was empty. Reply with text for the user, or call a tool.".into());
+    }
+    Ok(Parsed::Reply)
+}
+
+/// Reads a tool mode reply: a reply with no tool call (see `reply_without_action`), or its
+/// actions. Every call must be `bash` with a `command` string, or a known `mcp__server__tool`.
+/// One bad call rejects the whole reply, as in mini-swe-agent.
+/// @param response - the model reply
+/// @param mcp_tools - the MCP tools that were offered
+/// @param finish - how a turn ends
+pub fn parse_tool_reply(response: &ModelResponse, mcp_tools: &[McpTool], finish: Finish) -> Result<Parsed, String> {
+    if response.tool_calls.is_empty() {
+        return reply_without_action(response, finish, "No tool calls found in the response. Every response MUST include at least one tool call.");
+    }
+    parse_tool_actions(response, mcp_tools).map(Parsed::Actions)
+}
+
+/// Reads a text mode reply: a reply with no block (see `reply_without_action`), or its one action.
+/// @param response - the model reply
+/// @param bash_regex - the regex with one capture group for the command
+/// @param mcp_tools - the MCP tools that were offered
+/// @param finish - how a turn ends
+pub fn parse_text_reply(response: &ModelResponse, bash_regex: &str, mcp_tools: &[McpTool], finish: Finish) -> Result<Parsed, String> {
+    match parse_text_action(response, bash_regex, mcp_tools) {
+        Err(error) if error == NO_TEXT_ACTION => reply_without_action(response, finish, &error),
+        other => other.map(Parsed::Actions),
+    }
+}
+
+/// The text mode error for a reply with no block.
+const NO_TEXT_ACTION: &str = "Expected exactly 1 action, found 0.";
 
 /// Reads the actions from a tool mode reply. Every call must be `bash` with a `command` string,
 /// or a known `mcp__server__tool`. One bad call rejects the whole reply, as in mini-swe-agent.
@@ -90,6 +146,21 @@ mod tests {
         assert_eq!(parse_text_action(&two, DEFAULT_BASH_REGEX, &[]).unwrap_err(), "Expected exactly 1 action, found 2.");
         let mcp = ModelResponse { content: "```umbra_mcp\n{\"tool\": \"mcp__docs__search\", \"arguments\": {\"q\": \"x\"}}\n```".into(), ..Default::default() };
         assert!(matches!(&parse_text_action(&mcp, DEFAULT_BASH_REGEX, &[tool()]).unwrap()[0], Action::Mcp { tool, .. } if tool == "search"));
+    }
+
+    #[test]
+    fn a_reply_without_a_command_ends_the_turn_only_in_the_reply_style() {
+        let hello = ModelResponse { content: "Hi! What would you like to work on?".into(), finish_reason: "stop".into(), ..Default::default() };
+        assert_eq!(parse_tool_reply(&hello, &[], Finish::Reply).unwrap(), Parsed::Reply);
+        assert_eq!(parse_text_reply(&hello, DEFAULT_BASH_REGEX, &[], Finish::Reply).unwrap(), Parsed::Reply);
+        assert!(parse_tool_reply(&hello, &[], Finish::Submit).unwrap_err().starts_with("No tool calls"));
+        assert_eq!(parse_text_reply(&hello, DEFAULT_BASH_REGEX, &[], Finish::Submit).unwrap_err(), NO_TEXT_ACTION);
+        let empty = ModelResponse { content: "  ".into(), ..Default::default() };
+        assert!(parse_tool_reply(&empty, &[], Finish::Reply).unwrap_err().contains("empty"));
+        let cut = ModelResponse { content: "I will now".into(), finish_reason: "length".into(), ..Default::default() };
+        assert!(parse_tool_reply(&cut, &[], Finish::Reply).unwrap_err().contains("cut off"));
+        let two = ModelResponse { content: "```umbra_bash\nls\n```\n```umbra_bash\npwd\n```".into(), ..Default::default() };
+        assert!(parse_text_reply(&two, DEFAULT_BASH_REGEX, &[], Finish::Reply).is_err());
     }
 
     #[test]

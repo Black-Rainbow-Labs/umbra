@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{read_trajectory, run_umbra, slash, text, Scratch};
+use common::{read_trajectory, recorded_requests, run_umbra, run_umbra_with, slash, text, Scratch};
 use serde_json::json;
 
 /// Writes a replay script and returns the `-m` value for it.
@@ -43,7 +43,7 @@ fn text_mode_recovers_from_a_format_error() {
         "THOUGHT: now properly.\n\n```umbra_bash\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```"
     ]));
     let traj = scratch.path("run.traj.json");
-    let output = run_umbra(&scratch.path("home"), &["-m", &model, "--text", "-y", "--no-mcp", "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "task"]);
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "--text", "--finish", "submit", "-y", "--no-mcp", "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "task"]);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let trajectory = read_trajectory(&traj);
     let errors: Vec<_> = trajectory["messages"].as_array().unwrap().iter().filter(|m| m["extra"]["interrupt_type"] == "FormatError").collect();
@@ -56,9 +56,62 @@ fn three_format_errors_in_a_row_end_the_run() {
     let scratch = Scratch::new("repeated");
     let model = script(&scratch, json!(["no action", "still none", "nothing"]));
     let traj = scratch.path("run.traj.json");
-    let output = run_umbra(&scratch.path("home"), &["-m", &model, "--text", "-y", "--no-mcp", "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "task"]);
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "--text", "--finish", "submit", "-y", "--no-mcp", "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "task"]);
     assert_eq!(output.status.code(), Some(1), "{}", text(&output));
     assert_eq!(read_trajectory(&traj)["info"]["exit_status"], "RepeatedFormatError");
+}
+
+#[test]
+fn a_greeting_gets_one_reply_and_the_turn_ends() {
+    let scratch = Scratch::new("hello");
+    let model = script(&scratch, json!(["Hi! What would you like to work on?"]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "-q", "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "Hello"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "Hi! What would you like to work on?", "--quiet prints the reply");
+    let trajectory = read_trajectory(&traj);
+    assert_eq!(trajectory["info"]["exit_status"], "Replied");
+    assert_eq!(trajectory["info"]["model_stats"]["api_calls"], 1);
+    let messages = trajectory["messages"].as_array().unwrap();
+    assert_eq!(messages[1]["content"], "Hello", "the person's words reach the model as they are");
+    assert!(!messages[0]["content"].as_str().unwrap().contains("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"));
+    let roles: Vec<&str> = messages.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, vec!["system", "user", "assistant", "exit"]);
+}
+
+#[test]
+fn the_submit_style_still_rejects_a_reply_without_a_command() {
+    let scratch = Scratch::new("hello-submit");
+    let model = script(&scratch, json!(["Hi!", "Hi!", "Hi!"]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "--finish", "submit", "-y", "--no-mcp", "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "Hello"]);
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output));
+    let trajectory = read_trajectory(&traj);
+    assert_eq!(trajectory["info"]["exit_status"], "RepeatedFormatError");
+    assert!(trajectory["messages"][1]["content"].as_str().unwrap().starts_with("Please solve this issue: Hello"));
+}
+
+#[test]
+fn a_follow_up_continues_the_conversation_after_a_reply() {
+    let scratch = Scratch::new("follow-up");
+    let record = scratch.path("requests.jsonl");
+    let model = script(&scratch, json!([
+        "Hi! What would you like to work on?",
+        { "content": "Listing.", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo listed" } }] },
+        "There is one file."
+    ]));
+    let traj = scratch.path("run.traj.json");
+    let envs = [("UMBRA_FORCE_INTERACTIVE", "1"), ("UMBRA_REPLAY_RECORD", &slash(&record) as &str)];
+    let output = run_umbra_with(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "Hello"], &envs, "list the files\n");
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let requests = recorded_requests(&record);
+    assert_eq!(requests.len(), 3);
+    let second: Vec<&str> = requests[1]["messages"].as_array().unwrap().iter().filter_map(|m| m["content"].as_str()).collect();
+    assert_eq!(second[second.len() - 2], "Hi! What would you like to work on?", "the model sees its own reply");
+    assert_eq!(second[second.len() - 1], "list the files", "the follow up is the person's words");
+    let shown = text(&output);
+    assert_eq!(shown.matches("There is one file.").count(), 1, "the final reply is shown once:\n{shown}");
+    assert_eq!(read_trajectory(&traj)["info"]["exit_status"], "Replied");
 }
 
 #[test]

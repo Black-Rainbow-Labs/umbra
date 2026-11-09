@@ -64,6 +64,8 @@ pub fn convert_mini_swe_agent_config(yaml: &Value) -> Value {
     for key in ["step_limit", "cost_limit", "wall_time_limit_seconds", "max_consecutive_format_errors", "mode", "confirm_exit", "whitelist_actions"] {
         copy_field(&agent, key, &mut out, key);
     }
+    // mini-swe-agent's templates teach the submit command, so its configs end turns that way.
+    out.insert("finish".into(), Value::String("submit".into()));
     if let Some(class) = model.get("model_class").and_then(|v| v.as_str()) {
         let format = if class.contains("textbased") { "text" } else { "tools" };
         out.insert("action_format".into(), Value::String(format.into()));
