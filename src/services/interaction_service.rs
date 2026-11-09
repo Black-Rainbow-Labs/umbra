@@ -465,6 +465,8 @@ pub fn show_turn_end(summary: &TurnSummary) {
     if is_quiet() {
         return;
     }
+    // The fullscreen view prints the last summary again on the main screen when it closes.
+    crate::utils::screen::mark_epilogue();
     let (code, headline, show_output) = turn_headline(summary.status, summary.submission);
     let mut numbers = vec![format!("{} {}", summary.steps, if summary.steps == 1 { "step" } else { "steps" })];
     if summary.cost > 0.0 {
@@ -478,6 +480,7 @@ pub fn show_turn_end(summary: &TurnSummary) {
     if !summary.session_id.is_empty() {
         emit(&format!("  {} umbra --resume {}", paint(DIM, "resume with"), summary.session_id));
     }
+    crate::utils::screen::end_epilogue();
 }
 
 /// The color, the headline and whether to show the final output, for a turn's exit status.

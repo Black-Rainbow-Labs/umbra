@@ -6,6 +6,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, OnceLock};
 
 use super::interrupt;
+use super::keys::KeyDecoder;
+use super::screen::{self, KeyOutcome};
 use super::status_bar::{render_status, Phase, StatusInfo};
 
 /// When set, the run prints nothing but its final answer and errors.
@@ -58,6 +60,10 @@ pub fn paint(code: &str, text: &str) -> String {
 /// through here or through `prompt_line`.
 /// @param text - the text, without the final line break
 pub fn emit(text: &str) {
+    if screen::is_active() {
+        screen::push_text(text);
+        return;
+    }
     let mut footer = FOOTER.lock().unwrap_or_else(|e| e.into_inner());
     let mut out = String::new();
     footer.erase(&mut out);
@@ -145,6 +151,16 @@ pub fn enable_status_bar(wanted: bool) -> bool {
     on
 }
 
+/// Opens the fullscreen view when it was asked for and the terminal can show it: stdin and stdout
+/// are real terminals, the run is not quiet, `TERM` is not `dumb`, ANSI codes work, and
+/// `UMBRA_FULLSCREEN` is not `0`. Returns true when the view opened.
+/// @param wanted - false when the config or `--no-fullscreen` turned it off
+pub fn start_fullscreen(wanted: bool) -> bool {
+    let allowed = std::env::var("UMBRA_FULLSCREEN").map_or(true, |v| v != "0");
+    let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && std::env::var("TERM").map_or(true, |t| t != "dumb");
+    wanted && allowed && terminal && !is_quiet() && !USE_STDERR.load(Ordering::SeqCst) && enable_ansi() && screen::enter()
+}
+
 /// Returns true when the status bar is on.
 pub fn status_bar_on() -> bool {
     FOOTER.lock().unwrap_or_else(|e| e.into_inner()).on
@@ -155,6 +171,11 @@ pub fn status_bar_on() -> bool {
 pub fn update_status(info: StatusInfo) {
     let mut footer = FOOTER.lock().unwrap_or_else(|e| e.into_inner());
     if !footer.on {
+        return;
+    }
+    if screen::is_active() {
+        screen::set_status(Some(render_status(&info, terminal_width(), color_enabled())));
+        footer.info = Some(info);
         return;
     }
     footer.info = Some(info);
@@ -168,6 +189,8 @@ pub fn update_status(info: StatusInfo) {
 /// scrollback keeps the session's final numbers.
 /// @param phase - the phase the last line shows
 pub fn finish_status(phase: Phase) {
+    // The fullscreen view prints its own last lines when it closes; this runs after that.
+    screen::leave();
     let mut footer = FOOTER.lock().unwrap_or_else(|e| e.into_inner());
     if !footer.on {
         return;
@@ -284,29 +307,83 @@ fn lines() -> &'static Mutex<Receiver<Option<String>>> {
 /// Reads that may fail because a Ctrl+C cut them short before stdin counts as closed.
 const MAX_INTERRUPTED_READS: u32 = 50;
 
-/// Sends each line of stdin through the channel, then None at the end of input. On Windows a
-/// console event can end a pending read with an error or with no bytes; when Ctrl+C was just
-/// pressed that is not the end of input, so the read is tried again.
+/// Sends each line of stdin through the channel, then None at the end of input. Inline, the
+/// terminal collects a line and the bytes are split at line breaks. In the fullscreen view the
+/// terminal is in raw mode, so the bytes are keys: they edit the view's input line, and Enter
+/// sends it. On Windows a console event can end a pending read with an error or with no bytes;
+/// when Ctrl+C was just pressed that is not the end of input, so the read is tried again.
 /// @param sender - the channel to the prompts
 fn read_stdin_lines(sender: Sender<Option<String>>) {
-    let stdin = std::io::stdin();
+    let mut stdin = std::io::stdin();
     let mut interrupted_reads = 0;
+    let mut buffer = [0u8; 4096];
+    let mut partial: Vec<u8> = Vec::new();
+    let mut keys = KeyDecoder::default();
     loop {
-        let mut line = String::new();
-        let line = match stdin.read_line(&mut line) {
+        let read = match std::io::Read::read(&mut stdin, &mut buffer) {
             Ok(0) | Err(_) if interrupted_reads < MAX_INTERRUPTED_READS && read_was_interrupted() => {
                 interrupted_reads += 1;
                 continue;
             }
-            Ok(0) | Err(_) => None,
-            Ok(_) => Some(line.trim_end_matches(['\r', '\n']).to_string()),
+            Ok(0) | Err(_) => 0,
+            Ok(count) => count,
         };
         interrupted_reads = 0;
-        let ended = line.is_none();
-        if sender.send(line).is_err() || ended {
-            return;
+        let lines = if read == 0 {
+            end_of_input(&mut partial)
+        } else if screen::is_active() {
+            keys_to_lines(&mut keys, &buffer[..read])
+        } else {
+            split_lines(&mut partial, &buffer[..read])
+        };
+        for line in lines {
+            let ended = line.is_none();
+            if sender.send(line).is_err() || ended {
+                return;
+            }
         }
     }
+}
+
+/// The lines left at the end of input: an unfinished last line, then the end marker.
+/// @param partial - bytes read after the last line break
+fn end_of_input(partial: &mut Vec<u8>) -> Vec<Option<String>> {
+    let mut lines = Vec::new();
+    if !partial.is_empty() {
+        lines.push(Some(String::from_utf8_lossy(partial).trim_end_matches('\r').to_string()));
+        partial.clear();
+    }
+    lines.push(None);
+    lines
+}
+
+/// Adds bytes to the unfinished line and returns every line they complete, without its ending.
+/// @param partial - bytes read after the last line break
+/// @param bytes - the bytes just read
+fn split_lines(partial: &mut Vec<u8>, bytes: &[u8]) -> Vec<Option<String>> {
+    partial.extend_from_slice(bytes);
+    let mut lines = Vec::new();
+    while let Some(at) = partial.iter().position(|b| *b == b'\n') {
+        let line: Vec<u8> = partial.drain(..=at).collect();
+        lines.push(Some(String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']).to_string()));
+    }
+    lines
+}
+
+/// Applies the keys in the bytes to the fullscreen view and returns the lines sent with Enter,
+/// and the end marker for Ctrl+D on an empty line.
+/// @param keys - the key decoder
+/// @param bytes - the bytes just read
+fn keys_to_lines(keys: &mut KeyDecoder, bytes: &[u8]) -> Vec<Option<String>> {
+    let mut lines = Vec::new();
+    for key in keys.feed(bytes) {
+        match screen::handle_key(key) {
+            KeyOutcome::Line(line) => lines.push(Some(line)),
+            KeyOutcome::Eof => lines.push(None),
+            KeyOutcome::None => {}
+        }
+    }
+    lines
 }
 
 /// Returns true when a failed or empty read came from a Ctrl+C. The handler runs on its own
@@ -348,10 +425,26 @@ pub fn take_queued_lines() -> Vec<String> {
 /// @param prompt - the text shown before the cursor
 pub fn prompt_line(prompt: &str) -> Input {
     show_prompt(prompt);
+    let input = wait_for_line();
+    if screen::is_active() {
+        // Nothing echoed the typed line, so it is added to the transcript after its prompt.
+        if let Input::Line(line) = &input {
+            let tail = prompt.rsplit('\n').next().unwrap_or("");
+            screen::push_text(&format!("{}{line}", paint("1;33", tail)));
+        }
+        screen::set_prompt("");
+    }
+    input
+}
+
+/// Waits for one line, end of input, or Ctrl+C.
+fn wait_for_line() -> Input {
     let receiver = lines().lock().unwrap_or_else(|e| e.into_inner());
     loop {
         if interrupt::take() {
-            write_out("\n");
+            if !screen::is_active() {
+                write_out("\n");
+            }
             return Input::Interrupted;
         }
         if STDIN_CLOSED.load(Ordering::SeqCst) {
@@ -377,6 +470,17 @@ fn show_prompt(prompt: &str) {
         Some(index) => prompt.split_at(index + 1),
         None => ("", prompt),
     };
+    if screen::is_active() {
+        let status = footer.info.as_ref().filter(|_| footer.on).map(|info| render_status(info, terminal_width(), color_enabled()));
+        drop(footer);
+        let head = head.trim_end_matches('\n');
+        if !head.is_empty() {
+            screen::push_text(&paint("1;33", head));
+        }
+        screen::set_status(status);
+        screen::set_prompt(&paint("1;33", tail));
+        return;
+    }
     let mut out = String::new();
     footer.erase(&mut out);
     if !head.is_empty() {

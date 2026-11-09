@@ -339,7 +339,11 @@ impl Agent {
             None => self.parts.interaction.confirm(&actions),
         };
         match decision {
-            Decision::Run => self.execute_actions(&actions),
+            Decision::Run => {
+                // A confirmation prompt showed the agent as waiting; it is running again.
+                self.show_status(running_phase(&actions));
+                self.execute_actions(&actions)
+            }
             Decision::Reject(reason) => {
                 self.push_observations(&actions, &[], Some(&reason))?;
                 Ok(Step::Continue)

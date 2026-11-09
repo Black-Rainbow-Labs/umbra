@@ -77,6 +77,7 @@ fn on_press() {
     PENDING.store(true, Ordering::SeqCst);
     let presses = PRESSES.fetch_add(1, Ordering::SeqCst) + 1;
     if presses >= FORCE_EXIT_PRESSES {
+        super::screen::leave_now();
         eprintln!("\numbra: Ctrl+C pressed {presses} times, exiting");
         std::process::exit(130);
     }

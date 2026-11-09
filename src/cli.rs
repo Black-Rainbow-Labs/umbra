@@ -111,6 +111,10 @@ pub struct RunArgs {
     /// Do not draw the status bar under the output.
     #[arg(long)]
     pub no_status_bar: bool,
+    /// Print the session inline below the shell prompt instead of opening the fullscreen view on
+    /// the terminal's alternate screen.
+    #[arg(long)]
+    pub no_fullscreen: bool,
     /// Print every detail of the run: step headings with the cost, whole command outputs, full
     /// format errors and every compaction attempt.
     #[arg(long)]

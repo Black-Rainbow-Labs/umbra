@@ -24,7 +24,8 @@ use crate::repositories::config_repository::{load_config, merge_values};
 use crate::repositories::session_repository::new_session_id;
 use crate::repositories::trajectory_repository::trajectory_path;
 use crate::utils::banner::{display_folder, render_banner, BannerInfo};
-use crate::utils::console::{color_enabled, emit, paint, enable_status_bar, finish_status, is_verbose, set_quiet, set_verbose, stdin_is_terminal, stdout_is_terminal, terminal_width, Input};
+use crate::utils::console::{color_enabled, emit, paint, enable_status_bar, finish_status, is_verbose, set_quiet, set_verbose, start_fullscreen, stdin_is_terminal, stdout_is_terminal, terminal_width, Input};
+use crate::utils::screen;
 use crate::utils::status_bar::Phase;
 use crate::utils::interrupt;
 use crate::utils::paths::{absolute_path, project_root, umbra_home};
@@ -147,6 +148,9 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
         bail!("stdin is not a terminal, so Umbra cannot ask before running commands. Pass --yolo to run without asking");
     }
     let context = load_run_context(&config, &discovery_context(&config, &cwd));
+    // Closes the fullscreen view on every way out of this function, errors included.
+    let _view = LeaveViewOnDrop;
+    start_fullscreen(config.fullscreen && !args.no_fullscreen);
     if !args.quiet {
         show_banner(&config, &cwd, &context);
         if let Some(notice) = &resume_notice {
@@ -166,6 +170,8 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
         None => Opening::New { task, images },
     };
     let result = agent.run(opening)?;
+    // Back on the main screen first, so the trajectory line stays in the shell.
+    screen::leave();
     report(&result, args.quiet);
     finish_status(Phase::Finished);
     Ok(match result.exit_status.as_str() {
@@ -399,6 +405,17 @@ fn report(result: &RunResult, quiet: bool) {
         show_event(Tone::Info, "·", &details);
     }
     emit(&paint("90", &format!("  trajectory {}", result.trajectory_path.display())));
+}
+
+/// Closes the fullscreen view when dropped, so an error that ends a run early still gives the
+/// shell its screen back. Closing an already closed view does nothing.
+struct LeaveViewOnDrop;
+
+impl Drop for LeaveViewOnDrop {
+    /// Closes the fullscreen view.
+    fn drop(&mut self) {
+        screen::leave();
+    }
 }
 
 /// A provider that is never called, used when only the prompts are printed.
