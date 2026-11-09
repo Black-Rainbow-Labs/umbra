@@ -7,4 +7,5 @@ pub mod http;
 pub mod interrupt;
 pub mod paths;
 pub mod process;
+pub mod status_bar;
 pub mod tokens;

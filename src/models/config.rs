@@ -45,6 +45,9 @@ pub struct UmbraConfig {
     pub confirm_exit: bool,
     /// An empty line at the task prompt or the follow up prompt asks again instead of ending the run.
     pub keep_open: bool,
+    /// Draw the status bar under the output in a terminal: context use, room before compaction
+    /// and the compaction count.
+    pub status_bar: bool,
     /// Regexes. A command that matches one at its start runs without confirmation.
     pub whitelist_actions: Vec<String>,
     /// Where the trajectory JSON is written. Empty means `~/.umbra/trajectories/<time>.traj.json`.
@@ -76,6 +79,7 @@ impl Default for UmbraConfig {
             max_consecutive_format_errors: 3,
             confirm_exit: true,
             keep_open: false,
+            status_bar: true,
             whitelist_actions: Vec::new(),
             output: String::new(),
             environment: EnvironmentConfig::default(),

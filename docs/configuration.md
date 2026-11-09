@@ -25,6 +25,7 @@ cost_limit = 3.0                       # dollars; 0 means no limit
 wall_time_limit_seconds = 0
 max_consecutive_format_errors = 3
 confirm_exit = true                    # ask for a follow up task when the agent finishes
+status_bar = true                      # context and compaction bar under the output
 whitelist_actions = ["ls", "cat ", "git (status|diff|log)"]   # run without asking
 output = ""                            # trajectory path; empty means ~/.umbra/trajectories/<time>.traj.json
 
@@ -133,6 +134,7 @@ detect_paths = true                    # attach image files named in a task or a
 | `wall_time_limit_seconds` | 0 | Stop after this many seconds. |
 | `max_consecutive_format_errors` | 3 | End the run after this many unusable replies in a row. |
 | `confirm_exit` | true | When the agent finishes in a terminal, ask for a follow up task. |
+| `status_bar` | true | Draw the status bar under the output in a terminal: what the agent is doing, how full the context window is, the tokens left before compaction, and the session's compaction count. `--no-status-bar` or `UMBRA_STATUS_BAR=0` turns it off for a run. |
 | `whitelist_actions` | empty | Regexes matched at the start of a command. A match runs without asking in confirm mode. |
 | `environment.timeout` | 30 | Seconds before a command and everything it started is killed. |
 | `environment.shell` | bash | The program and flags that run a command string, such as `["zsh", "-c"]`. |

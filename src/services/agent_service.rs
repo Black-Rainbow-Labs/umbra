@@ -19,7 +19,7 @@ use super::prompt_service::{render, render_format_error, render_observation, Tem
 use super::providers::anthropic::RAW_CONTENT_KEY;
 use super::providers::{Provider, ProviderError, ToolSpec};
 use crate::models::action::{Action, Observation};
-use crate::models::compaction::{CompactionReason, CompactionRecord};
+use crate::models::compaction::{CompactionKind, CompactionReason, CompactionRecord};
 use crate::models::config::{ActionFormat, Mode, UmbraConfig};
 use crate::models::context::McpTool;
 use crate::models::image::ImageData;
@@ -32,6 +32,7 @@ use crate::repositories::trajectory_repository::save_trajectory;
 use crate::utils::console;
 use crate::utils::interrupt;
 use crate::utils::paths::absolute_path;
+use crate::utils::status_bar::{Phase, StatusInfo};
 
 /// How a run ended.
 #[derive(Debug, Clone)]
@@ -131,6 +132,7 @@ impl Agent {
     pub fn run(&mut self, opening: Opening) -> Result<RunResult> {
         self.open(opening)?;
         self.save();
+        self.show_status(Phase::Starting);
         // Read the terminal from the start, so a line typed while the first steps run is queued
         // for the next model call rather than left waiting until the run ends.
         if self.parts.interaction.interactive {
@@ -180,6 +182,7 @@ impl Agent {
     /// @param submission - the final output
     fn finish_or_continue(&mut self, status: String, submission: String) -> bool {
         if status == "Submitted" {
+            self.show_status(Phase::Waiting);
             while let Some(task) = self.parts.interaction.follow_up_task() {
                 if let Some(focus) = compact_command(&task) {
                     self.compact_by_summary(CompactionReason::Manual, focus);
@@ -213,6 +216,7 @@ impl Agent {
             return self.interrupted();
         }
         self.stats.api_calls += 1;
+        self.show_status(Phase::Thinking);
         let response = match self.call_model() {
             Ok(response) => response,
             Err(_) if interrupt::take() => return self.interrupted(),
@@ -226,6 +230,7 @@ impl Agent {
         self.format_errors = 0;
         self.messages.push(assistant_message(&response, &actions));
         show_assistant(self.stats.api_calls, self.stats.instance_cost, &response.content, &actions);
+        self.show_status(running_phase(&actions));
         match self.parts.interaction.confirm(&actions) {
             Decision::Run => self.execute_actions(&actions),
             Decision::Reject(reason) => {
@@ -262,6 +267,7 @@ impl Agent {
     /// ask, so the run ends.
     fn interrupted(&mut self) -> Result<Step> {
         self.save();
+        self.show_status(Phase::Waiting);
         if !self.parts.interaction.interactive {
             return Ok(Step::Exit(INTERRUPTED_STATUS.into(), String::new()));
         }
@@ -391,6 +397,7 @@ impl Agent {
         show_notice("compaction", &format!("removed {} old command outputs: about {before} to {after} tokens of a {window} token window", indexes.len()));
         self.compaction.records.push(mask_record(reason, self.stats.api_calls, (before, after, window), indexes));
         self.stats.compactions += 1;
+        self.show_status(Phase::Compacting);
     }
 
     /// Asks the model for a summary of the middle of the history and continues from it. A failed
@@ -401,6 +408,7 @@ impl Agent {
         let window = self.context_window();
         let keep_recent = budget_for(&self.parts.config.compaction, window).keep_recent;
         let before = self.request_estimate();
+        self.show_status(Phase::Compacting);
         let vars = self.template_vars("");
         let inputs = SummaryInputs { provider: self.parts.provider.as_mut(), tools: &self.tools, vars: &vars, summary_template: &self.templates.compact_summary, resume_template: &self.templates.compact_resume, focus };
         let outcome = match summarize(&self.messages, keep_recent, inputs) {
@@ -417,7 +425,25 @@ impl Agent {
         show_notice("compaction", &format!("summarized {} messages: about {before} to {after} tokens of a {window} token window", outcome.removed.len()));
         self.compaction.records.push(summary_record(reason, self.stats.api_calls, (before, after, window), &outcome));
         self.stats.compactions += 1;
+        self.show_status(Phase::Compacting);
         true
+    }
+
+    /// Draws the status bar with the run's current numbers: the size of the next request, the
+    /// context window, where compaction starts, and the session's compaction count. Does nothing
+    /// when the bar is off, so a run without a terminal never asks the provider for its window.
+    /// @param phase - what the agent is doing now
+    fn show_status(&mut self, phase: Phase) {
+        if !console::status_bar_on() {
+            return;
+        }
+        let window = self.context_window();
+        let compaction = &self.parts.config.compaction;
+        let trigger = compaction.enabled.then(|| budget_for(compaction, window).trigger);
+        let summaries = self.compaction.records.iter().filter(|r| r.kind == CompactionKind::Summary).count() as u32;
+        let model = self.parts.provider.model_name().to_string();
+        let info = StatusInfo { phase, model, used: self.request_estimate(), window, trigger, compactions: self.stats.compactions, summaries, step: self.stats.api_calls, cost: self.stats.instance_cost, elapsed_secs: self.started.elapsed().as_secs() };
+        console::update_status(info);
     }
 
     /// Adds a call's tokens and cost to the totals.
@@ -521,6 +547,7 @@ impl Agent {
         };
         let action = Action::Bash { command: command.clone(), tool_call_id: None };
         self.messages.push(Message::user(format!("User command: \n```bash\n{command}\n```")).with_extra(json!({ "actions": [action] })));
+        self.show_status(running_phase(std::slice::from_ref(&action)));
         let observation = self.execute(&action);
         show_observation(&observation);
         let submitted = submission_from(&observation);
@@ -605,7 +632,7 @@ fn show_queued_message(text: &str) {
         return;
     }
     console::heading("message from the user", "1;35");
-    println!("{text}");
+    console::emit(text);
 }
 
 fn new_task_message(task: &str) -> Message {
@@ -618,6 +645,20 @@ fn new_task_message(task: &str) -> Message {
 fn compact_command(text: &str) -> Option<&str> {
     let rest = text.trim().strip_prefix("/compact")?;
     (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
+}
+
+/// The status bar phase for a set of actions: the program a command starts, or the MCP tool,
+/// and how many more actions follow.
+/// @param actions - the actions about to run
+fn running_phase(actions: &[Action]) -> Phase {
+    let Some(first) = actions.first() else { return Phase::Running(String::new()) };
+    let name = match first {
+        Action::Bash { command, .. } => command.split_whitespace().next().unwrap_or("").rsplit(['/', '\\']).next().unwrap_or("").to_string(),
+        Action::Mcp { server, tool, .. } => format!("{server}.{tool}"),
+    };
+    let name: String = name.chars().take(32).collect();
+    let more = if actions.len() > 1 { format!(" +{}", actions.len() - 1) } else { String::new() };
+    Phase::Running(format!("{name}{more}"))
 }
 
 /// Seconds since the Unix epoch, as a float.

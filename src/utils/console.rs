@@ -6,6 +6,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, OnceLock};
 
 use super::interrupt;
+use super::status_bar::{render_status, Phase, StatusInfo};
 
 /// When set, the run prints nothing but its final answer and errors.
 static QUIET: AtomicBool = AtomicBool::new(false);
@@ -37,7 +38,179 @@ pub fn paint(code: &str, text: &str) -> String {
 /// @param label - the heading text
 /// @param code - the ANSI color for the heading
 pub fn heading(label: &str, code: &str) {
-    println!("\n{}", paint(code, &format!("── {label} ──")));
+    emit(&format!("\n{}", paint(code, &format!("── {label} ──"))));
+}
+
+/// Prints text and a line break. While the status bar is on, the bar is erased first and drawn
+/// again under the text, so it stays at the end of the output. Every line a run prints goes
+/// through here or through `prompt_line`.
+/// @param text - the text, without the final line break
+pub fn emit(text: &str) {
+    let mut footer = FOOTER.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = String::new();
+    footer.erase(&mut out);
+    out.push_str(text);
+    out.push('\n');
+    footer.draw(&mut out);
+    write_out(&out);
+}
+
+/// Writes text to stdout at once and flushes it.
+/// @param text - the text, escape codes included
+fn write_out(text: &str) {
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(text.as_bytes());
+    let _ = stdout.flush();
+}
+
+/// The status bar's state. The bar is drawn on the line under the cursor, so the cursor sits on
+/// an empty line between the output and the bar, where a prompt is written and typed text echoes.
+#[derive(Default)]
+struct Footer {
+    /// True once the run turned the bar on.
+    on: bool,
+    /// The numbers to show. Nothing is drawn before the first update.
+    info: Option<StatusInfo>,
+    /// True while the bar is on screen under the cursor.
+    drawn: bool,
+}
+
+impl Footer {
+    /// Adds the codes that erase the bar: back to the start of the line, then clear to the end of
+    /// the screen. The cursor is then where the next output belongs. If the person pressed Enter
+    /// after typing, the cursor moved down onto the bar's line, and this still erases the bar.
+    /// @param out - the text being built for stdout
+    fn erase(&mut self, out: &mut String) {
+        if self.drawn {
+            out.push_str("\r\x1b[J");
+            self.drawn = false;
+        }
+    }
+
+    /// Adds the codes that draw the bar on the next line and bring the cursor back to the start of
+    /// the empty line above it. The cursor must be at the start of a line.
+    /// @param out - the text being built for stdout
+    fn draw(&mut self, out: &mut String) {
+        let Some(info) = self.info.as_ref().filter(|_| self.on) else { return };
+        out.push('\n');
+        out.push_str(&render_status(info, terminal_width(), color_enabled()));
+        out.push_str("\x1b[1A\r");
+        self.drawn = true;
+    }
+}
+
+/// The status bar, shared by everything that prints during a run.
+static FOOTER: Mutex<Footer> = Mutex::new(Footer { on: false, info: None, drawn: false });
+
+/// Turns the status bar on when it was asked for and the output can show it: stdout is a terminal
+/// that understands ANSI codes and the run is not quiet. `UMBRA_STATUS_BAR=0` turns it off and
+/// `UMBRA_STATUS_BAR=1` turns it on even without a terminal, which is how the tests read it.
+/// Returns true when the bar is on.
+/// @param wanted - false when the config or `--no-status-bar` turned it off
+pub fn enable_status_bar(wanted: bool) -> bool {
+    let forced = std::env::var("UMBRA_STATUS_BAR").ok();
+    let on = match forced.as_deref() {
+        Some("0") => false,
+        Some("1") => wanted && !is_quiet(),
+        _ => wanted && !is_quiet() && std::io::stdout().is_terminal() && std::env::var("TERM").map_or(true, |t| t != "dumb") && enable_ansi(),
+    };
+    FOOTER.lock().unwrap_or_else(|e| e.into_inner()).on = on;
+    on
+}
+
+/// Returns true when the status bar is on.
+pub fn status_bar_on() -> bool {
+    FOOTER.lock().unwrap_or_else(|e| e.into_inner()).on
+}
+
+/// Shows new numbers in the status bar and draws it again where it is.
+/// @param info - the numbers to show
+pub fn update_status(info: StatusInfo) {
+    let mut footer = FOOTER.lock().unwrap_or_else(|e| e.into_inner());
+    if !footer.on {
+        return;
+    }
+    footer.info = Some(info);
+    let mut out = String::new();
+    footer.erase(&mut out);
+    footer.draw(&mut out);
+    write_out(&out);
+}
+
+/// Ends the status bar: erases it and prints it once more as an ordinary last line, so the
+/// scrollback keeps the session's final numbers.
+/// @param phase - the phase the last line shows
+pub fn finish_status(phase: Phase) {
+    let mut footer = FOOTER.lock().unwrap_or_else(|e| e.into_inner());
+    if !footer.on {
+        return;
+    }
+    let mut out = String::new();
+    footer.erase(&mut out);
+    if let Some(info) = footer.info.as_mut() {
+        info.phase = phase;
+        out.push_str(&render_status(info, terminal_width(), color_enabled()));
+        out.push('\n');
+    }
+    footer.on = false;
+    write_out(&out);
+}
+
+/// The terminal's width in columns: asked of the console, then `COLUMNS`, then 100.
+fn terminal_width() -> usize {
+    console_width().or_else(|| std::env::var("COLUMNS").ok().and_then(|c| c.trim().parse().ok())).filter(|w| *w > 0).unwrap_or(100)
+}
+
+/// Asks the Windows console for the width of its visible window.
+#[cfg(windows)]
+fn console_width() -> Option<usize> {
+    use windows_sys::Win32::System::Console::{GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE};
+    // SAFETY: the handle is the process's own stdout and the struct is written by the call.
+    unsafe {
+        let mut info: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+        if GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &mut info) == 0 {
+            return None;
+        }
+        Some((info.srWindow.Right - info.srWindow.Left + 1).max(0) as usize)
+    }
+}
+
+/// Asks the terminal for its width.
+#[cfg(unix)]
+fn console_width() -> Option<usize> {
+    // SAFETY: TIOCGWINSZ writes a winsize struct for the terminal on stdout.
+    unsafe {
+        let mut size: libc::winsize = std::mem::zeroed();
+        (libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) == 0 && size.ws_col > 0).then_some(size.ws_col as usize)
+    }
+}
+
+/// No way to ask on other systems.
+#[cfg(not(any(windows, unix)))]
+fn console_width() -> Option<usize> {
+    None
+}
+
+/// Turns on ANSI escape handling in a Windows console. A terminal that is not a console, such as
+/// the one Git Bash's mintty provides, already handles them.
+#[cfg(windows)]
+fn enable_ansi() -> bool {
+    use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_OUTPUT_HANDLE};
+    // SAFETY: the handle is the process's own stdout.
+    unsafe {
+        let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        let mut mode = 0;
+        if GetConsoleMode(handle, &mut mode) == 0 {
+            return true;
+        }
+        mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0 || SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0
+    }
+}
+
+/// Unix terminals handle ANSI escapes.
+#[cfg(not(windows))]
+fn enable_ansi() -> bool {
+    true
 }
 
 /// Shortens text to at most `limit` characters by cutting out the middle.
@@ -147,12 +320,11 @@ pub fn take_queued_lines() -> Vec<String> {
 /// pending answers at once, and either way it is handled here.
 /// @param prompt - the text shown before the cursor
 pub fn prompt_line(prompt: &str) -> Input {
-    print!("{}", paint("1;33", prompt));
-    let _ = std::io::stdout().flush();
+    show_prompt(prompt);
     let receiver = lines().lock().unwrap_or_else(|e| e.into_inner());
     loop {
         if interrupt::take() {
-            println!();
+            write_out("\n");
             return Input::Interrupted;
         }
         if STDIN_CLOSED.load(Ordering::SeqCst) {
@@ -164,6 +336,28 @@ pub fn prompt_line(prompt: &str) -> Input {
             Err(RecvTimeoutError::Timeout) => continue,
         }
     }
+}
+
+/// Prints a prompt with the cursor after it. While the status bar is on, the bar shows that Umbra
+/// is waiting and is drawn under the prompt's last line, where the person types.
+/// @param prompt - the prompt text, which may have several lines
+fn show_prompt(prompt: &str) {
+    let mut footer = FOOTER.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(info) = footer.info.as_mut() {
+        info.phase = Phase::Waiting;
+    }
+    let (head, tail) = match prompt.rfind('\n') {
+        Some(index) => prompt.split_at(index + 1),
+        None => ("", prompt),
+    };
+    let mut out = String::new();
+    footer.erase(&mut out);
+    if !head.is_empty() {
+        out.push_str(&paint("1;33", head));
+    }
+    footer.draw(&mut out);
+    out.push_str(&paint("1;33", tail));
+    write_out(&out);
 }
 
 /// Prints a prompt and reads one line. Returns None at end of input or on Ctrl+C.

@@ -69,6 +69,9 @@ pub struct RunArgs {
     /// stray Enter must not end the agent.
     #[arg(long)]
     pub keep_open: bool,
+    /// Do not draw the status bar under the output.
+    #[arg(long)]
+    pub no_status_bar: bool,
     /// Print only the final output (and errors), for scripts.
     #[arg(short, long)]
     pub quiet: bool,

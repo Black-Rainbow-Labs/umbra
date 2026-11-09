@@ -198,6 +198,30 @@ task prompt or the follow up prompt asks again instead of ending the run, and a 
 the comment prompt carries on instead of ending it. Only `/q`, the end of input or a third
 unhandled Ctrl+C ends such a run.
 
+**The status bar** sits under the output in a terminal and is drawn again after every line Umbra
+prints, so it always shows the current numbers:
+
+```text
+ ● thinking │ context ████████░░░░░░░░░░░┊░░░░  33% · 42.6k / 128k │ 59.8k left before compaction at 80% │ ↻ 2 compactions (1 summary) │ step 14 │ 12m04s │ qwen-3.8
+```
+
+| Part | What it shows |
+|---|---|
+| `● thinking` | What the agent is doing: `starting`, `thinking` (a model call), `running <program>`, `compacting`, `waiting for you` (a prompt) or `finished`. |
+| context bar | How full the context window is. The bar fills in eighths of a cell, and `┊` marks where compaction starts. It is green while the request is under 60% of the compaction point, yellow under 85%, and red past that. |
+| `33% · 42.6k / 128k` | The estimated size of the next request, as a share of the window and in tokens. This is the number compaction is decided on. |
+| `59.8k left before compaction at 80%` | The tokens left before the next compaction runs. `compaction off` with `--no-compact`. |
+| `↻ 2 compactions (1 summary)` | The compactions this session has had, counted across `--resume`, and how many of them were summaries. The rest replaced old command outputs. |
+| `step 14`, `$0.43`, `12m04s`, model | Model calls in the session, the cost (left out for a free local model), the time since this run started, and the model. |
+
+When the terminal is narrow, the parts lower in the table shorten or are left out first; the bar
+and the percentage stay. The bar is erased before each line of output and drawn again under it, so
+the scrollback never keeps old copies. When the run ends, it is printed once more as the last
+line. Prompts are written on the line above the bar, and what you type echoes there. It is only
+drawn when stdout is a terminal and the run is not `--quiet`. `--no-status-bar`, `status_bar =
+false` in the config, or `UMBRA_STATUS_BAR=0` turns it off; `UMBRA_STATUS_BAR=1` draws it even
+into a pipe, which is how the tests read it.
+
 **Images** go to the model with the task:
 
 ```bash
@@ -305,6 +329,7 @@ The listing commands take `--json`. The options used most:
 | `-o, --output <file>` | Where to write the trajectory |
 | `--exit-immediately` | Do not ask for a follow up task |
 | `-q, --quiet` | Print only the final answer |
+| `--no-status-bar` | Do not draw the status bar under the output |
 | `--no-compact` | Never compact the history |
 | `--context-window <tokens>` | The model's context window, for compaction |
 | `-i, --image <file>` | Attach an image to the task. Repeatable. |
@@ -326,7 +351,7 @@ src/
   services/              the agent loop, model providers, environments, MCP client,
                          prompt templates, the confirm prompt
   templates/             the Jinja prompt templates
-  utils/                 paths, frontmatter, variable expansion, HTTP, terminal output
+  utils/                 paths, frontmatter, variable expansion, HTTP, terminal output, status bar
 tests/                   integration tests that run the real binary
 docs/                    the documents linked above
 tasks/                   the design document

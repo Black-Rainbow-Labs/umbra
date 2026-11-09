@@ -1245,6 +1245,7 @@ dependencies = [
  "ctrlc",
  "dirs",
  "image",
+ "libc",
  "minijinja",
  "regex",
  "serde",

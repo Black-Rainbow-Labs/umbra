@@ -5,7 +5,7 @@ use regex::Regex;
 
 use crate::models::action::{Action, Observation};
 use crate::models::config::Mode;
-use crate::utils::console::{clip, heading, is_quiet, paint, prompt_line, read_line, stdin_is_terminal, Input};
+use crate::utils::console::{clip, emit, heading, is_quiet, paint, prompt_line, read_line, stdin_is_terminal, Input};
 
 /// What the person decided about a set of actions.
 pub enum Decision {
@@ -171,7 +171,7 @@ impl Interaction {
                     continue;
                 }
                 self.mode = mode;
-                println!("Switched to {} mode.", mode_name(mode));
+                emit(&format!("Switched to {} mode.", mode_name(mode)));
                 return Comment::Text(TEMPORARY_INTERRUPTION.into());
             }
             match text {
@@ -215,12 +215,12 @@ fn mode_name(mode: Mode) -> &'static str {
 /// Prints the comment prompt's commands.
 /// @param mode - the current mode
 fn print_comment_help(mode: Mode) {
-    println!("  Current mode: {}\n  text            send it to the model and carry on\n  Enter           carry on\n  /y              switch to yolo mode (run commands without asking)\n  /c              switch to confirm mode (ask before running commands)\n  /u              switch to human mode (you type the commands)\n  /compact [focus] compact the history now\n  /q or Ctrl+C    end the run; it can be resumed with umbra --resume", mode_name(mode));
+    emit(&format!("  Current mode: {}\n  text            send it to the model and carry on\n  Enter           carry on\n  /y              switch to yolo mode (run commands without asking)\n  /c              switch to confirm mode (ask before running commands)\n  /u              switch to human mode (you type the commands)\n  /compact [focus] compact the history now\n  /q or Ctrl+C    end the run; it can be resumed with umbra --resume", mode_name(mode)));
 }
 
 /// Prints the confirm mode commands.
 fn print_help() {
-    println!("  Enter  run the commands\n  /y     switch to yolo mode and run\n  /c     confirm mode\n  /u     human mode: you type the commands\n  text   reject the commands and send the text to the model");
+    emit("  Enter  run the commands\n  /y     switch to yolo mode and run\n  /c     confirm mode\n  /u     human mode: you type the commands\n  text   reject the commands and send the text to the model");
 }
 
 /// Prints the model's reply.
@@ -234,10 +234,10 @@ pub fn show_assistant(step: u32, cost: f64, content: &str, actions: &[Action]) {
     }
     heading(&format!("assistant (step {step}, ${cost:.4})"), "1;36");
     if !content.trim().is_empty() {
-        println!("{}", clip(content.trim(), 4000));
+        emit(&clip(content.trim(), 4000));
     }
     for action in actions {
-        println!("{} {}", paint("1;35", "▶"), paint("35", &clip(&action.describe(), 2000)));
+        emit(&format!("{} {}", paint("1;35", "▶"), paint("35", &clip(&action.describe(), 2000))));
     }
 }
 
@@ -250,9 +250,9 @@ pub fn show_observation(observation: &Observation) {
     let code = if observation.returncode == 0 { "32" } else { "31" };
     heading(&format!("output (exit {})", observation.returncode), code);
     if !observation.exception_info.is_empty() {
-        println!("{}", paint("31", &observation.exception_info));
+        emit(&paint("31", &observation.exception_info));
     }
-    println!("{}", clip(observation.output.trim_end(), 2000));
+    emit(&clip(observation.output.trim_end(), 2000));
 }
 
 /// Prints a notice line.
@@ -263,5 +263,5 @@ pub fn show_notice(label: &str, text: &str) {
         return;
     }
     heading(label, "1;33");
-    println!("{}", clip(text, 2000));
+    emit(&clip(text, 2000));
 }

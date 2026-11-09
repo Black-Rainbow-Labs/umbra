@@ -22,7 +22,8 @@ use crate::models::session::{ResumeRecord, SessionInfo};
 use crate::repositories::config_repository::{load_config, merge_values};
 use crate::repositories::session_repository::new_session_id;
 use crate::repositories::trajectory_repository::trajectory_path;
-use crate::utils::console::{prompt_line, set_quiet, stdin_is_terminal, Input};
+use crate::utils::console::{enable_status_bar, finish_status, prompt_line, set_quiet, stdin_is_terminal, Input};
+use crate::utils::status_bar::Phase;
 use crate::utils::interrupt;
 use crate::utils::paths::{absolute_path, project_root, umbra_home};
 
@@ -108,6 +109,7 @@ fn apply_run_args(config: &mut UmbraConfig, args: &RunArgs) -> Result<()> {
     if args.keep_open {
         config.keep_open = true;
     }
+    config.status_bar &= !args.no_status_bar;
     config.compaction.enabled &= !args.no_compact;
     if let Some(window) = args.context_window {
         config.compaction.context_window = window;
@@ -129,6 +131,7 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     let (mut config, cwd) = prepare_config(&args.common)?;
     apply_run_args(&mut config, &args)?;
     set_quiet(args.quiet);
+    enable_status_bar(config.status_bar);
     let mut interaction = Interaction::new(config.mode, &config.whitelist_actions, config.confirm_exit);
     interaction.keep_open = config.keep_open;
     if !interaction.interactive && config.mode != Mode::Yolo {
@@ -145,6 +148,7 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     };
     let result = agent.run(opening)?;
     report(&result, args.quiet);
+    finish_status(Phase::Finished);
     Ok(match result.exit_status.as_str() {
         "Submitted" => 0,
         INTERRUPTED_STATUS => 130,
