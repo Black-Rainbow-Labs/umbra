@@ -24,7 +24,11 @@ From a clean checkout of `main`:
 pwsh packaging/release.ps1 -Part patch     # or minor, major
 pwsh packaging/release.ps1 -NoBump         # the version Cargo.toml already has
 pwsh packaging/release.ps1 -WhatIf         # say what would happen
+pwsh packaging/release.ps1 -AfterTag       # the tag is pushed already: wait for its release and carry on
 ```
+
+When the release workflow fails, fix the cause on `main`, build the existing tag again with
+`gh workflow run release.yml --ref main -f tag=v<version>`, and run `release.ps1 -AfterTag`.
 
 [packaging/release.ps1](../packaging/release.ps1) raises the version in `Cargo.toml` and
 `Cargo.lock`, commits, tags and pushes, waits for the release, then:
@@ -32,7 +36,8 @@ pwsh packaging/release.ps1 -WhatIf         # say what would happen
 1. writes `Formula/umbra.rb` in the tap
    [Black-Rainbow-Labs/homebrew-umbra](https://github.com/Black-Rainbow-Labs/homebrew-umbra) from
    [packaging/homebrew/umbra.rb.template](../packaging/homebrew/umbra.rb.template) and the
-   release's `SHA256SUMS`, and pushes it;
+   release's `SHA256SUMS`, and pushes it. The tap's own workflow then runs `brew install` and
+   `brew test` on macOS and Linux;
 2. writes [packaging/acp-registry/umbra/agent.json](../packaging/acp-registry/umbra/agent.json) for
    the new version and pushes it;
 3. installs the release on the machine it ran on.
