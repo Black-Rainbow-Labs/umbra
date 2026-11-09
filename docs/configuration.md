@@ -21,6 +21,7 @@ model = "anthropic/claude-haiku-5-5"   # provider/model
 models = ["local/qwen"]                # more models an editor's picker offers
 mode = "confirm"                       # confirm, yolo or human
 action_format = "tools"                # tools or text
+finish = "reply"                       # reply (a reply with no command ends the turn) or submit
 step_limit = 0                         # model calls; 0 means no limit
 cost_limit = 3.0                       # dollars; 0 means no limit
 wall_time_limit_seconds = 0
@@ -28,6 +29,7 @@ max_consecutive_format_errors = 3
 confirm_exit = true                    # ask for a follow up task when the agent finishes
 status_bar = true                      # context and compaction bar under the output
 banner = true                          # UMBRA banner with the version, model and folder at start
+fullscreen = true                      # open on the alternate screen with a scrollable transcript
 verbose = false                        # every detail: step costs, whole outputs, full errors
 whitelist_actions = ["ls", "cat ", "git (status|diff|log)"]   # run without asking
 output = ""                            # trajectory path; empty means ~/.umbra/trajectories/<time>.traj.json
@@ -87,6 +89,8 @@ only = []                              # start only these servers; empty means a
 disabled = ["ghidra"]
 startup_timeout_seconds = 30
 call_timeout_seconds = 120
+defer_tools = "auto"                   # auto, always or never: send MCP tools by name behind tool_search
+defer_ratio = 0.1                      # auto defers past this share of the context window
 
 [mcp_servers.docs]                     # same shape as Claude Code's mcpServers entries
 command = "npx"
@@ -133,11 +137,15 @@ detect_paths = true                    # attach image files named in a task or a
 | `models` | [] | More `provider/model` strings an editor offers in its model picker over ACP, after `model`. See [editors and ACP](acp.md). |
 | `mode` | `confirm` | `confirm` asks before each command, `yolo` never asks, `human` lets you type the commands. |
 | `action_format` | `tools` | `tools` uses native tool calls; `text` asks for one fenced block per reply. |
+| `finish` | `reply` | How a turn ends. `reply`: a reply with no command ends the turn and your next message continues the conversation, as in Claude Code; the model is given your words as they are and decides from them how much work to do. `submit`: mini-swe-agent's behavior, where the task is framed as an issue, every reply must run a command, and the run ends when a command prints `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`. A mini-swe-agent YAML config sets `submit`. `--finish` sets it for a run. |
 | `step_limit` | 0 | Stop after this many model calls. |
 | `cost_limit` | 3.0 | Stop once the run has cost this many dollars. In a terminal Umbra asks whether to raise the limit. |
 | `wall_time_limit_seconds` | 0 | Stop after this many seconds. |
 | `max_consecutive_format_errors` | 3 | End the run after this many unusable replies in a row. |
-| `confirm_exit` | true | When the agent finishes in a terminal, ask for a follow up task. |
+| `confirm_exit` | true | When a turn ends in a terminal, wait for the next message instead of exiting. |
+| `fullscreen` | true | Open on the terminal's alternate screen, the way Claude Code's fullscreen mode does: the shell's earlier output is not in view or in the scrollback, the transcript scrolls with PageUp, PageDown and the mouse wheel, and the shell's screen comes back when Umbra exits. Only when stdin and stdout are terminals and the run is not `--quiet`. `--no-fullscreen` or `UMBRA_FULLSCREEN=0` prints inline instead. |
+| `mcp.defer_tools` | `auto` | `auto` sends MCP tools by name only, with a `tool_search` tool that loads their definitions, when the definitions would take more than `mcp.defer_ratio` of the context window. `always` and `never` force it. Loaded tools are sent with every later request and loaded again on `--resume`. |
+| `mcp.defer_ratio` | 0.1 | The share of the context window the MCP tool definitions may take before `auto` defers them. |
 | `status_bar` | true | Draw the status bar under the output in a terminal: what the agent is doing, how full the context window is, the tokens left before compaction, and the session's compaction count. `--no-status-bar` or `UMBRA_STATUS_BAR=0` turns it off for a run. |
 | `banner` | true | Draw the UMBRA banner when a run starts in a terminal: the version, the model, the folder, the mode, and how many instruction files, skills and MCP servers were loaded. Never drawn into a pipe or with `--quiet`. `UMBRA_BANNER=0` turns it off and `UMBRA_BANNER=1` draws it into a pipe. |
 | `verbose` | false | Print every detail of a run: the step number and cost before each reply, command output up to 2000 characters instead of the first 10 lines, the whole text of a format error, and the context warning every time compaction cannot help instead of once. `--verbose` turns it on for a run. |

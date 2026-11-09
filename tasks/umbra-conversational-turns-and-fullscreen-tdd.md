@@ -213,6 +213,60 @@ screen to tell whether it is idle and keeps the terminal's own scrollback as the
   and Enter, check the reply is drawn, send PageUp and check the view moved, send Ctrl+D and check
   the alternate screen was left and the resume line was printed.
 
+## Part 3: compaction after "Hello"
+
+Jason asked why compaction messages appeared right after saying "Hello", when compaction should
+wait for a threshold. It does wait: before each call it estimates the request and compacts past
+`trigger_ratio` (80%) of the window. The threshold was being crossed by the part of the prompt
+compaction cannot remove.
+
+### Measurements (this PC, Haiku, folder `C:/jason/dev/umbra`, every MCP server on)
+
+| | Input tokens for "Hello" | Cost |
+|---|---|---|
+| Before | 214,611 | $0.0268 |
+| After (tools deferred) | 31,905 | $0.0040 |
+
+MCP tool definitions were 124,715 tokens across 229 tools: chordical 49,120, unluminous 47,390,
+inillucent 8,693, firefox 6,651, playwright 4,758, blender 3,934, ghidra 2,422, code-search 944,
+node_repl 562, aiservice-web 243. The instruction files add about 21k (`~/.claude/CLAUDE.md` 40.7 KB,
+the project's `CLAUDE.md` 35 KB and `AGENTS.md` 9.3 KB). On a 200k window the trigger is 160k, so the
+first request was already past it. Each call then masked or summarized a history that held almost
+nothing, which is the run of compaction messages in the screenshot (88%, "compacts before the next
+call").
+
+### Fix 1: defer MCP tools behind `tool_search`
+
+Claude Code's approach. When the MCP tool definitions would take more than `mcp.defer_ratio` (0.1)
+of the context window (`mcp.defer_tools = "auto"`), the request carries `bash` and `tool_search`
+only, and the system prompt lists the MCP tools by name in a `<deferred_tools>` section.
+`tool_search` takes `select:<name>,<name>` or keywords, returns each tool's description and argument
+schema, and loads those tools: they are sent with every later request. A tool called without a
+search is loaded when it runs. On `--resume`, the tools the session loaded are loaded again from its
+history. `always` and `never` override `auto`. Text mode works the same way, through an `umbra_mcp`
+block.
+
+Live check with Haiku: "Which version of the inillucent database does its MCP server report?" ran
+`tool_search select:mcp__inillucent__inillucent_version`, called the tool and answered in 3 steps.
+
+### Fix 2: no summary when it cannot free enough
+
+Past the trigger, after the mask pass, a summary now runs only when the history it would remove is
+worth at least `min_reclaim` (10% of the window, at most 20k). Otherwise Umbra warns once that the
+context is full, how much a summary could remove, and how big the fixed part is. The fixed size is
+the character estimate scaled by the ratio of the provider's last reported size to the estimate for
+the same messages, so it is in the provider's tokens (31.9k reported, against a 21.4k raw estimate).
+
+Live checks with Haiku:
+- A 60k window and a task that reads three large files: 9 calls, 2 summaries, at 48.1k and 49.1k
+  (the 48k trigger), down to 23.6k and 28.3k.
+- A 30k window where the fixed prompt alone is past the trigger: one warning, no summary call, and
+  the turn finished normally.
+
+The character estimate before the first call reads this prompt about 30% low (about 22k against 31.9k
+reported). From the second call on the reported size is used, so this only delays the first
+compaction decision by one call. The provider's overflow error still triggers a summary and a retry.
+
 ## Rollout
 
 Release as Umbra 0.5.0 (`finish = "reply"` changes the default behavior), install on the PC with

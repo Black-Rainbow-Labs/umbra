@@ -155,9 +155,8 @@ flowchart TD
     Y -- no, you type a reason --> X[Tell the model the command was refused] --> Q
     Y -- yes --> RUN
     C -- no --> RUN[Run each command in a new shell,<br/>or call the MCP tool]
-    RUN --> D{Did a command print<br/>COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT?}
-    D -- no --> O[Add the output to the messages] --> Q
-    D -- yes --> F[Finished. Everything printed after<br/>that line is the final answer]
+    RUN --> O[Add the output to the messages] --> Q
+    R -- a reply with no command --> F[The turn ends. The reply is the answer,<br/>and your next message continues the conversation]
 ```
 
 A few rules shape everything else:
@@ -171,8 +170,20 @@ A few rules shape everything else:
   by a short placeholder, and if that is not enough the model summarizes the middle of the session.
   Every compaction is recorded in the trajectory with the messages it removed. See
   [compaction](docs/architecture.md#compaction).
-- **The run ends** when a command prints `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` as its first line
-  and exits with code 0, or when a step limit, cost limit or time limit is reached.
+- **A turn ends when the model replies without a command**, as in Claude Code. What it does
+  depends on the message: "Hello" gets a one line reply and no commands, a question about the code
+  gets read and answered, and a change request is carried out, checked and then reported. Your
+  next message continues the same conversation. A step, cost or time limit also ends a turn.
+- **`finish = "submit"`** (or `--finish submit`) keeps mini-swe-agent's behavior for benchmark
+  runs: the task is framed as an issue to solve, every reply must run a command, and the run ends
+  when a command prints `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` as its first line and exits with
+  code 0. A mini-swe-agent YAML config passed with `-c` sets it. In the default style that command
+  still ends a turn, so old habits keep working.
+- **Large MCP tool sets are deferred.** When the MCP tool definitions would take more than a tenth
+  of the context window, the model gets only their names and a `tool_search` tool that loads the
+  definitions it needs, the way Claude Code does it. On the machine Umbra was built on, every MCP
+  server together is 229 tools and 124,715 tokens of definitions; with deferral a "Hello" is
+  31,905 input tokens instead of 214,611. `[mcp] defer_tools = "always"` or `"never"` overrides it.
 
 There are two ways for the model to ask for a command:
 
@@ -234,8 +245,10 @@ The full list, the order, and the rules for duplicates are in [where files are f
 | Yolo | `-y` | Commands run without asking. Use it in a container (`--docker <image>`) or a throwaway checkout. |
 | Human | `--mode human` | You type the commands. The model sees them when you switch back with `/c` or `/y`. |
 
-At the confirm prompt, `/y` switches to yolo, `/u` to human mode and `/h` shows help. When the
-agent finishes in a terminal, Umbra asks for a follow up task; `--exit-immediately` turns that off.
+At the confirm prompt, `/y` switches to yolo, `/u` to human mode and `/h` shows help. When a
+turn ends in a terminal, Umbra waits for your next message; `--exit-immediately` exits instead.
+With `--quiet` and `--exit-immediately`, `umbra -q -t "<question>"` prints only the answer, like
+`claude -p`.
 At that prompt, `/compact` or `/compact <what to keep>` summarizes the session before the next task.
 If stdin is not a terminal, Umbra refuses to start in confirm mode and asks for `-y`, so it never
 waits for an answer nobody can give.
@@ -276,6 +289,28 @@ task prompt or the follow up prompt asks again instead of ending the run, and a 
 the comment prompt carries on instead of ending it. Only `/q`, the end of input or a third
 unhandled Ctrl+C ends such a run.
 
+**The fullscreen view.** In a terminal Umbra opens on the alternate screen, the way `vim`, `less`
+and Claude Code's fullscreen mode do. The session starts on a clean screen, scrolling up shows the
+conversation and never the shell's earlier output, and when Umbra exits the shell's screen comes
+back as it was, with the last turn's summary, the resume command and the trajectory path printed
+under it. The transcript sits above the status bar and an input line that is always there, so a
+message can be typed while the agent works.
+
+| Key | What it does |
+|---|---|
+| PageUp, PageDown | Scroll the transcript a screen at a time |
+| Mouse wheel, Up, Down | Scroll three lines (Up and Down one) |
+| Ctrl+Home, Ctrl+End, Esc | Jump to the top, or back to the newest output |
+| Left, Right, Home, End, Backspace, Delete, Ctrl+U | Edit the input line |
+| Enter | Send the line; a paste keeps its line breaks |
+| Ctrl+D on an empty line | End the session |
+| Ctrl+C | Interrupt, as inline |
+
+While the view is scrolled up, new output does not move it, and a line under the transcript says
+how many rows are below. The terminal's own mouse selection needs Shift held while the view
+captures the wheel. `--no-fullscreen`, `fullscreen = false` or `UMBRA_FULLSCREEN=0` prints inline
+below the shell prompt instead, which is what a pipe, `--quiet` and `TERM=dumb` always get.
+
 **The status bar** sits under the output in a terminal and is drawn again after every line Umbra
 prints, so it always shows the current numbers:
 
@@ -306,9 +341,10 @@ reply is shown after a `●`, each command as `$ command`, and its output under 
 10 lines and a count of the rest. Exit code 0 is not shown; any other exit code is shown in red.
 Routine events are one dim line: `↻` for a compaction that freed space, `↺` for a reply with no
 usable command that was sent back to the model, `+` for an attached image. Warnings are yellow with
-`▲` and failures red with `✖`. When the system prompt and the newest turns alone are past the
-compaction point, compaction has nothing to remove, and Umbra says so once instead of before every
-call. Each turn ends with `✔ Done`, the steps, cost and time, the final output, and the command that
+`▲` and failures red with `✖`. When the system prompt, the instruction files and the tool
+definitions fill most of the window, a summary could only remove a little conversation. Umbra then
+makes no summary, and says once how many tokens the fixed part takes, instead of summarizing
+before every call. Each turn ends with `✔ Done`, the steps, cost and time, the final output, and the command that
 resumes the session. `--verbose` (or `verbose = true`) shows every detail instead.
 
 **Images** go to the model with the task:
@@ -419,8 +455,10 @@ The listing commands take `--json`. The options used most:
 | `--no-skills`, `--no-instructions` | Leave skills or instructions out |
 | `--no-source claude,codex,...` | Ignore one tool's files |
 | `-o, --output <file>` | Where to write the trajectory |
-| `--exit-immediately` | Do not ask for a follow up task |
+| `--exit-immediately` | Exit when the turn ends instead of waiting for the next message |
+| `--finish reply\|submit` | How a turn ends: a reply with no command (default), or the submit command |
 | `-q, --quiet` | Print only the final answer |
+| `--no-fullscreen` | Print inline below the shell prompt instead of on the alternate screen |
 | `--no-status-bar` | Do not draw the status bar under the output |
 | `--verbose` | Print every detail: step costs, whole command outputs, full format errors |
 | `--no-compact` | Never compact the history |

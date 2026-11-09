@@ -117,9 +117,10 @@ stateDiagram-v2
     Confirm --> Rejected: person typed a reason
     Rejected --> [*]: next step
     Confirm --> Execute
+    Parse --> Exit: reply style, a reply with no command (Replied)
     Execute --> Exit: a command printed the submit line (Submitted)
     Execute --> [*]: next step
-    Exit --> FollowUp: Submitted in a terminal
+    Exit --> FollowUp: Replied or Submitted in a terminal
     FollowUp --> [*]: person typed a new task
     FollowUp --> Done: person pressed Enter
     Exit --> Done
@@ -156,6 +157,15 @@ flowchart LR
    `keep_recent_ratio` of the window. The kept turns always start at an assistant message, so every
    tool result still follows its tool call. The summary call's cost is added to the run and it does
    not count as a step.
+
+   A summary only replaces conversation. The system prompt, the instruction files and the tool
+   definitions stay, so a summary at the trigger runs only when the history it would remove is
+   worth at least `min_reclaim_*`. When it is not, the fixed part is what fills the window, and a
+   summary before every call would cost a model call each time and free almost nothing. Umbra
+   then makes none and warns once with the fixed part's size, scaled to the provider's own token
+   count. This is what happened on a 200k window with every MCP server on: 124,715 tokens of tool
+   definitions put the very first request past the trigger. Deferring the MCP tools behind
+   `tool_search` (`mcp.defer_tools`) is the fix for that case.
 
 When a provider refuses a request as too long (Anthropic's "prompt is too long", llama.cpp's
 "exceeds the available context size", OpenAI's `context_length_exceeded`), Umbra runs a summary
@@ -226,7 +236,8 @@ Resuming reads the trajectory back: the messages, `info.model_stats`, `info.comp
 `info.session`. The exit marker is removed, and any tool call with no result gets one saying it was
 not run, which is what a session interrupted in the middle of a step needs. The original system
 prompt is kept, so the model sees the same start and the provider's prompt cache still matches. The
-next task is added as `The user added a new task: <task>`, the same message a follow up task gets.
+next task is added the way a follow up task is: the person's words as they typed them, or with
+`finish = "submit"`, `The user added a new task: <task>`.
 Each resume is recorded in `info.session.resumes`; with `--fork` the history goes to a new session
 and the old file is not touched.
 
