@@ -132,7 +132,10 @@ fn a_resume_runs_in_the_sessions_folder_with_its_model() {
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let trajectory = read_trajectory(&trajectory_from_output(&output));
     assert!(trajectory["info"]["config"]["model"]["replay_file"].as_str().unwrap().ends_with("one.json"), "the session's model is used");
-    assert_eq!(trajectory["info"]["session"]["cwd"].as_str().unwrap().to_lowercase(), slash(&setup.work).to_lowercase());
+    // Compared as real paths: a runner's temp folder can be a link (/var -> /private/var on macOS)
+    // or a Windows short name (RUNNER~1), and the recorded folder is the real one.
+    let recorded = Path::new(trajectory["info"]["session"]["cwd"].as_str().unwrap()).canonicalize().unwrap();
+    assert_eq!(recorded, setup.work.canonicalize().unwrap());
 }
 
 #[test]
