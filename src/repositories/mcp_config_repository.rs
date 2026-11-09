@@ -162,7 +162,12 @@ fn claude_project_servers(root: &Value, ctx: &DiscoveryContext) -> Option<Value>
             return entry.get("mcpServers").cloned();
         }
     }
-    projects.iter().find(|(k, _)| wanted.iter().any(|w| w.eq_ignore_ascii_case(k))).and_then(|(_, v)| v.get("mcpServers").cloned())
+    if let Some((_, entry)) = projects.iter().find(|(k, _)| wanted.iter().any(|w| w.eq_ignore_ascii_case(k))) {
+        return entry.get("mcpServers").cloned();
+    }
+    // The same folder written another way, such as a Windows short name (`RUNNER~1`) or a link.
+    let real: Vec<PathBuf> = [&ctx.cwd, &ctx.project_root].iter().filter_map(|p| p.canonicalize().ok()).collect();
+    projects.iter().find(|(k, _)| Path::new(k.as_str()).canonicalize().is_ok_and(|key| real.contains(&key))).and_then(|(_, v)| v.get("mcpServers").cloned())
 }
 
 /// Reads opencode's `mcp` key in either layout: servers under `mcp.servers`, or directly under

@@ -318,8 +318,8 @@ session is answered `-32002` with `data.sessionId`.
 
 | Registry platform | Target | Runner | Archive |
 |---|---|---|---|
-| `darwin-aarch64` | `aarch64-apple-darwin` | `macos-14` | `umbra-aarch64-apple-darwin.tar.gz` |
-| `darwin-x86_64` | `x86_64-apple-darwin` | `macos-14` (cross) | `umbra-x86_64-apple-darwin.tar.gz` |
+| `darwin-aarch64` | `aarch64-apple-darwin` | `macos-latest` | `umbra-aarch64-apple-darwin.tar.gz` |
+| `darwin-x86_64` | `x86_64-apple-darwin` | `macos-latest` (cross) | `umbra-x86_64-apple-darwin.tar.gz` |
 | `linux-x86_64` | `x86_64-unknown-linux-musl` | `ubuntu-24.04` | `umbra-x86_64-unknown-linux-musl.tar.gz` |
 | `linux-aarch64` | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` | `umbra-aarch64-unknown-linux-musl.tar.gz` |
 | `windows-x86_64` | `x86_64-pc-windows-msvc` | `windows-2022` | `umbra-x86_64-pc-windows-msvc.zip` |

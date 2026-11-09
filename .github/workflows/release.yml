@@ -44,7 +44,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2022]
+        os: [ubuntu-24.04, macos-latest, windows-2022]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,8 +61,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: aarch64-apple-darwin, os: macos-14, runs: true }
-          - { target: x86_64-apple-darwin, os: macos-14, runs: false }
+          - { target: aarch64-apple-darwin, os: macos-latest, runs: true }
+          - { target: x86_64-apple-darwin, os: macos-latest, runs: false }
           - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04, runs: true }
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, runs: true }
           - { target: x86_64-pc-windows-msvc, os: windows-2022, runs: true }
