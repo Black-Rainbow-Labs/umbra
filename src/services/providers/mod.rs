@@ -15,6 +15,8 @@ use serde_json::Value;
 use crate::models::config::{ProviderConfig, UmbraConfig};
 use crate::models::message::Message;
 use crate::models::model_response::ModelResponse;
+use crate::utils::http::RequestError;
+use crate::utils::interrupt;
 
 /// A tool offered to the model in tool mode.
 #[derive(Debug, Clone)]
@@ -31,6 +33,8 @@ pub struct ProviderError {
     pub retryable: bool,
     /// True when the server refused the request because it is longer than the context window.
     pub context_overflow: bool,
+    /// True when the person pressed Ctrl+C while Umbra waited for the reply.
+    pub interrupted: bool,
 }
 
 /// Phrases servers use when a request is longer than the model's context window: Anthropic,
@@ -45,19 +49,33 @@ impl ProviderError {
     pub fn from_status(status: u16, body: &str) -> Self {
         let retryable = matches!(status, 408 | 409 | 429 | 500..=599);
         let context_overflow = matches!(status, 400 | 413) && is_overflow_text(body);
-        ProviderError { message: format!("HTTP {status}: {}", body.chars().take(2000).collect::<String>()), retryable: retryable && !context_overflow, context_overflow }
+        ProviderError { message: format!("HTTP {status}: {}", body.chars().take(2000).collect::<String>()), retryable: retryable && !context_overflow, context_overflow, interrupted: false }
     }
 
     /// Builds a retryable error for a request that never reached the server.
     /// @param message - the network error
     pub fn network(message: impl Into<String>) -> Self {
-        ProviderError { message: message.into(), retryable: true, context_overflow: false }
+        ProviderError { message: message.into(), retryable: true, context_overflow: false, interrupted: false }
     }
 
     /// Builds an error that retrying will not fix.
     /// @param message - the error text
     pub fn fatal(message: impl Into<String>) -> Self {
-        ProviderError { message: message.into(), retryable: false, context_overflow: false }
+        ProviderError { message: message.into(), retryable: false, context_overflow: false, interrupted: false }
+    }
+
+    /// Builds the error for a call the person interrupted with Ctrl+C.
+    pub fn interrupted() -> Self {
+        ProviderError { message: "interrupted by the user".into(), retryable: false, context_overflow: false, interrupted: true }
+    }
+
+    /// Builds the error for a request that failed before a reply, or was interrupted.
+    /// @param error - the HTTP helper's error
+    pub fn from_request(error: RequestError) -> Self {
+        match error {
+            RequestError::Interrupted => ProviderError::interrupted(),
+            RequestError::Failed(message) => ProviderError::network(message),
+        }
     }
 }
 
@@ -116,6 +134,7 @@ pub fn split_model_spec(model_spec: &str) -> Result<(&str, &str)> {
 
 /// Runs a model call, retrying retryable failures with exponential backoff: waits of 4, 8, 16,
 /// 32 then 60 seconds, the mini-swe-agent schedule. `UMBRA_RETRY_BASE_MS` shortens the waits.
+/// Ctrl+C during a wait ends the retries.
 /// @param max_retries - how many times to retry after the first attempt
 /// @param call - the request to make
 pub fn with_retries<T>(max_retries: u32, mut call: impl FnMut() -> Result<T, ProviderError>) -> Result<T, ProviderError> {
@@ -127,7 +146,9 @@ pub fn with_retries<T>(max_retries: u32, mut call: impl FnMut() -> Result<T, Pro
             Err(error) if error.retryable && attempt < max_retries => {
                 let wait = (base_ms.saturating_mul(1 << attempt.min(6))).min(60_000);
                 eprintln!("umbra: model call failed ({}), retrying in {:.1}s", error.message.lines().next().unwrap_or(""), wait as f64 / 1000.0);
-                std::thread::sleep(Duration::from_millis(wait));
+                if !interrupt::sleep(Duration::from_millis(wait)) {
+                    return Err(ProviderError::interrupted());
+                }
                 attempt += 1;
             }
             Err(error) => return Err(error),

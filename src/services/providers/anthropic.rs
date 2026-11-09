@@ -10,7 +10,8 @@ use super::{apply_extra_body, retry_count, with_retries, Provider, ProviderError
 use crate::models::config::ProviderConfig;
 use crate::models::message::{Message, Role, ToolCall};
 use crate::models::model_response::{ModelResponse, Usage};
-use crate::utils::http::{http_agent, post_json};
+use crate::models::image::ImageData;
+use crate::utils::http::{http_agent, post_json_interruptible};
 use crate::utils::tokens::known_context_window;
 
 /// The system text a Claude Code login must send first. Requests made with that login are
@@ -90,11 +91,12 @@ impl AnthropicProvider {
         headers
     }
 
-    /// Sends one request and parses the reply.
+    /// Sends one request and parses the reply. The request runs on a worker thread so Ctrl+C
+    /// stops the wait at once; the server still finishes the abandoned reply.
     /// @param body - the request body
     fn send(&self, body: &Value) -> Result<ModelResponse, ProviderError> {
         let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
-        let reply = post_json(&self.agent, &url, &self.headers(), body).map_err(ProviderError::network)?;
+        let reply = post_json_interruptible(&self.agent, &url, &self.headers(), body).map_err(ProviderError::from_request)?;
         if reply.status != 200 {
             return Err(ProviderError::from_status(reply.status, &reply.body));
         }
@@ -151,10 +153,36 @@ pub fn convert_messages(messages: &[Message]) -> Value {
 fn convert_message(message: &Message) -> Option<(&'static str, Vec<Value>)> {
     match message.role {
         Role::System | Role::Exit => None,
-        Role::User => Some(("user", vec![text_block(&message.content)])),
-        Role::Tool => Some(("user", vec![json!({ "type": "tool_result", "tool_use_id": message.tool_call_id.clone().unwrap_or_default(), "content": message.content })])),
+        Role::User => Some(("user", user_blocks(message))),
+        Role::Tool => Some(("user", vec![tool_result_block(message)])),
         Role::Assistant => Some(("assistant", assistant_blocks(message))),
     }
+}
+
+/// Returns a user message's blocks: its images first, as Anthropic recommends, then its text.
+/// @param message - a user message
+fn user_blocks(message: &Message) -> Vec<Value> {
+    let mut blocks: Vec<Value> = message.images.iter().map(image_block).collect();
+    blocks.push(text_block(&message.content));
+    blocks
+}
+
+/// Builds a tool result. With images its content is a list of the text and image blocks.
+/// @param message - a tool message
+fn tool_result_block(message: &Message) -> Value {
+    let id = message.tool_call_id.clone().unwrap_or_default();
+    if message.images.is_empty() {
+        return json!({ "type": "tool_result", "tool_use_id": id, "content": message.content });
+    }
+    let mut content = vec![text_block(&message.content)];
+    content.extend(message.images.iter().map(image_block));
+    json!({ "type": "tool_result", "tool_use_id": id, "content": content })
+}
+
+/// Builds a base64 image block.
+/// @param image - the image
+fn image_block(image: &ImageData) -> Value {
+    json!({ "type": "image", "source": { "type": "base64", "media_type": image.media_type, "data": image.data } })
 }
 
 /// Returns the assistant's content blocks: the raw blocks from the API when present, otherwise
@@ -238,6 +266,22 @@ mod tests {
         assert_eq!(converted.as_array().unwrap().len(), 3);
         assert_eq!(converted[2]["content"].as_array().unwrap().len(), 2);
         assert_eq!(converted[1]["content"][1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn sends_images_in_user_messages_and_tool_results() {
+        let image = ImageData { media_type: "image/jpeg".into(), data: "QUJD".into(), width: 2, height: 2, source: "a.jpg".into() };
+        let mut assistant = Message::new(Role::Assistant, "");
+        assistant.tool_calls = vec![ToolCall { id: "t".into(), name: "shot".into(), arguments: json!({}) }];
+        let messages = vec![Message::user("what is this").with_images(vec![image.clone()]), assistant, Message::tool("t", "screenshot").with_images(vec![image])];
+        let sent = convert_messages(&messages);
+        assert_eq!(sent[0]["content"][0]["type"], "image");
+        assert_eq!(sent[0]["content"][0]["source"]["media_type"], "image/jpeg");
+        assert_eq!(sent[0]["content"][1]["text"], "what is this");
+        let result = &sent[2]["content"][0];
+        assert_eq!(result["type"], "tool_result");
+        assert_eq!(result["content"][0]["text"], "screenshot");
+        assert_eq!(result["content"][1]["source"]["data"], "QUJD");
     }
 
     #[test]

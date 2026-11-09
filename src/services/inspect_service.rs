@@ -6,9 +6,10 @@ use serde_json::json;
 use super::context_service::{discovery_context, load_run_context};
 use super::mcp::McpManager;
 use super::run_service::prepare_config;
-use crate::cli::{InspectArgs, McpArgs};
+use super::session_service::{describe_session, listed_sessions};
+use crate::cli::{InspectArgs, McpArgs, SessionsArgs};
 use crate::models::context::McpTransport;
-use crate::utils::paths::umbra_home;
+use crate::utils::paths::{absolute_path, umbra_home};
 
 /// Prints the skills, highest precedence first.
 /// @param args - the listing options
@@ -147,4 +148,27 @@ fn strip_nulls(value: serde_json::Value) -> serde_json::Value {
 fn first_line(text: &str, limit: usize) -> String {
     let line = text.lines().next().unwrap_or("");
     if line.chars().count() > limit { format!("{}...", line.chars().take(limit).collect::<String>()) } else { line.to_string() }
+}
+
+/// Prints saved sessions, newest first: this folder's, or every folder's with `--all`.
+/// @param args - the listing options
+pub fn list_sessions(args: &SessionsArgs) -> Result<()> {
+    let cwd = match &args.cwd {
+        Some(dir) => absolute_path(dir),
+        None => std::env::current_dir()?,
+    };
+    let sessions = listed_sessions(&cwd, args.all);
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        return Ok(());
+    }
+    let place = if args.all { "in every folder".to_string() } else { format!("in {}", cwd.display()) };
+    println!("{} sessions {place}. Resume one with umbra --resume <id>\n", sessions.len());
+    for session in &sessions {
+        println!("{}", describe_session(session));
+        if args.all {
+            println!("    {}", session.cwd);
+        }
+    }
+    Ok(())
 }

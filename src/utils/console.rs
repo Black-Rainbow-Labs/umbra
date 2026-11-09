@@ -2,6 +2,10 @@
 
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Mutex, OnceLock};
+
+use super::interrupt;
 
 /// When set, the run prints nothing but its final answer and errors.
 static QUIET: AtomicBool = AtomicBool::new(false);
@@ -50,19 +54,95 @@ pub fn clip(text: &str, limit: usize) -> String {
     format!("{head}\n... {} characters not shown ...\n{tail}", count - limit)
 }
 
-/// Prints a prompt and reads one line from stdin. Returns None at end of input.
+/// What a prompt got back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Input {
+    Line(String),
+    /// Stdin was closed.
+    Eof,
+    /// Ctrl+C was pressed while Umbra waited.
+    Interrupted,
+}
+
+/// The lines read by the stdin thread. None means end of input.
+static LINES: OnceLock<Mutex<Receiver<Option<String>>>> = OnceLock::new();
+
+/// Starts the thread that owns stdin, once, and returns its channel. Reading on a thread lets a
+/// prompt stop waiting when Ctrl+C is pressed, which a blocking read cannot do.
+fn lines() -> &'static Mutex<Receiver<Option<String>>> {
+    LINES.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || read_stdin_lines(sender));
+        Mutex::new(receiver)
+    })
+}
+
+/// Reads that may fail because a Ctrl+C cut them short before stdin counts as closed.
+const MAX_INTERRUPTED_READS: u32 = 50;
+
+/// Sends each line of stdin through the channel, then None at the end of input. On Windows a
+/// console event can end a pending read with an error or with no bytes; when Ctrl+C was just
+/// pressed that is not the end of input, so the read is tried again.
+/// @param sender - the channel to the prompts
+fn read_stdin_lines(sender: Sender<Option<String>>) {
+    let stdin = std::io::stdin();
+    let mut interrupted_reads = 0;
+    loop {
+        let mut line = String::new();
+        let line = match stdin.read_line(&mut line) {
+            Ok(0) | Err(_) if interrupted_reads < MAX_INTERRUPTED_READS && read_was_interrupted() => {
+                interrupted_reads += 1;
+                continue;
+            }
+            Ok(0) | Err(_) => None,
+            Ok(_) => Some(line.trim_end_matches(['\r', '\n']).to_string()),
+        };
+        interrupted_reads = 0;
+        let ended = line.is_none();
+        if sender.send(line).is_err() || ended {
+            return;
+        }
+    }
+}
+
+/// Returns true when a failed or empty read came from a Ctrl+C. The handler runs on its own
+/// thread and may set the flag a moment after the read returns, so this waits briefly first.
+fn read_was_interrupted() -> bool {
+    std::thread::sleep(interrupt::POLL);
+    interrupt::is_pending()
+}
+
+/// Prints a prompt and waits for one line, end of input, or Ctrl+C. A Ctrl+C that is already
+/// pending answers at once, and either way it is handled here.
 /// @param prompt - the text shown before the cursor
-pub fn read_line(prompt: &str) -> Option<String> {
+pub fn prompt_line(prompt: &str) -> Input {
     print!("{}", paint("1;33", prompt));
     let _ = std::io::stdout().flush();
-    let mut line = String::new();
-    match std::io::stdin().read_line(&mut line) {
-        Ok(0) | Err(_) => None,
-        Ok(_) => Some(line.trim_end_matches(['\r', '\n']).to_string()),
+    let receiver = lines().lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        if interrupt::take() {
+            println!();
+            return Input::Interrupted;
+        }
+        match receiver.recv_timeout(interrupt::POLL) {
+            Ok(Some(line)) => return Input::Line(line),
+            Ok(None) | Err(RecvTimeoutError::Disconnected) => return Input::Eof,
+            Err(RecvTimeoutError::Timeout) => continue,
+        }
+    }
+}
+
+/// Prints a prompt and reads one line. Returns None at end of input or on Ctrl+C.
+/// @param prompt - the text shown before the cursor
+pub fn read_line(prompt: &str) -> Option<String> {
+    match prompt_line(prompt) {
+        Input::Line(line) => Some(line),
+        Input::Eof | Input::Interrupted => None,
     }
 }
 
 /// Returns true when stdin is a terminal, so Umbra can ask the person questions.
+/// `UMBRA_FORCE_INTERACTIVE=1` treats a pipe as a terminal, which is how tests type into prompts.
 pub fn stdin_is_terminal() -> bool {
-    std::io::stdin().is_terminal()
+    std::env::var("UMBRA_FORCE_INTERACTIVE").is_ok_and(|v| v == "1") || std::io::stdin().is_terminal()
 }

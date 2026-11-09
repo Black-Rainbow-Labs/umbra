@@ -9,7 +9,8 @@ use super::{apply_extra_body, is_overflow_text, retry_count, with_retries, Provi
 use crate::models::config::ProviderConfig;
 use crate::models::message::{Message, Role, ToolCall};
 use crate::models::model_response::{ModelResponse, Usage};
-use crate::utils::http::{get_text, http_agent, post_json};
+use crate::models::image::ImageData;
+use crate::utils::http::{get_text, http_agent, post_json_interruptible, post_stream, StreamEvent};
 use crate::utils::tokens::known_context_window;
 
 /// A model behind an OpenAI compatible endpoint.
@@ -32,6 +33,10 @@ impl OpenAiProvider {
     /// @param tools - the tools offered to the model
     fn request_body(&self, messages: &[Message], tools: &[ToolSpec]) -> Value {
         let mut body = json!({ "model": self.model, "messages": convert_messages(messages) });
+        if self.streaming() {
+            body["stream"] = json!(true);
+            body["stream_options"] = json!({ "include_usage": true });
+        }
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.iter().map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.input_schema } })).collect());
         }
@@ -45,6 +50,11 @@ impl OpenAiProvider {
         body
     }
 
+    /// Returns true when replies are streamed, which is the default.
+    fn streaming(&self) -> bool {
+        self.config.stream.unwrap_or(true)
+    }
+
     /// Builds the request headers.
     fn headers(&self) -> Vec<(String, String)> {
         let mut headers: Vec<(String, String)> = Vec::new();
@@ -55,24 +65,54 @@ impl OpenAiProvider {
         headers
     }
 
-    /// Sends one request and parses the reply.
+    /// Sends one request and parses the reply. Both ways of sending give up as soon as Ctrl+C
+    /// is pressed.
     /// @param body - the request body
     fn send(&self, body: &Value) -> Result<ModelResponse, ProviderError> {
         let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
-        let reply = post_json(&self.agent, &url, &self.headers(), body).map_err(ProviderError::network)?;
-        if reply.status != 200 {
-            return Err(ProviderError::from_status(reply.status, &reply.body));
-        }
-        let raw: Value = serde_json::from_str(&reply.body).map_err(|e| ProviderError::fatal(format!("bad JSON from {url}: {e}")))?;
-        if let Some(error) = raw.get("error") {
+        let raw = if self.streaming() { self.send_streaming(&url, body)? } else { self.send_whole(&url, body)? };
+        if let Some(error) = raw.get("error").filter(|e| !e.is_null()) {
             if is_overflow_text(&error.to_string()) {
-                return Err(ProviderError { message: format!("server error: {error}"), retryable: false, context_overflow: true });
+                return Err(ProviderError { message: format!("server error: {error}"), retryable: false, context_overflow: true, interrupted: false });
             }
             return Err(ProviderError::network(format!("server error: {error}")));
         }
         let mut response = parse_response(&raw);
         response.cost = cost_of(&response.usage, price_for(&self.model, &self.config));
         Ok(response)
+    }
+}
+
+impl OpenAiProvider {
+    /// Sends a request without streaming and returns the reply JSON.
+    /// @param url - the endpoint
+    /// @param body - the request body
+    fn send_whole(&self, url: &str, body: &Value) -> Result<Value, ProviderError> {
+        let reply = post_json_interruptible(&self.agent, url, &self.headers(), body).map_err(ProviderError::from_request)?;
+        if reply.status != 200 {
+            return Err(ProviderError::from_status(reply.status, &reply.body));
+        }
+        serde_json::from_str(&reply.body).map_err(|e| ProviderError::fatal(format!("bad JSON from {url}: {e}")))
+    }
+
+    /// Sends a streaming request and joins the chunks into the JSON a whole reply would have had.
+    /// On Ctrl+C the stream is dropped, which closes the connection at the next chunk.
+    /// @param url - the endpoint
+    /// @param body - the request body
+    fn send_streaming(&self, url: &str, body: &Value) -> Result<Value, ProviderError> {
+        let stream = post_stream(&self.agent, url, &self.headers(), body);
+        let mut status = 0;
+        let mut assembler = StreamAssembler::default();
+        loop {
+            match stream.next().map_err(ProviderError::from_request)? {
+                StreamEvent::Start(code) => status = code,
+                StreamEvent::ErrorBody(text) => return Err(ProviderError::from_status(status, &text)),
+                StreamEvent::Line(line) => assembler.push_line(&line),
+                StreamEvent::End => break,
+                StreamEvent::Failed(message) => return Err(ProviderError::network(format!("the stream from {url} broke: {message}"))),
+            }
+        }
+        assembler.finish().map_err(|e| ProviderError::fatal(format!("bad reply from {url}: {e}")))
     }
 }
 
@@ -149,11 +189,37 @@ fn window_from_models(models: &Value, model: &str) -> Option<u64> {
     ["max_model_len", "context_length", "context_window"].iter().find_map(|key| entry[*key].as_u64()).or_else(|| entry["meta"]["n_ctx_train"].as_u64()).filter(|n| *n > 0)
 }
 
+/// The text that introduces images returned by tools. A `tool` message can only hold text, so
+/// the images go in a user message after the step's last tool result.
+pub const TOOL_IMAGES_TEXT: &str = "Images returned by the tools above:";
+
 /// Converts the history into Chat Completions messages.
 /// @param messages - the conversation
 pub fn convert_messages(messages: &[Message]) -> Value {
-    let converted = messages.iter().filter(|m| m.role != Role::Exit).map(convert_message).collect();
+    let mut converted = Vec::new();
+    let mut tool_images: Vec<&ImageData> = Vec::new();
+    for message in messages.iter().filter(|m| m.role != Role::Exit) {
+        if message.role != Role::Tool && !tool_images.is_empty() {
+            converted.push(user_with_images(TOOL_IMAGES_TEXT, &std::mem::take(&mut tool_images)));
+        }
+        if message.role == Role::Tool {
+            tool_images.extend(message.images.iter());
+        }
+        converted.push(convert_message(message));
+    }
+    if !tool_images.is_empty() {
+        converted.push(user_with_images(TOOL_IMAGES_TEXT, &tool_images));
+    }
     Value::Array(converted)
+}
+
+/// Builds a user message whose content is the images, then the text.
+/// @param text - the text part
+/// @param images - the images
+fn user_with_images(text: &str, images: &[&ImageData]) -> Value {
+    let mut parts: Vec<Value> = images.iter().map(|image| json!({ "type": "image_url", "image_url": { "url": image.data_url() } })).collect();
+    parts.push(json!({ "type": "text", "text": text }));
+    json!({ "role": "user", "content": parts })
 }
 
 /// Converts one message. Tool call arguments are sent as JSON text, as the API requires.
@@ -161,6 +227,7 @@ pub fn convert_messages(messages: &[Message]) -> Value {
 fn convert_message(message: &Message) -> Value {
     match message.role {
         Role::System => json!({ "role": "system", "content": message.content }),
+        Role::User | Role::Exit if !message.images.is_empty() => user_with_images(&message.content, &message.images.iter().collect::<Vec<_>>()),
         Role::User | Role::Exit => json!({ "role": "user", "content": message.content }),
         Role::Tool => json!({ "role": "tool", "tool_call_id": message.tool_call_id.clone().unwrap_or_default(), "content": message.content }),
         Role::Assistant => {
@@ -211,9 +278,168 @@ fn parse_tool_call(index: usize, call: &Value) -> ToolCall {
     ToolCall { id, name: call["function"]["name"].as_str().unwrap_or("").to_string(), arguments }
 }
 
+/// One tool call being put together from stream chunks.
+#[derive(Default)]
+struct PartialCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// Joins the chunks of a streamed Chat Completions reply into the JSON of a whole reply, so the
+/// same `parse_response` reads both. A server that ignored `stream` and sent plain JSON is
+/// handled too.
+#[derive(Default)]
+struct StreamAssembler {
+    content: String,
+    reasoning: String,
+    calls: Vec<PartialCall>,
+    finish_reason: Value,
+    usage: Value,
+    error: Value,
+    id: Value,
+    model: Value,
+    saw_data: bool,
+    plain: String,
+}
+
+impl StreamAssembler {
+    /// Takes one line of the event stream. Lines that are not `data:` lines are kept in case the
+    /// whole reply was plain JSON.
+    /// @param line - one line, without its line ending
+    fn push_line(&mut self, line: &str) {
+        let Some(payload) = line.strip_prefix("data:") else {
+            self.plain.push_str(line);
+            self.plain.push('\n');
+            return;
+        };
+        self.saw_data = true;
+        let payload = payload.trim();
+        if payload == "[DONE]" || payload.is_empty() {
+            return;
+        }
+        if let Ok(chunk) = serde_json::from_str::<Value>(payload) {
+            self.push_chunk(&chunk);
+        }
+    }
+
+    /// Adds one chunk's deltas.
+    /// @param chunk - one parsed `data:` payload
+    fn push_chunk(&mut self, chunk: &Value) {
+        if chunk.get("error").is_some_and(|e| !e.is_null()) {
+            self.error = chunk["error"].clone();
+        }
+        for (key, slot) in [("id", &mut self.id), ("model", &mut self.model)] {
+            if slot.is_null() && chunk[key].is_string() {
+                *slot = chunk[key].clone();
+            }
+        }
+        if chunk["usage"].is_object() {
+            self.usage = chunk["usage"].clone();
+        }
+        for choice in chunk["choices"].as_array().into_iter().flatten() {
+            if !choice["finish_reason"].is_null() {
+                self.finish_reason = choice["finish_reason"].clone();
+            }
+            let delta = &choice["delta"];
+            self.content.push_str(delta["content"].as_str().unwrap_or(""));
+            self.reasoning.push_str(delta["reasoning_content"].as_str().or(delta["reasoning"].as_str()).unwrap_or(""));
+            for (position, call) in delta["tool_calls"].as_array().into_iter().flatten().enumerate() {
+                self.push_call_delta(call, position);
+            }
+        }
+    }
+
+    /// Adds one tool call delta. Calls are matched by `index`, or by position when a server
+    /// sends none.
+    /// @param call - the delta
+    /// @param position - its position in this chunk
+    fn push_call_delta(&mut self, call: &Value, position: usize) {
+        let index = call["index"].as_u64().map(|i| i as usize).unwrap_or(position);
+        while self.calls.len() <= index {
+            self.calls.push(PartialCall::default());
+        }
+        let slot = &mut self.calls[index];
+        if let Some(id) = call["id"].as_str().filter(|id| !id.is_empty()) {
+            slot.id = id.to_string();
+        }
+        slot.name.push_str(call["function"]["name"].as_str().unwrap_or(""));
+        slot.arguments.push_str(call["function"]["arguments"].as_str().unwrap_or(""));
+    }
+
+    /// Returns the reply as whole reply JSON.
+    fn finish(self) -> Result<Value, String> {
+        if !self.saw_data {
+            return serde_json::from_str(&self.plain).map_err(|e| format!("neither an event stream nor JSON: {e}"));
+        }
+        let tool_calls: Vec<Value> = self.calls.iter().map(|c| json!({ "id": c.id, "type": "function", "function": { "name": c.name, "arguments": c.arguments } })).collect();
+        let mut message = json!({ "role": "assistant", "content": self.content });
+        if !self.reasoning.is_empty() {
+            message["reasoning_content"] = json!(self.reasoning);
+        }
+        if !tool_calls.is_empty() {
+            message["tool_calls"] = Value::Array(tool_calls);
+        }
+        let mut raw = json!({ "id": self.id, "model": self.model, "object": "chat.completion", "choices": [{ "index": 0, "message": message, "finish_reason": self.finish_reason }], "usage": self.usage, "streamed": true });
+        if !self.error.is_null() {
+            raw["error"] = self.error;
+        }
+        Ok(raw)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joins_a_streamed_reply_with_tool_call_deltas() {
+        let lines = [
+            r#"data: {"id":"c1","model":"m","choices":[{"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"Listing."},"finish_reason":null}]}"#,
+            "",
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"bash","arguments":"{\"comm"}}]},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"and\":\"ls\"}"}}]},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"bash","arguments":"{\"command\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+            r#"data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":3}}}"#,
+            "data: [DONE]",
+        ];
+        let mut assembler = StreamAssembler::default();
+        lines.iter().for_each(|l| assembler.push_line(l));
+        let parsed = parse_response(&assembler.finish().unwrap());
+        assert_eq!(parsed.content, "Listing.");
+        assert_eq!(parsed.tool_calls.len(), 2);
+        assert_eq!(parsed.tool_calls[0].id, "call_a");
+        assert_eq!(parsed.tool_calls[0].arguments["command"], "ls");
+        assert_eq!(parsed.tool_calls[1].arguments["command"], "pwd");
+        assert_eq!(parsed.finish_reason, "tool_calls");
+        assert_eq!((parsed.usage.input_tokens, parsed.usage.cache_read_tokens, parsed.usage.output_tokens), (8, 3, 4));
+        assert_eq!(parsed.raw["choices"][0]["message"]["reasoning_content"], "think");
+    }
+
+    #[test]
+    fn reads_a_plain_json_reply_when_the_server_ignored_stream() {
+        let mut assembler = StreamAssembler::default();
+        assembler.push_line(r#"{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}"#);
+        assert_eq!(parse_response(&assembler.finish().unwrap()).content, "hi");
+    }
+
+    #[test]
+    fn sends_user_images_as_parts_and_tool_images_after_the_tool_results() {
+        let image = ImageData { media_type: "image/png".into(), data: "QUJD".into(), width: 2, height: 2, source: "a.png".into() };
+        let mut assistant = Message::new(Role::Assistant, "");
+        assistant.tool_calls = vec![ToolCall { id: "a".into(), name: "shot".into(), arguments: json!({}) }, ToolCall { id: "b".into(), name: "bash".into(), arguments: json!({}) }];
+        let messages = vec![Message::user("look").with_images(vec![image.clone()]), assistant, Message::tool("a", "took it").with_images(vec![image]), Message::tool("b", "ok"), Message::user("next")];
+        let sent = convert_messages(&messages);
+        assert_eq!(sent[0]["content"][0]["image_url"]["url"], "data:image/png;base64,QUJD");
+        assert_eq!(sent[0]["content"][1]["text"], "look");
+        let roles: Vec<&str> = sent.as_array().unwrap().iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "tool", "tool", "user", "user"]);
+        assert_eq!(sent[2]["content"], "took it");
+        assert_eq!(sent[4]["content"][1]["text"], TOOL_IMAGES_TEXT);
+        assert_eq!(sent[5]["content"], "next");
+    }
 
     #[test]
     fn reads_context_sizes_from_server_replies() {

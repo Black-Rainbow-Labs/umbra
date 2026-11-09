@@ -23,6 +23,7 @@ fn main() {
         Some(Command::Mcp(args)) => inspect_service::list_mcp(&args).map(|_| 0),
         Some(Command::Config(args)) => inspect_service::show_config(&args).map(|_| 0),
         Some(Command::Prompt(args)) => run_service::print_prompt(&args).map(|_| 0),
+        Some(Command::Sessions(args)) => inspect_service::list_sessions(&args).map(|_| 0),
     };
     match result {
         Ok(code) => std::process::exit(code),

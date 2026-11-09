@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::image::ImageData;
+
 /// Who wrote a message. `Exit` is a local marker that ends the run and is never sent to a model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -32,6 +34,9 @@ pub struct Message {
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Images shown with the text: attached by the person, or returned by an MCP tool.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageData>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub extra: Value,
 }
@@ -41,7 +46,7 @@ impl Message {
     /// @param role - who wrote the message
     /// @param content - the message text
     pub fn new(role: Role, content: impl Into<String>) -> Self {
-        Message { role, content: content.into(), tool_calls: Vec::new(), tool_call_id: None, extra: Value::Null }
+        Message { role, content: content.into(), tool_calls: Vec::new(), tool_call_id: None, images: Vec::new(), extra: Value::Null }
     }
 
     /// Builds a system message.
@@ -72,6 +77,13 @@ impl Message {
         let mut message = Message::new(Role::Exit, submission);
         message.extra = serde_json::json!({ "exit_status": status, "submission": submission });
         message
+    }
+
+    /// Returns a copy of this message with the given images attached.
+    /// @param images - the images to show with the text
+    pub fn with_images(mut self, images: Vec<ImageData>) -> Self {
+        self.images = images;
+        self
     }
 
     /// Returns a copy of this message with the given `extra` data attached.

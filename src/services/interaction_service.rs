@@ -5,7 +5,7 @@ use regex::Regex;
 
 use crate::models::action::{Action, Observation};
 use crate::models::config::Mode;
-use crate::utils::console::{clip, heading, is_quiet, paint, read_line, stdin_is_terminal};
+use crate::utils::console::{clip, heading, is_quiet, paint, prompt_line, read_line, stdin_is_terminal, Input};
 
 /// What the person decided about a set of actions.
 pub enum Decision {
@@ -13,7 +13,26 @@ pub enum Decision {
     Run,
     /// Do not run them, and tell the model this.
     Reject(String),
+    /// Ctrl+C at the prompt: do not run them, and show the comment prompt.
+    Interrupted,
 }
+
+/// What the person typed at the comment prompt after a Ctrl+C.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Comment {
+    /// Send this to the model as `Interrupted by user: <text>` and carry on.
+    Text(String),
+    /// `/compact [focus]`: compact now, then ask again.
+    Compact(String),
+    /// End the run.
+    Quit,
+}
+
+/// What the model is told when the person interrupts and types nothing, as in mini-swe-agent.
+pub const TEMPORARY_INTERRUPTION: &str = "Temporary interruption caught.";
+
+/// The comment prompt, mini-swe-agent's wording.
+const COMMENT_PROMPT: &str = "\nInterrupted. Type a comment/command (/h for available commands)\n> ";
 
 /// What the person typed in human mode.
 pub enum HumanInput {
@@ -21,6 +40,8 @@ pub enum HumanInput {
     /// Hand control back to the model in the given mode.
     SwitchMode(Mode),
     Quit,
+    /// Ctrl+C at the prompt.
+    Interrupted,
 }
 
 /// The interactive state of a run.
@@ -51,7 +72,11 @@ impl Interaction {
             return Decision::Run;
         }
         loop {
-            let answer = read_line("Run? [Enter] yes, /y yolo, /u human mode, /h help, or type why not: ").unwrap_or_default();
+            let answer = match prompt_line("Run? [Enter] yes, /y yolo, /u human mode, /h help, or type why not: ") {
+                Input::Line(line) => line,
+                Input::Eof => String::new(),
+                Input::Interrupted => return Decision::Interrupted,
+            };
             match answer.trim() {
                 "" => return Decision::Run,
                 "/y" => {
@@ -71,7 +96,11 @@ impl Interaction {
     /// Reads a command typed by the person in human mode.
     pub fn read_human_command(&mut self) -> HumanInput {
         loop {
-            let Some(line) = read_line("command (/c confirm mode, /y yolo mode, /q quit): ") else { return HumanInput::Quit };
+            let line = match prompt_line("command (/c confirm mode, /y yolo mode, /q quit): ") {
+                Input::Line(line) => line,
+                Input::Eof => return HumanInput::Quit,
+                Input::Interrupted => return HumanInput::Interrupted,
+            };
             match line.trim() {
                 "" => continue,
                 "/q" => return HumanInput::Quit,
@@ -105,11 +134,68 @@ impl Interaction {
         Some((s.trim().parse().ok()?, c.trim().parse().ok()?))
     }
 
+    /// Asks what to do after a Ctrl+C, the way mini-swe-agent does. A second Ctrl+C, `/q` or the
+    /// end of input ends the run. Mode commands switch the mode and send the temporary message.
+    pub fn comment_prompt(&mut self) -> Comment {
+        let mut prompt = COMMENT_PROMPT.to_string();
+        loop {
+            let line = match prompt_line(&prompt) {
+                Input::Line(line) => line,
+                Input::Eof | Input::Interrupted => return Comment::Quit,
+            };
+            prompt = COMMENT_PROMPT.to_string();
+            let text = line.trim();
+            if let Some(mode) = mode_command(text) {
+                if mode == self.mode {
+                    prompt = format!("Already in {} mode.{COMMENT_PROMPT}", mode_name(mode));
+                    continue;
+                }
+                self.mode = mode;
+                println!("Switched to {} mode.", mode_name(mode));
+                return Comment::Text(TEMPORARY_INTERRUPTION.into());
+            }
+            match text {
+                "/q" => return Comment::Quit,
+                "/h" => print_comment_help(self.mode),
+                "" => return Comment::Text(TEMPORARY_INTERRUPTION.into()),
+                _ if text == "/compact" || text.starts_with("/compact ") => return Comment::Compact(text["/compact".len()..].trim().to_string()),
+                _ => return Comment::Text(text.to_string()),
+            }
+        }
+    }
+
     /// Returns true when an action matches the whitelist.
     /// @param action - the action
     fn is_whitelisted(&self, action: &Action) -> bool {
         matches!(action, Action::Bash { command, .. } if self.whitelist.iter().any(|r| r.is_match(command)))
     }
+}
+
+/// Reads `/y`, `/c` or `/u`.
+/// @param text - what the person typed
+fn mode_command(text: &str) -> Option<Mode> {
+    match text {
+        "/y" => Some(Mode::Yolo),
+        "/c" => Some(Mode::Confirm),
+        "/u" => Some(Mode::Human),
+        _ => None,
+    }
+}
+
+/// The name mini-swe-agent prints for a mode.
+/// @param mode - the mode
+fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Yolo => "yolo",
+        Mode::Confirm => "confirm",
+        Mode::Human => "human",
+    }
+}
+
+/// Prints the comment prompt's commands.
+/// @param mode - the current mode
+fn print_comment_help(mode: Mode) {
+    println!("  Current mode: {}\n  text            send it to the model and carry on\n  Enter           carry on\n  /y              switch to yolo mode (run commands without asking)\n  /c              switch to confirm mode (ask before running commands)\n  /u              switch to human mode (you type the commands)\n  /compact [focus] compact the history now\n  /q or Ctrl+C    end the run; it can be resumed with umbra --resume", mode_name(mode));
 }
 
 /// Prints the confirm mode commands.

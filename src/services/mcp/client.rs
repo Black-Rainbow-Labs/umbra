@@ -10,7 +10,11 @@ use super::http::{SseTransport, StreamableHttpTransport};
 use super::stdio::StdioTransport;
 use super::transport::{RpcError, Transport, LEGACY_PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION};
 use crate::models::action::Observation;
+use crate::models::config::ImagesConfig;
 use crate::models::context::{McpServerDefinition, McpTool, McpTransport};
+use crate::models::image::ImageData;
+use crate::services::image_service::image_from_mcp;
+use crate::utils::interrupt;
 
 /// A server Umbra has connected to.
 pub struct McpClient {
@@ -89,16 +93,25 @@ impl McpClient {
     }
 
     /// Calls one tool and turns the result into an observation. A tool that reports `isError`
-    /// gets return code 1, so the model sees it failed and can try again.
+    /// gets return code 1, so the model sees it failed and can try again. Images in the result
+    /// are attached to the observation.
     /// @param tool - the tool name on this server
     /// @param arguments - the arguments object
-    pub fn call_tool(&mut self, tool: &str, arguments: Value) -> Observation {
+    /// @param settings - the image scaling and size limits
+    pub fn call_tool(&mut self, tool: &str, arguments: Value, settings: &ImagesConfig) -> Observation {
         let arguments = if arguments.is_object() { arguments } else { json!({}) };
         match self.request("tools/call", json!({ "name": tool, "arguments": arguments }), self.call_timeout) {
             Ok(result) => {
                 let failed = result["isError"].as_bool().unwrap_or(false);
-                Observation { output: render_tool_result(&result), returncode: if failed { 1 } else { 0 }, exception_info: String::new() }
+                let (images, notes) = tool_result_images(&result, &format!("mcp:{}.{tool}", self.name), settings);
+                let mut output = render_tool_result(&result);
+                for note in notes.iter().chain((!images.is_empty()).then(|| format!("[{} image(s) attached to this result]", images.len())).iter()) {
+                    output.push('\n');
+                    output.push_str(note);
+                }
+                Observation { output, returncode: if failed { 1 } else { 0 }, exception_info: String::new(), images }
             }
+            Err(error) if interrupt::is_pending() => Observation::failed("", format!("{INTERRUPTED_MCP_CALL} ({error})")),
             Err(error) => Observation::failed("", format!("MCP call {}.{tool} failed: {error}", self.name)),
         }
     }
@@ -141,6 +154,25 @@ fn normalize_schema(schema: &Value) -> Value {
         return schema.clone();
     }
     json!({ "type": "object", "properties": {} })
+}
+
+/// The error an MCP call gets when Ctrl+C stops it.
+pub const INTERRUPTED_MCP_CALL: &str = "The user interrupted this MCP call (Ctrl+C)";
+
+/// Reads the images out of a tool result. An image that cannot be used gives a note instead.
+/// @param result - the tools/call result
+/// @param source - the tool, recorded with each image
+/// @param settings - the image settings
+pub fn tool_result_images(result: &Value, source: &str, settings: &ImagesConfig) -> (Vec<ImageData>, Vec<String>) {
+    let mut images = Vec::new();
+    let mut notes = Vec::new();
+    for item in result["content"].as_array().into_iter().flatten().filter(|i| i["type"] == "image") {
+        match image_from_mcp(item, source, settings) {
+            Ok(image) => images.push(image),
+            Err(error) => notes.push(format!("[an image in this result could not be shown to you: {error:#}]")),
+        }
+    }
+    (images, notes)
 }
 
 /// Joins a tool result's content items into text. Images and audio are described, not inlined.

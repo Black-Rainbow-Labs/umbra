@@ -69,7 +69,13 @@ pub fn estimate_message_tokens(message: &Message) -> u64 {
         Some(Value::Array(blocks)) if !blocks.is_empty() => estimate_text_tokens(&Value::Array(blocks.clone()).to_string()),
         _ => estimate_text_tokens(&message.content) + message.tool_calls.iter().map(|c| estimate_text_tokens(&c.name) + estimate_text_tokens(&c.arguments.to_string())).sum::<u64>(),
     };
-    body + MESSAGE_OVERHEAD_TOKENS
+    body + images_tokens(message) + MESSAGE_OVERHEAD_TOKENS
+}
+
+/// Estimates the tokens of a message's images: one per 28x28 patch.
+/// @param message - one history entry
+pub fn images_tokens(message: &Message) -> u64 {
+    message.images.iter().map(|image| image.estimated_tokens()).sum()
 }
 
 /// Estimates the tokens in a list of messages.
@@ -156,7 +162,7 @@ pub fn plan_mask(messages: &[Message], budget: &Budget, min_chars: usize) -> (Ve
         if !is_output(message) || is_masked(message) {
             continue;
         }
-        let tokens = estimate_text_tokens(&message.content);
+        let tokens = estimate_text_tokens(&message.content) + images_tokens(message);
         seen += tokens;
         if seen <= budget.protect_recent || message.content.len() < min_chars || command_for(messages, index).contains("SKILL.md") {
             continue;
@@ -177,11 +183,17 @@ pub fn plan_mask(messages: &[Message], budget: &Budget, min_chars: usize) -> (Ve
 fn placeholder(message: &Message) -> String {
     let chars = message.extra.get("raw_output").and_then(Value::as_str).map(|s| s.chars().count()).unwrap_or_else(|| message.content.chars().count());
     let code = message.extra.get("returncode").and_then(Value::as_i64).map(|c| format!(", return code {c}")).unwrap_or_default();
-    format!("[Output removed to save context after you read it: {chars} characters{code}. Run the command again if you need it.]")
+    let images = match message.images.len() {
+        0 => String::new(),
+        1 => " and 1 image".to_string(),
+        n => format!(" and {n} images"),
+    };
+    format!("[Output removed to save context after you read it: {chars} characters{code}{images}. Run the command again if you need it.]")
 }
 
 /// Replaces the content of the chosen outputs with the placeholder and marks them. The full
-/// output stays in `extra.raw_output` for the trajectory.
+/// output stays in `extra.raw_output` for the trajectory, and any images move to
+/// `extra.masked_images`, where they are kept but no longer sent.
 /// @param messages - the whole history
 /// @param indexes - the outputs to mask
 pub fn apply_mask(messages: &mut [Message], indexes: &[usize]) {
@@ -193,6 +205,9 @@ pub fn apply_mask(messages: &mut [Message], indexes: &[usize]) {
             message.extra = json!({});
         }
         message.extra["masked"] = json!(true);
+        if !message.images.is_empty() {
+            message.extra["masked_images"] = json!(std::mem::take(&mut message.images));
+        }
     }
 }
 

@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn truncates_long_output_in_both_formats() {
-        let long = Observation { output: "x".repeat(12_000), returncode: 0, exception_info: String::new() };
+        let long = Observation { output: "x".repeat(12_000), returncode: 0, exception_info: String::new(), images: Vec::new() };
         let text = render_observation(OBSERVATION_TEXT, &json!({}), &long).unwrap();
         assert!(text.contains("2000 characters elided"));
         let tools = render_observation(OBSERVATION_TOOLS, &json!({}), &long).unwrap();

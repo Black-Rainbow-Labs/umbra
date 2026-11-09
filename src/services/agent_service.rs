@@ -11,7 +11,9 @@ use serde_json::{json, Value};
 use super::action_parser::{parse_text_action, parse_tool_actions};
 use super::compaction_service::{apply_mask, budget_for, estimate_request_tokens, estimate_tools_tokens, mask_record, plan_mask, resolve_window, summarize, summary_record, ReportedSize, SummaryInputs};
 use super::environment::{submission_from, Environment};
-use super::interaction_service::{show_assistant, show_notice, show_observation, Decision, HumanInput, Interaction};
+use super::image_service::images_in_text;
+use super::interaction_service::{show_assistant, show_notice, show_observation, Comment, Decision, HumanInput, Interaction};
+use super::session_service::ResumedSession;
 use super::mcp::McpManager;
 use super::prompt_service::{render, render_format_error, render_observation, Templates};
 use super::providers::anthropic::RAW_CONTENT_KEY;
@@ -20,20 +22,38 @@ use crate::models::action::{Action, Observation};
 use crate::models::compaction::{CompactionReason, CompactionRecord};
 use crate::models::config::{ActionFormat, Mode, UmbraConfig};
 use crate::models::context::McpTool;
+use crate::models::image::ImageData;
 use crate::models::message::{Message, Role};
 use crate::models::model_response::ModelResponse;
+use crate::models::session::{SessionIndexEntry, SessionInfo};
 use crate::models::trajectory::{ModelStats, Trajectory, TrajectoryInfo};
+use crate::repositories::session_repository::save_index;
 use crate::repositories::trajectory_repository::save_trajectory;
+use crate::utils::interrupt;
+use crate::utils::paths::absolute_path;
 
 /// How a run ended.
 #[derive(Debug, Clone)]
 pub struct RunResult {
-    /// `Submitted`, `LimitsExceeded`, `TimeExceeded`, `RepeatedFormatError`, `ModelError` or `UserQuit`.
+    /// `Submitted`, `LimitsExceeded`, `TimeExceeded`, `RepeatedFormatError`, `ModelError`, `UserQuit` or `Interrupted`.
     pub exit_status: String,
     pub submission: String,
     pub trajectory_path: PathBuf,
     pub stats: ModelStats,
+    pub session_id: String,
 }
+
+/// How a run starts: a new task, or a saved session with the next task.
+pub enum Opening {
+    New { task: String, images: Vec<ImageData> },
+    Resume { session: Box<ResumedSession>, task: String, images: Vec<ImageData> },
+}
+
+/// The exit status of a run the person ended with Ctrl+C.
+pub const INTERRUPTED_STATUS: &str = "Interrupted";
+
+/// The result given to actions that did not run because the person pressed Ctrl+C.
+pub const NOT_RUN_INTERRUPTED: &str = "This action was not executed because the user interrupted the run (Ctrl+C).";
 
 /// What one step decided.
 enum Step {
@@ -53,6 +73,10 @@ pub struct AgentParts {
     pub trajectory_path: PathBuf,
     /// The config section of the trajectory.
     pub config_record: Value,
+    /// The working folder, for image paths typed at a prompt.
+    pub cwd: PathBuf,
+    /// What the trajectory records about the session.
+    pub session: SessionInfo,
 }
 
 /// A run in progress.
@@ -67,6 +91,8 @@ pub struct Agent {
     started: Instant,
     exit: (String, String),
     compaction: CompactionState,
+    /// The model calls and cost already spent when this run started; the limits count from here.
+    baseline: (u32, f64),
 }
 
 /// What the agent tracks for compaction.
@@ -89,7 +115,7 @@ impl Agent {
         let mcp_tools = parts.mcp.tools();
         let tools = if parts.config.action_format == ActionFormat::Tools { tool_specs(&mcp_tools) } else { Vec::new() };
         let compaction = CompactionState { tools_tokens: estimate_tools_tokens(&tools), ..Default::default() };
-        Agent { parts, templates, tools, mcp_tools, messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction }
+        Agent { parts, templates, tools, mcp_tools, messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0) }
     }
 
     /// Renders the system prompt for a task without running anything, for `umbra prompt`.
@@ -100,10 +126,10 @@ impl Agent {
     }
 
     /// Runs the task to the end and returns how it ended. The trajectory is saved after every step.
-    /// @param task - the task text
-    pub fn run(&mut self, task: &str) -> Result<RunResult> {
-        let (system, instance) = self.render_prompts(task)?;
-        self.messages = vec![Message::system(system), Message::user(instance)];
+    /// @param opening - a new task, or a saved session and the next task
+    pub fn run(&mut self, opening: Opening) -> Result<RunResult> {
+        self.open(opening)?;
+        self.save();
         loop {
             let step = self.step();
             let ended = match step {
@@ -118,7 +144,28 @@ impl Agent {
         }
         self.parts.environment.close();
         self.parts.mcp.close();
-        Ok(RunResult { exit_status: self.exit.0.clone(), submission: self.exit.1.clone(), trajectory_path: self.parts.trajectory_path.clone(), stats: self.stats.clone() })
+        Ok(RunResult { exit_status: self.exit.0.clone(), submission: self.exit.1.clone(), trajectory_path: self.parts.trajectory_path.clone(), stats: self.stats.clone(), session_id: self.parts.session.id.clone() })
+    }
+
+    /// Sets up the history. A new task renders the prompts; a resumed session continues from its
+    /// saved history and totals, with the next task added the way a follow up task is.
+    /// @param opening - how the run starts
+    fn open(&mut self, opening: Opening) -> Result<()> {
+        match opening {
+            Opening::New { task, images } => {
+                let (system, instance) = self.render_prompts(&task)?;
+                self.messages = vec![Message::system(system), Message::user(instance).with_images(images)];
+            }
+            Opening::Resume { session, task, images } => {
+                let session = *session;
+                self.messages = session.messages;
+                self.stats = session.stats;
+                self.compaction.records = session.compactions;
+                self.baseline = (self.stats.api_calls, self.stats.instance_cost);
+                self.messages.push(new_task_message(&task).with_images(images));
+            }
+        }
+        Ok(())
     }
 
     /// Handles a step that wants to end the run. After a submission the person may give a
@@ -132,7 +179,8 @@ impl Agent {
                     self.compact_by_summary(CompactionReason::Manual, focus);
                     continue;
                 }
-                self.messages.push(Message::user(format!("The user added a new task: {task}")).with_extra(json!({ "interrupt_type": "UserNewTask" })));
+                let images = self.typed_images(&task);
+                self.messages.push(new_task_message(&task).with_images(images));
                 return false;
             }
         }
@@ -141,8 +189,12 @@ impl Agent {
         true
     }
 
-    /// One step: a model call (or a typed command in human mode), then the actions.
+    /// One step: a model call (or a typed command in human mode), then the actions. A Ctrl+C
+    /// at any point stops the step and shows the comment prompt.
     fn step(&mut self) -> Result<Step> {
+        if interrupt::take() {
+            return self.interrupted();
+        }
         if self.parts.interaction.mode == Mode::Human {
             return self.human_step();
         }
@@ -150,8 +202,15 @@ impl Agent {
             return Ok(exit);
         }
         self.compact_if_needed();
+        if interrupt::take() {
+            return self.interrupted();
+        }
         self.stats.api_calls += 1;
-        let response = self.call_model()?;
+        let response = match self.call_model() {
+            Ok(response) => response,
+            Err(_) if interrupt::take() => return self.interrupted(),
+            Err(error) => return Err(error),
+        };
         self.record_usage(&response);
         let actions = match self.parse_actions(&response) {
             Ok(actions) => actions,
@@ -166,19 +225,60 @@ impl Agent {
                 self.push_observations(&actions, &[], Some(&reason))?;
                 Ok(Step::Continue)
             }
+            Decision::Interrupted => {
+                self.push_observations(&actions, &[], Some(NOT_RUN_INTERRUPTED))?;
+                self.interrupted()
+            }
         }
+    }
+
+    /// After a Ctrl+C: saves, then asks for a comment the way mini-swe-agent does. The comment
+    /// goes to the model as `Interrupted by user: <text>`. With no terminal there is nobody to
+    /// ask, so the run ends.
+    fn interrupted(&mut self) -> Result<Step> {
+        self.save();
+        if !self.parts.interaction.interactive {
+            return Ok(Step::Exit(INTERRUPTED_STATUS.into(), String::new()));
+        }
+        loop {
+            match self.parts.interaction.comment_prompt() {
+                Comment::Quit => return Ok(Step::Exit(INTERRUPTED_STATUS.into(), String::new())),
+                Comment::Compact(focus) => {
+                    self.compact_by_summary(CompactionReason::Manual, &focus);
+                }
+                Comment::Text(text) => {
+                    let images = self.typed_images(&text);
+                    self.messages.push(Message::user(format!("Interrupted by user: {text}")).with_images(images).with_extra(json!({ "interrupt_type": "UserInterruption" })));
+                    return Ok(Step::Continue);
+                }
+            }
+        }
+    }
+
+    /// Loads the images named in text the person typed, and says what was attached.
+    /// @param text - what the person typed
+    fn typed_images(&self, text: &str) -> Vec<ImageData> {
+        let (images, notices) = images_in_text(text, &self.parts.cwd, &self.parts.config.images);
+        for notice in notices {
+            show_notice("image", &notice);
+        }
+        for image in &images {
+            show_notice("image", &format!("attached {} {}", image.source, image.describe()));
+        }
+        images
     }
 
     /// Checks the step, cost and wall time limits before a model call. In a terminal the person
     /// may raise the step and cost limits and carry on.
+    /// A resumed session counts from where it was resumed.
     fn check_limits(&mut self) -> Option<Step> {
         let config = &self.parts.config;
         let limit = config.wall_time_limit_seconds;
         if limit > 0 && self.started.elapsed().as_secs() >= limit {
             return Some(Step::Exit("TimeExceeded".into(), String::new()));
         }
-        let steps_hit = config.step_limit > 0 && self.stats.api_calls >= config.step_limit;
-        let cost_hit = config.cost_limit > 0.0 && self.stats.instance_cost >= config.cost_limit;
+        let steps_hit = config.step_limit > 0 && self.stats.api_calls - self.baseline.0 >= config.step_limit;
+        let cost_hit = config.cost_limit > 0.0 && self.stats.instance_cost - self.baseline.1 >= config.cost_limit;
         if !steps_hit && !cost_hit {
             return None;
         }
@@ -196,7 +296,7 @@ impl Agent {
     /// context window, the history is compacted with a summary and the call is made once more.
     fn call_model(&mut self) -> Result<ModelResponse> {
         match self.call_model_once() {
-            Err(error) if error.context_overflow && self.parts.config.compaction.enabled => {
+            Err(error) if error.context_overflow && !error.interrupted && self.parts.config.compaction.enabled => {
                 show_notice("compaction", &format!("the model refused the request as too long ({}), so the session is being summarized and the call sent again", error.message.lines().next().unwrap_or("")));
                 if !self.compact_by_summary(CompactionReason::Overflow, "") {
                     return Err(anyhow::anyhow!("model call failed: {}", error.message));
@@ -329,7 +429,8 @@ impl Agent {
     }
 
     /// Runs the actions in order. A command that submits ends the run; the actions after it are
-    /// reported to the model as not executed, so every tool call still gets a result.
+    /// reported to the model as not executed, so every tool call still gets a result. A Ctrl+C
+    /// stops the running action, skips the rest the same way, and shows the comment prompt.
     /// @param actions - the parsed actions
     fn execute_actions(&mut self, actions: &[Action]) -> Result<Step> {
         let mut outputs = Vec::new();
@@ -341,11 +442,15 @@ impl Agent {
                 submitted = submission_from(&observation);
             }
             outputs.push(observation);
-            if submitted.is_some() {
+            if submitted.is_some() || interrupt::is_pending() {
                 break;
             }
         }
-        self.push_observations(actions, &outputs, None)?;
+        let interrupted = submitted.is_none() && interrupt::take();
+        self.push_observations(actions, &outputs, interrupted.then_some(NOT_RUN_INTERRUPTED))?;
+        if interrupted {
+            return self.interrupted();
+        }
         Ok(match submitted { Some(text) => Step::Exit("Submitted".into(), text), None => Step::Continue })
     }
 
@@ -372,7 +477,7 @@ impl Agent {
                 Some(id) => Message::tool(id, content),
                 None => Message::user(content),
             };
-            self.messages.push(message.with_extra(json!({ "raw_output": observation.output, "returncode": observation.returncode, "exception_info": observation.exception_info, "timestamp": now_seconds() })));
+            self.messages.push(message.with_images(observation.images.clone()).with_extra(json!({ "raw_output": observation.output, "returncode": observation.returncode, "exception_info": observation.exception_info, "timestamp": now_seconds() })));
         }
         Ok(())
     }
@@ -387,6 +492,7 @@ impl Agent {
                 return Ok(Step::Continue);
             }
             HumanInput::Quit => return Ok(Step::Exit("UserQuit".into(), String::new())),
+            HumanInput::Interrupted => return self.interrupted(),
         };
         let action = Action::Bash { command: command.clone(), tool_call_id: None };
         self.messages.push(Message::user(format!("User command: \n```bash\n{command}\n```")).with_extra(json!({ "actions": [action] })));
@@ -410,15 +516,22 @@ impl Agent {
         vars
     }
 
-    /// Writes the trajectory. A failure to write is reported but does not stop the run.
+    /// Writes the trajectory and the session's index entry. A failure to write is reported but
+    /// does not stop the run.
     fn save(&self) {
         let last = self.messages.iter().rev().find(|m| m.role == Role::Exit);
         let exit_status = last.and_then(|m| m.extra["exit_status"].as_str()).unwrap_or("").to_string();
         let submission = last.map(|m| m.content.clone()).unwrap_or_default();
-        let info = TrajectoryInfo { model_stats: self.stats.clone(), config: self.parts.config_record.clone(), umbra_version: env!("CARGO_PKG_VERSION").into(), exit_status, submission, compactions: self.compaction.records.clone() };
+        let session = self.parts.session.clone();
+        let info = TrajectoryInfo { model_stats: self.stats.clone(), config: self.parts.config_record.clone(), umbra_version: env!("CARGO_PKG_VERSION").into(), exit_status: exit_status.clone(), submission, compactions: self.compaction.records.clone(), session: session.clone() };
         let trajectory = Trajectory { info, messages: self.messages.clone(), trajectory_format: "mini-swe-agent-1.1".into() };
         if let Err(error) = save_trajectory(&self.parts.trajectory_path, &trajectory) {
             eprintln!("umbra: could not save the trajectory: {error:#}");
+        }
+        let trajectory_path = absolute_path(&self.parts.trajectory_path).to_string_lossy().replace('\\', "/");
+        let entry = SessionIndexEntry { id: session.id, trajectory: trajectory_path, cwd: session.cwd, model: session.model, task: session.task, started_at: session.started_at, updated_at: now_seconds(), exit_status, api_calls: self.stats.api_calls, cost: self.stats.instance_cost, messages: self.messages.len() };
+        if let Err(error) = save_index(&entry) {
+            eprintln!("umbra: could not save the session index: {error:#}");
         }
     }
 }
@@ -452,6 +565,12 @@ fn assistant_message(response: &ModelResponse, actions: &[Action]) -> Message {
     message.with_extra(extra)
 }
 
+/// The message that gives the model a follow up task, or the next task of a resumed session.
+/// @param task - the task text
+fn new_task_message(task: &str) -> Message {
+    Message::user(format!("The user added a new task: {task}")).with_extra(json!({ "interrupt_type": "UserNewTask" }))
+}
+
 /// Reads `/compact` or `/compact <focus>` typed at the follow up prompt. Returns the focus text,
 /// empty when there is none, or None for any other text.
 /// @param text - what the person typed
@@ -461,7 +580,7 @@ fn compact_command(text: &str) -> Option<&str> {
 }
 
 /// Seconds since the Unix epoch, as a float.
-fn now_seconds() -> f64 {
+pub fn now_seconds() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 

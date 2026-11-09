@@ -66,11 +66,11 @@ mod tests {
 
     #[test]
     fn detects_the_sentinel_only_on_the_first_line_and_exit_zero() {
-        let ok = Observation { output: "\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\npatch".into(), returncode: 0, exception_info: String::new() };
+        let ok = Observation { output: "\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\npatch".into(), returncode: 0, exception_info: String::new(), images: Vec::new() };
         assert_eq!(submission_from(&ok).as_deref(), Some("patch"));
         let failed = Observation { returncode: 1, ..ok.clone() };
         assert_eq!(submission_from(&failed), None);
-        let later = Observation { output: "hello\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT".into(), returncode: 0, exception_info: String::new() };
+        let later = Observation { output: "hello\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT".into(), returncode: 0, exception_info: String::new(), images: Vec::new() };
         assert_eq!(submission_from(&later), None);
     }
 }

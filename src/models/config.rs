@@ -58,6 +58,7 @@ pub struct UmbraConfig {
     pub mcp_servers: BTreeMap<String, Value>,
     pub templates: TemplatesConfig,
     pub compaction: CompactionConfig,
+    pub images: ImagesConfig,
 }
 
 impl Default for UmbraConfig {
@@ -84,6 +85,7 @@ impl Default for UmbraConfig {
             mcp_servers: BTreeMap::new(),
             templates: TemplatesConfig::default(),
             compaction: CompactionConfig::default(),
+            images: ImagesConfig::default(),
         }
     }
 }
@@ -157,6 +159,9 @@ pub struct ProviderConfig {
     /// Replay only: a JSON file holding a list of scripted replies.
     pub replay_file: String,
     pub max_retries: Option<u32>,
+    /// OpenAI compatible servers only: stream the reply, so Ctrl+C closes the connection and the
+    /// server stops generating. On unless set to false.
+    pub stream: Option<bool>,
 }
 
 /// Which other harnesses' files Umbra reads. All are on by default.
@@ -313,5 +318,24 @@ impl Default for CompactionConfig {
             keep_recent_ratio: 0.1,
             mask_min_chars: 400,
         }
+    }
+}
+
+/// Images the person attaches, and images MCP tools return.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImagesConfig {
+    /// Images whose long edge is bigger are scaled down to it. 0 never scales.
+    pub max_long_edge: u32,
+    /// Images whose base64 text is bigger than this many bytes are refused.
+    pub max_bytes: usize,
+    /// Attach image files named in a task, a follow up task or a comment.
+    pub detect_paths: bool,
+}
+
+impl Default for ImagesConfig {
+    /// Claude's 1568 pixel long edge and the Claude API's 10 MB limit, with path detection on.
+    fn default() -> Self {
+        ImagesConfig { max_long_edge: 1568, max_bytes: 10 * 1024 * 1024, detect_paths: true }
     }
 }

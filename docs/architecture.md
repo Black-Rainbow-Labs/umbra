@@ -174,9 +174,14 @@ The design, the research behind it and the measurements are in
 The local environment runs each command as `bash -c "exec 2>&1\n<command>"`, so stdout and stderr
 arrive in their original order as one stream, the way mini-swe-agent merges them. Stdin is closed,
 so a command that waits for input ends instead of hanging. Two threads read the pipes, so a large
-output never blocks the command. After `environment.timeout` seconds (30 by default) the whole
-process tree is killed: `taskkill /F /T` on Windows, the process group on Linux and macOS. The
-model sees return code -1 and a message saying the command timed out.
+output never blocks the command. After `environment.timeout` seconds (30 by default), or when you
+press Ctrl+C, everything the command started is killed. On Linux and macOS that is the command's
+process group. On Windows each command runs in a job object, and the job is terminated, followed
+by `taskkill /F /T`. The job is needed because Git Bash starts a program such as `sleep.exe` from
+a process outside bash's own process tree, so `taskkill /T` alone left it running. The model sees
+return code -1 and a message saying the command timed out or was interrupted, with the output so
+far. Commands and MCP servers start in their own process group (`CREATE_NEW_PROCESS_GROUP` on
+Windows), so a Ctrl+C typed in Umbra's terminal reaches Umbra and not them.
 
 On Windows, Umbra uses Git for Windows' `bash.exe`. It never uses `C:\Windows\System32\bash.exe`,
 which would run the command inside WSL instead of on Windows. When no bash is found it falls back to
@@ -184,6 +189,46 @@ which would run the command inside WSL instead of on Windows. When no bash is fo
 
 The Docker environment starts `docker run -d <image> sleep 2h` once, runs each command with
 `docker exec -w <cwd> <container> bash -lc`, and removes the container at the end of the run.
+
+## Ctrl+C
+
+The Ctrl+C handler only sets a flag. Each place Umbra waits checks it every 100 ms: the model call
+(on a worker thread), the retry backoff, a running command, a stdio MCP call, and every prompt. Stdin
+is read by one background thread, so a prompt can stop waiting too.
+
+```mermaid
+flowchart TD
+    K[Ctrl+C] --> F[flag set]
+    F --> M{What was running?}
+    M -- model call --> D[drop the request; no assistant message]
+    M -- command or MCP call --> X[kill it; its result says it was interrupted;<br/>later actions get a not executed result]
+    M -- confirm prompt --> N[the actions get a not executed result]
+    D & X & N --> S[save the trajectory]
+    S --> T{stdin a terminal?}
+    T -- no --> E[exit status Interrupted, exit code 130]
+    T -- yes --> P["Interrupted. Type a comment/command"]
+    P -- text or Enter --> U["user message: Interrupted by user: ..."] --> L[next step]
+    P -- /q, Ctrl+C, end of input --> E
+```
+
+Every tool call still gets a result, so the history stays valid for the Anthropic API, which refuses a
+`tool_use` without its `tool_result`. A third Ctrl+C that Umbra has not handled exits the process at
+once, in case the main thread is stuck somewhere that does not check the flag.
+
+## Sessions
+
+A session is one trajectory file, identified by its start time in milliseconds. After every step
+Umbra writes the trajectory and a small index entry, `~/.umbra/sessions/<id>.json`, that holds the
+folder, model, first task, status, call count and cost, so `umbra sessions` can list sessions
+without reading trajectories that may hold large images.
+
+Resuming reads the trajectory back: the messages, `info.model_stats`, `info.compactions` and
+`info.session`. The exit marker is removed, and any tool call with no result gets one saying it was
+not run, which is what a session interrupted in the middle of a step needs. The original system
+prompt is kept, so the model sees the same start and the provider's prompt cache still matches. The
+next task is added as `The user added a new task: <task>`, the same message a follow up task gets.
+Each resume is recorded in `info.session.resumes`; with `--fork` the history goes to a new session
+and the old file is not touched.
 
 ## The trajectory file
 
@@ -198,7 +243,8 @@ record up to the last step. Its shape follows mini-swe-agent's `mini-swe-agent-1
     "umbra_version": "0.1.0",
     "exit_status": "Submitted",
     "submission": "5050\n",
-    "compactions": []
+    "compactions": [],
+    "session": { "id": "1794185509287", "cwd": "C:/work/app", "model": "anthropic/claude-haiku-5-5", "task": "...", "started_at": 1794185509.2, "resumes": [] }
   },
   "messages": [
     { "role": "system", "content": "..." },
@@ -215,3 +261,8 @@ record up to the last step. Its shape follows mini-swe-agent's `mini-swe-agent-1
 records one compaction: `kind` (`mask` or `summary`), `reason` (`threshold`, `overflow` or
 `manual`), the step, the estimate before and after, the window, the masked positions, and for a
 summary the summary text, its cost and every message it replaced, in full.
+
+A message with images has an `images` list: `media_type`, `data` (base64), `width`, `height` and
+`source`, the file path or `mcp:<server>.<tool>`. The data is kept so a resumed session can send the
+same pictures. When the mask pass removes an output with images, they move to
+`extra.masked_images`, where they are kept but no longer sent.

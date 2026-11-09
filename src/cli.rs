@@ -31,6 +31,8 @@ pub enum Command {
     Config(InspectArgs),
     /// Print the system prompt and first user message a task would get, without running it.
     Prompt(PromptArgs),
+    /// List saved sessions, newest first, for --resume.
+    Sessions(SessionsArgs),
 }
 
 /// Options for running a task.
@@ -72,6 +74,21 @@ pub struct RunArgs {
     /// or uses a built in table.
     #[arg(long)]
     pub context_window: Option<u64>,
+    /// Attach an image (PNG, JPEG, GIF or WebP) to the task. Repeatable. Image paths typed in a
+    /// task or at a prompt are attached too.
+    #[arg(short = 'i', long = "image", value_name = "PATH")]
+    pub images: Vec<PathBuf>,
+    /// Resume a saved session: its id, the start of its id, or a trajectory file. With no value,
+    /// pick one of this folder's sessions.
+    #[arg(short = 'r', long, value_name = "SESSION", num_args = 0..=1, default_missing_value = "")]
+    pub resume: Option<String>,
+    /// Resume the newest session in this folder.
+    #[arg(long = "continue", conflicts_with = "resume")]
+    pub continue_last: bool,
+    /// With --resume or --continue: copy the history into a new session and leave the old one
+    /// as it was.
+    #[arg(long)]
+    pub fork: bool,
 }
 
 /// Options shared by every subcommand.
@@ -128,6 +145,20 @@ pub struct McpArgs {
     /// Start each server and list its tools.
     #[arg(long)]
     pub connect: bool,
+}
+
+/// Options for `umbra sessions`.
+#[derive(Debug, Clone, Args, Default)]
+pub struct SessionsArgs {
+    /// The folder whose sessions are listed. Defaults to the current folder.
+    #[arg(long)]
+    pub cwd: Option<PathBuf>,
+    /// List every folder's sessions.
+    #[arg(long)]
+    pub all: bool,
+    /// Print JSON instead of a table.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options for `umbra prompt`.

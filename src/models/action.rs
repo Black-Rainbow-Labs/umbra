@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::image::ImageData;
+
 /// One thing to run. A model response can hold several in tool mode and exactly one in text mode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -36,6 +38,9 @@ pub struct Observation {
     pub output: String,
     pub returncode: i32,
     pub exception_info: String,
+    /// Images the action returned. Only MCP tools return them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageData>,
 }
 
 impl Observation {
@@ -43,6 +48,6 @@ impl Observation {
     /// @param output - any partial output that was captured
     /// @param error - the error description shown to the model
     pub fn failed(output: impl Into<String>, error: impl Into<String>) -> Self {
-        Observation { output: output.into(), returncode: -1, exception_info: error.into() }
+        Observation { output: output.into(), returncode: -1, exception_info: error.into(), images: Vec::new() }
     }
 }

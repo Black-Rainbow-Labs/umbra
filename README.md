@@ -21,12 +21,14 @@ $ umbra -m anthropic/claude-haiku-5-5 "add a --verbose flag to the CLI and test 
 - [Choosing a model](#choosing-a-model)
 - [What Umbra reads from other tools](#what-umbra-reads-from-other-tools)
 - [Modes: confirm, yolo and human](#modes-confirm-yolo-and-human)
+- [Ctrl+C, images and resuming a session](#ctrlc-images-and-resuming-a-session)
 - [Features: what is included and what is not](#features-what-is-included-and-what-is-not)
 - [Commands](#commands)
 - [Project layout](#project-layout)
 - More detail: [architecture](docs/architecture.md), [configuration](docs/configuration.md),
   [where files are found](docs/discovery.md), [MCP](docs/mcp.md), [models](docs/providers.md),
-  [design document](tasks/umbra-harness-tdd.md), [compaction design](tasks/umbra-compaction-tdd.md)
+  [design document](tasks/umbra-harness-tdd.md), [compaction design](tasks/umbra-compaction-tdd.md),
+  [images, resume and Ctrl+C design](tasks/umbra-images-resume-interrupt-tdd.md)
 
 ## Quick start
 
@@ -160,6 +162,56 @@ At that prompt, `/compact` or `/compact <what to keep>` summarizes the session b
 If stdin is not a terminal, Umbra refuses to start in confirm mode and asks for `-y`, so it never
 waits for an answer nobody can give.
 
+## Ctrl+C, images and resuming a session
+
+**Ctrl+C** stops what Umbra is doing and asks what to do next, the way mini-swe-agent does:
+
+```text
+Interrupted. Type a comment/command (/h for available commands)
+>
+```
+
+| Umbra was | What Ctrl+C does |
+|---|---|
+| waiting for the model | Stops waiting. A streamed reply from a local server is dropped, which closes the connection, so the server stops generating. Nothing from that reply is kept. |
+| running a command | Kills the command and everything it started. The model gets the output so far and `The user interrupted this command (Ctrl+C) after N seconds`. |
+| calling an MCP tool | Stops waiting and tells the server the call is cancelled. The server keeps running. |
+| asking you to confirm | The commands are not run. |
+
+What you type next goes to the model as `Interrupted by user: <your text>` and the run carries on.
+Enter alone carries on with `Temporary interruption caught.`. `/y`, `/c` and `/u` switch the
+mode, `/compact` compacts the history, and `/q` or a second Ctrl+C ends the run with exit code
+130. Commands and MCP servers run in their own process group, so the key press reaches Umbra and
+not them. Without a terminal, Ctrl+C ends the run straight away. If Umbra ever stops responding,
+a third Ctrl+C exits.
+
+**Images** go to the model with the task:
+
+```bash
+umbra -m anthropic/claude-haiku-5-5 -i screenshot.png "why does this dialog cut off its last button?"
+umbra -m local/qwen "compare @before.png with @after.png"
+```
+
+`-i` / `--image` attaches a file. A PNG, JPEG, GIF or WebP path typed in a task, a follow up task or
+a comment is attached too, with or without `@`, so you can drag a file into the terminal. Images
+over 1568 pixels on the long edge are scaled down. Images that MCP tools return, such as a browser
+screenshot, reach the model as images. A local model needs a vision projector loaded to read them.
+
+**Sessions** are saved after every step, so any run can be continued, including one that was
+interrupted or crashed:
+
+```bash
+umbra sessions                       # this folder's sessions, newest first
+umbra --continue "now add a test"    # the newest session in this folder
+umbra --resume 1794185509287 "and update the docs"
+umbra --resume                       # pick one from a list
+umbra --resume 17941855 --fork "try it a different way"   # copy it, leave the original alone
+```
+
+A resumed session continues in its own folder, with its own model unless `-m` says otherwise, and
+in the same trajectory file. The model sees the whole history, the images included, and the next task
+arrives the way a follow up task does. The step and cost limits count from the resume.
+
 ## Features: what is included and what is not
 
 "Umbra" is what this version does. The other columns are for comparison and come from each
@@ -198,8 +250,10 @@ project's documentation as of November 2026.
 | Plan mode | no | no | yes | not documented | yes |
 | Todo list tool | no | no | yes | yes | yes |
 | Web fetch and web search | no | no | yes | yes | yes |
-| Image input | no | optional | yes | yes | yes |
-| Resume a past session | no | no | yes | yes | yes |
+| Image input | yes (`-i`, typed paths, MCP images) | optional | yes | yes | yes |
+| Paste an image from the clipboard | no | no | yes | yes | yes |
+| Resume a past session | yes (`--resume`, `--continue`, `--fork`) | no | yes | yes | yes |
+| Ctrl+C stops the current step and asks for a comment | yes | yes | yes, with Esc | yes, with Esc | yes, with Esc |
 | Full screen terminal interface | no | no | yes | yes | yes |
 | Git checkpoints and undo | no | no | yes | not documented | yes |
 
@@ -218,6 +272,7 @@ search or a browser.
 | `umbra commands` | Lists the slash commands. |
 | `umbra mcp [--connect]` | Lists MCP servers; with `--connect` starts them and lists their tools. |
 | `umbra config` | Prints the merged configuration. |
+| `umbra sessions [--all]` | Lists saved sessions, newest first, for `--resume`. |
 
 The listing commands take `--json`. The options used most:
 
@@ -239,6 +294,10 @@ The listing commands take `--json`. The options used most:
 | `-q, --quiet` | Print only the final answer |
 | `--no-compact` | Never compact the history |
 | `--context-window <tokens>` | The model's context window, for compaction |
+| `-i, --image <file>` | Attach an image to the task. Repeatable. |
+| `-r, --resume [session]` | Continue a saved session: its id, the start of its id, or a trajectory file |
+| `--continue` | Continue the newest session in this folder |
+| `--fork` | With `--resume` or `--continue`: continue a copy of the session |
 
 On Windows, Git Bash rewrites an argument that starts with `/` into a Windows path. To run a slash
 command from Git Bash, write `MSYS_NO_PATHCONV=1 umbra /review`. PowerShell and cmd do not do this.
@@ -261,4 +320,12 @@ tasks/                   the design document
 ```
 
 Run the tests with `cargo test`. The integration tests use a fake home folder and never read your
-real configuration.
+real configuration. Two more sets are left out of a plain `cargo test` and run with `--ignored`:
+
+```bash
+cargo test --test live_local -- --ignored --test-threads 1       # against the model on localhost:8080
+cargo test --test console_windows -- --ignored --test-threads 1  # a real Ctrl+C in a console window
+```
+
+`UMBRA_LIVE_MODEL` picks the model for the live tests, and `UMBRA_LIVE_EVIDENCE=<folder>` keeps their
+trajectories.

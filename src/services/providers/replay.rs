@@ -4,10 +4,13 @@
 //! The file is a JSON array. Each entry is either a string (the reply text) or an object
 //! `{"content": "...", "tool_calls": [{"name": "bash", "arguments": {"command": "ls"}}]}`, or
 //! `{"error": {"status": 400, "body": "prompt is too long"}}` to make that call fail the way a
-//! server would.
+//! server would. An object may also have `"sleep_ms"`: the call waits that long first, the way a
+//! slow model does, and Ctrl+C ends the wait.
 //!
 //! When `UMBRA_REPLAY_RECORD` names a file, every request is appended to it as one JSON line
 //! holding the messages and tool names, so a test can read exactly what the model was sent.
+
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -16,6 +19,7 @@ use super::{Provider, ProviderError, ToolSpec};
 use crate::models::config::ProviderConfig;
 use crate::models::message::{Message, ToolCall};
 use crate::models::model_response::ModelResponse;
+use crate::utils::interrupt;
 
 /// Replays scripted replies.
 pub struct ReplayProvider {
@@ -49,6 +53,10 @@ impl Provider for ReplayProvider {
             return Err(ProviderError::fatal(format!("replay file {} has no reply number {}", self.file, self.next + 1)));
         };
         self.next += 1;
+        let sleep_ms = entry.get("sleep_ms").and_then(Value::as_u64).unwrap_or(0);
+        if sleep_ms > 0 && !interrupt::sleep(Duration::from_millis(sleep_ms)) {
+            return Err(ProviderError::interrupted());
+        }
         if let Some(error) = entry.get("error") {
             let status = error["status"].as_u64().unwrap_or(500) as u16;
             return Err(ProviderError::from_status(status, error["body"].as_str().unwrap_or("")));
@@ -73,7 +81,7 @@ impl Provider for ReplayProvider {
 /// @param tools - the tools it offered
 fn record_request(messages: &[Message], tools: &[ToolSpec]) {
     let Ok(path) = std::env::var("UMBRA_REPLAY_RECORD") else { return };
-    let sent: Vec<Value> = messages.iter().map(|m| json!({ "role": m.role, "content": m.content, "tool_call_id": m.tool_call_id, "tool_calls": m.tool_calls })).collect();
+    let sent: Vec<Value> = messages.iter().map(|m| json!({ "role": m.role, "content": m.content, "tool_call_id": m.tool_call_id, "tool_calls": m.tool_calls, "images": m.images.iter().map(|i| json!({ "media_type": i.media_type, "width": i.width, "height": i.height, "bytes": i.data.len() * 3 / 4, "source": i.source })).collect::<Vec<_>>() })).collect();
     let line = json!({ "messages": sent, "tools": tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>() }).to_string();
     let written = std::fs::OpenOptions::new().create(true).append(true).open(&path).and_then(|mut file| std::io::Write::write_all(&mut file, format!("{line}
 ").as_bytes()));

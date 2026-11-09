@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::models::action::Observation;
-use crate::models::config::McpConfig;
+use crate::models::config::{ImagesConfig, McpConfig};
 use crate::models::context::{McpServerDefinition, McpTool};
 use client::McpClient;
 
@@ -29,6 +29,7 @@ pub struct McpFailure {
 pub struct McpManager {
     clients: BTreeMap<String, McpClient>,
     pub failures: Vec<McpFailure>,
+    images: ImagesConfig,
 }
 
 impl McpManager {
@@ -74,9 +75,15 @@ impl McpManager {
     /// @param arguments - the arguments object
     pub fn call(&mut self, server: &str, tool: &str, arguments: Value) -> Observation {
         match self.clients.get_mut(server) {
-            Some(client) => client.call_tool(tool, arguments),
+            Some(client) => client.call_tool(tool, arguments, &self.images),
             None => Observation::failed("", format!("MCP server '{server}' is not connected")),
         }
+    }
+
+    /// Sets the limits used for images that tools return.
+    /// @param settings - the image settings
+    pub fn set_image_settings(&mut self, settings: ImagesConfig) {
+        self.images = settings;
     }
 
     /// Shuts every server down.

@@ -1,12 +1,12 @@
 //! The record of one compaction, kept in the trajectory's `info.compactions` list so the file
 //! shows what was removed from the model's view and why.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::message::Message;
 
 /// What a compaction did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CompactionKind {
     /// Old command outputs were replaced by a placeholder.
@@ -16,7 +16,7 @@ pub enum CompactionKind {
 }
 
 /// Why a compaction ran.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CompactionReason {
     /// The estimated request size passed the trigger.
@@ -28,7 +28,7 @@ pub enum CompactionReason {
 }
 
 /// One compaction.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionRecord {
     pub kind: CompactionKind,
     pub reason: CompactionReason,

@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use wait_timeout::ChildExt;
@@ -13,6 +13,8 @@ use wait_timeout::ChildExt;
 use super::Environment;
 use crate::models::action::Observation;
 use crate::models::config::EnvironmentConfig;
+use crate::utils::interrupt;
+use crate::utils::process::{own_process_group, ProcessJob};
 
 /// A shell on the host.
 pub struct LocalEnvironment {
@@ -38,7 +40,7 @@ impl LocalEnvironment {
     pub fn execute_args(&self, args: &[String], label: &str) -> Observation {
         let mut process = Command::new(&self.shell[0]);
         process.args(args).current_dir(&self.cwd).envs(&self.config.env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        set_own_process_group(&mut process);
+        own_process_group(&mut process);
         match process.spawn() {
             Ok(child) => wait_for_output(child, Duration::from_secs(self.config.timeout.max(1)), label),
             Err(e) => Observation::failed("", format!("An error occurred while executing the command: could not start {}: {e}", self.shell[0])),
@@ -97,39 +99,61 @@ fn bash_on_path() -> Option<PathBuf> {
     std::env::split_paths(&path).map(|dir| dir.join("bash.exe")).find(|p| p.exists() && !p.to_string_lossy().to_lowercase().contains(r"\windows\"))
 }
 
-/// Puts the shell in its own process group on Unix so a timeout can kill everything it started.
-/// @param process - the command being built
-#[cfg(unix)]
-fn set_own_process_group(process: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    process.process_group(0);
+/// How a command's wait ended.
+enum Ending {
+    Exited(Option<i32>),
+    TimedOut,
+    /// Ctrl+C was pressed, after this many seconds.
+    Interrupted(f64),
 }
 
-/// Windows needs nothing here; `taskkill /T` kills the process tree instead.
-#[cfg(not(unix))]
-fn set_own_process_group(_process: &mut Command) {}
-
-/// Waits for the command, collecting both pipes, and kills it when the timeout passes.
+/// Waits for the command, collecting both pipes. It is killed when the timeout passes or when
+/// the person presses Ctrl+C, and the output so far is kept either way.
 /// @param child - the running shell
 /// @param timeout - how long to wait
 /// @param command - the command text, for the timeout message
 fn wait_for_output(mut child: Child, timeout: Duration, command: &str) -> Observation {
+    let job = ProcessJob::track(&child);
     let stdout = spawn_reader(child.stdout.take());
     let stderr = spawn_reader(child.stderr.take());
-    let status = child.wait_timeout(timeout).ok().flatten();
-    let timed_out = status.is_none();
-    if timed_out {
+    let ending = wait_for_exit(&mut child, timeout);
+    if !matches!(ending, Ending::Exited(_)) {
+        if let Some(job) = &job {
+            job.kill();
+        }
         kill_tree(&mut child);
     }
     let grace = Duration::from_secs(2);
     let mut output = stdout.recv_timeout(grace).unwrap_or_default();
     output.push_str(&stderr.recv_timeout(grace).unwrap_or_default());
-    if timed_out {
-        let message = format!("An error occurred while executing the command: Command '{command}' timed out after {} seconds", timeout.as_secs());
-        return Observation::failed(output, message);
+    match ending {
+        Ending::Exited(code) => Observation { output, returncode: code.unwrap_or(-1), exception_info: String::new(), images: Vec::new() },
+        Ending::TimedOut => Observation::failed(output, format!("An error occurred while executing the command: Command '{command}' timed out after {} seconds", timeout.as_secs())),
+        Ending::Interrupted(seconds) => Observation::failed(output, format!("{INTERRUPTED_COMMAND} after {seconds:.1} seconds")),
     }
-    let returncode = status.and_then(|s| s.code()).unwrap_or(-1);
-    Observation { output, returncode, exception_info: String::new() }
+}
+
+/// The start of the error a command gets when Ctrl+C stops it.
+pub const INTERRUPTED_COMMAND: &str = "The user interrupted this command (Ctrl+C)";
+
+/// Waits for the shell to exit, checking for Ctrl+C every 100 ms.
+/// @param child - the running shell
+/// @param timeout - how long to wait
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> Ending {
+    let started = Instant::now();
+    loop {
+        match child.wait_timeout(interrupt::POLL) {
+            Ok(Some(status)) => return Ending::Exited(status.code()),
+            Ok(None) => {}
+            Err(_) => return Ending::Exited(None),
+        }
+        if interrupt::is_pending() {
+            return Ending::Interrupted(started.elapsed().as_secs_f64());
+        }
+        if started.elapsed() >= timeout {
+            return Ending::TimedOut;
+        }
+    }
 }
 
 /// Reads a pipe to the end on its own thread and sends the text back. Reading on a thread means

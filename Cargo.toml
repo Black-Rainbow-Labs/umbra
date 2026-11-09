@@ -1,6 +1,6 @@
 [package]
 name = "umbra"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 description = "A small coding agent harness modeled after mini-swe-agent"
@@ -8,8 +8,11 @@ repository = "https://github.com/Black-Rainbow-Labs/umbra"
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
+ctrlc = "3.5.2"
 dirs = "7.0.0"
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 minijinja = { version = "3.1.0", features = ["serde", "json", "builtins"] }
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -18,3 +21,9 @@ serde_norway = "0.9.42"
 toml = "1.2.1"
 ureq = { version = "3.5.1", default-features = false, features = ["native-tls", "json", "gzip"] }
 wait-timeout = "0.2.1"
+
+[target."cfg(windows)".dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_JobObjects", "Win32_Security", "Win32_Storage_FileSystem"] }
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_JobObjects", "Win32_Security"] }

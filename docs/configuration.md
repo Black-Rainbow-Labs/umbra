@@ -114,6 +114,11 @@ min_reclaim_ratio = 0.1                # a mask pass must free at least this
 min_reclaim_max = 20000                # ...capped at this many tokens
 keep_recent_ratio = 0.1                # the newest turns kept word for word after a summary
 mask_min_chars = 400                   # shorter outputs are never masked
+
+[images]
+max_long_edge = 1568                   # scale bigger images down to this; 0 never scales
+max_bytes = 10485760                   # refuse an image whose base64 is bigger
+detect_paths = true                    # attach image files named in a task or a comment
 ```
 
 ## Settings
@@ -139,6 +144,13 @@ mask_min_chars = 400                   # shorter outputs are never masked
 | `compaction.enabled` | true | Compact the history when it nears the context window. `--no-compact` turns it off for one run. |
 | `compaction.context_window` | 0 | The window in tokens. 0 asks the provider (llama.cpp's `/props`, a server's `/models`) or uses the built in table. `--context-window <tokens>` sets it for one run. |
 | `compaction.*` | see above | When to compact and how much to keep. See [compaction](architecture.md#compaction). |
+| `images.max_long_edge` | 1568 | Images whose long edge is bigger are scaled down to it. 0 never scales. |
+| `images.max_bytes` | 10485760 | Images whose base64 text is bigger are refused. |
+| `images.detect_paths` | true | Attach PNG, JPEG, GIF and WebP files whose paths are typed in a task, a follow up task or a comment. |
+| `providers.<name>.stream` | true | OpenAI compatible servers: stream replies, so Ctrl+C stops the server generating. |
+
+`UMBRA_FORCE_INTERACTIVE=1` treats a piped stdin as a terminal, so a script or a test can type into
+Umbra's prompts.
 
 ## Templates
 

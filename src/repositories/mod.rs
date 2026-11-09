@@ -4,6 +4,7 @@ pub mod command_repository;
 pub mod config_repository;
 pub mod instruction_repository;
 pub mod mcp_config_repository;
+pub mod session_repository;
 pub mod skill_repository;
 pub mod trajectory_repository;
 

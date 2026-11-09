@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
+use crate::utils::interrupt;
+use crate::utils::process::own_process_group;
+
 use super::transport::{is_server_request, notification_message, reply_to_server_request, request_message, response_result, Transport};
 
 /// A running stdio server.
@@ -31,6 +34,7 @@ impl StdioTransport {
         let (program, program_args) = windows_command(command, args);
         let mut process = Command::new(&program);
         process.args(&program_args).envs(env.iter().cloned()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        own_process_group(&mut process);
         if let Some(dir) = cwd.filter(|d| !d.is_empty()) {
             process.current_dir(dir);
         }
@@ -65,10 +69,15 @@ impl Transport for StdioTransport {
         self.write(&request_message(id, method, params))?;
         let deadline = Instant::now() + timeout;
         loop {
+            if interrupt::is_pending() {
+                let _ = self.write(&notification_message("notifications/cancelled", serde_json::json!({ "requestId": id, "reason": "interrupted by the user" })));
+                bail!("interrupted while waiting for {method}");
+            }
             let left = deadline.saturating_duration_since(Instant::now());
-            match self.responses.recv_timeout(left) {
+            match self.responses.recv_timeout(left.min(interrupt::POLL)) {
                 Ok(message) if message["id"].as_u64() == Some(id) => return response_result(&message),
                 Ok(_) => continue,
+                Err(RecvTimeoutError::Timeout) if !left.is_zero() => continue,
                 Err(RecvTimeoutError::Timeout) => {
                     let _ = self.write(&notification_message("notifications/cancelled", serde_json::json!({ "requestId": id, "reason": "timeout" })));
                     bail!("MCP server did not answer {method} within {} seconds", timeout.as_secs());

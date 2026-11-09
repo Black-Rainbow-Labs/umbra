@@ -128,8 +128,10 @@ characters. In text mode the model writes:
 ```
 ````
 
-A result's text items are joined into the output the model sees. Images and audio are described
-by type and size instead of being pasted in. A result with `isError: true` is shown with return
+A result's text items are joined into the output the model sees. Images are attached to the
+result and reach the model as images, scaled down like any other image; the text also says
+`[N image(s) attached to this result]`. An image that cannot be read gets a note in the text
+instead. Audio is described by type and size. A result with `isError: true` is shown with return
 code 1, so the model knows the call failed and can try again.
 
 The text a server sends in `instructions` during the handshake is added to the system prompt.
@@ -142,6 +144,7 @@ The text a server sends in `instructions` during the handshake is added to the s
 | A tool call takes more than 120 seconds | The model sees an error. On stdio Umbra also sends `notifications/cancelled`. `mcp.call_timeout_seconds` changes the limit. |
 | The server sends a request to Umbra | `ping` gets an empty result. Anything else gets "method not found", because Umbra offers no client features such as sampling. |
 | The server prints text before a message on the same line | The message is still read. |
+| You press Ctrl+C during a call to a stdio server | Umbra stops waiting, sends `notifications/cancelled` with the reason `interrupted by the user`, and shows the comment prompt. The server keeps running for the rest of the run, because it was started in its own process group and never receives the key press. A call to an HTTP server is not stopped; Umbra shows the prompt once it answers or reaches its timeout. |
 
 ## Not supported
 
