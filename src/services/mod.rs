@@ -16,3 +16,4 @@ pub mod providers;
 pub mod run_service;
 pub mod session_service;
 pub mod setup_service;
+pub mod tool_search_service;

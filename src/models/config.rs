@@ -286,12 +286,28 @@ pub struct McpConfig {
     pub disabled: Vec<String>,
     pub startup_timeout_seconds: u64,
     pub call_timeout_seconds: u64,
+    /// Send MCP tools by name only, with a `tool_search` tool that loads their definitions:
+    /// `auto` when the definitions would take more than `defer_ratio` of the context window,
+    /// `always`, or `never`.
+    pub defer_tools: DeferTools,
+    /// The share of the context window the MCP tool definitions may take before `auto` defers them.
+    pub defer_ratio: f64,
+}
+
+/// When MCP tool definitions are deferred behind `tool_search`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeferTools {
+    Auto,
+    Always,
+    Never,
 }
 
 impl Default for McpConfig {
-    /// MCP on, every server, 30 second startup and 120 second calls.
+    /// MCP on, every server, 30 second startup and 120 second calls, tools deferred when their
+    /// definitions would take more than a tenth of the context window (Claude Code's default).
     fn default() -> Self {
-        McpConfig { enabled: true, only: Vec::new(), disabled: Vec::new(), startup_timeout_seconds: 30, call_timeout_seconds: 120 }
+        McpConfig { enabled: true, only: Vec::new(), disabled: Vec::new(), startup_timeout_seconds: 30, call_timeout_seconds: 120, defer_tools: DeferTools::Auto, defer_ratio: 0.1 }
     }
 }
 

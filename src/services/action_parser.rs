@@ -4,6 +4,7 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::prompt_service::DEFAULT_MCP_REGEX;
+use super::tool_search_service::BUILTIN_SERVER;
 use crate::models::action::Action;
 use crate::models::config::Finish;
 use crate::models::context::McpTool;
@@ -85,7 +86,7 @@ pub fn parse_tool_actions(response: &ModelResponse, mcp_tools: &[McpTool]) -> Re
                 Some(command) => actions.push(Action::Bash { command: command.to_string(), tool_call_id: id }),
                 None => errors.push("Missing 'command' argument in bash tool call.".into()),
             }
-        } else if let Some(tool) = mcp_tools.iter().find(|t| t.qualified_name() == call.name) {
+        } else if let Some(tool) = mcp_tools.iter().find(|t| t.qualified_name() == call.name || (t.server == BUILTIN_SERVER && t.name == call.name)) {
             actions.push(Action::Mcp { server: tool.server.clone(), tool: tool.name.clone(), arguments: call.arguments.clone(), tool_call_id: id });
         } else {
             errors.push(format!("Unknown tool '{}'.", call.name));
@@ -121,7 +122,7 @@ fn parse_mcp_block(block: &str, mcp_tools: &[McpTool]) -> Result<Action, String>
     let value: Value = serde_json::from_str(block).map_err(|e| format!("The umbra_mcp block is not valid JSON: {e}"))?;
     let tool_name = value["tool"].as_str().unwrap_or("");
     let server = value["server"].as_str();
-    let tool = mcp_tools.iter().find(|t| t.qualified_name() == tool_name || (Some(t.server.as_str()) == server && t.name == tool_name));
+    let tool = mcp_tools.iter().find(|t| t.qualified_name() == tool_name || (Some(t.server.as_str()) == server && t.name == tool_name) || (t.server == BUILTIN_SERVER && t.name == tool_name));
     let Some(tool) = tool else { return Err(format!("Unknown MCP tool '{tool_name}'.")) };
     let arguments = value.get("arguments").cloned().unwrap_or(Value::Object(Default::default()));
     Ok(Action::Mcp { server: tool.server.clone(), tool: tool.name.clone(), arguments, tool_call_id: None })

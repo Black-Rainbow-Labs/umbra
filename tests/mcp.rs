@@ -179,3 +179,47 @@ fn ctrl_c_stops_a_slow_mcp_call_and_the_server_keeps_working() {
     assert_eq!(messages[4]["content"], "Interrupted by user: go on");
     assert_eq!(messages[6]["extra"]["raw_output"], "echo: still here", "the MCP server survived the Ctrl+C");
 }
+
+#[test]
+fn deferred_tools_are_sent_by_name_and_loaded_with_tool_search() {
+    let s = Scratch::new("mcp-deferred");
+    let config = fake_server_config(&s, "images");
+    let defer = slash(&s.write("defer.toml", "[mcp]\ndefer_tools = \"always\"\n"));
+    let model = replay_model(&s, "script.json", &json!([
+        { "content": "", "tool_calls": [{ "name": "tool_search", "arguments": { "query": "select:mcp__fake__echo" } }] },
+        { "content": "", "tool_calls": [{ "name": "mcp__fake__echo", "arguments": { "text": "ping" } }] },
+        "The echo tool answered."
+    ]));
+    let (traj, record) = (s.path("run.traj.json"), s.path("record.jsonl"));
+    let output = run_umbra_with(&s.path("home"), &["-m", &model, "-y", "-c", &config, "-c", &defer, "--cwd", &slash(&s.root), "-o", &slash(&traj), "task"], &[("UMBRA_REPLAY_RECORD", &slash(&record))], "");
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let requests = recorded_requests(&record);
+    assert_eq!(requests[0]["tools"], json!(["bash", "tool_search"]), "no MCP definitions before a search");
+    let system = requests[0]["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("<deferred_tools>") && system.contains("mcp__fake__shot"), "the names are listed");
+    assert!(!system.contains("Echo the text back"), "but not the descriptions");
+    assert_eq!(requests[1]["tools"], json!(["bash", "tool_search", "mcp__fake__echo"]), "the search loaded echo");
+    let trajectory = read_trajectory(&traj);
+    let messages = trajectory["messages"].as_array().unwrap();
+    assert!(messages[3]["extra"]["raw_output"].as_str().unwrap().contains("mcp__fake__echo: Echo the text back"), "{}", messages[3]);
+    assert_eq!(messages[5]["extra"]["raw_output"], "echo: ping");
+    assert_eq!(trajectory["info"]["exit_status"], "Replied");
+
+    // A resumed session loads the same tools again before its first call.
+    let model = replay_model(&s, "again.json", &json!(["Still here."]));
+    let record2 = s.path("record2.jsonl");
+    let output = run_umbra_with(&s.path("home"), &["-m", &model, "-y", "-c", &config, "-c", &defer, "--cwd", &slash(&s.root), "--resume", &slash(&traj), "and now?"], &[("UMBRA_REPLAY_RECORD", &slash(&record2))], "");
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    assert_eq!(recorded_requests(&record2)[0]["tools"], json!(["bash", "tool_search", "mcp__fake__echo"]));
+}
+
+#[test]
+fn small_tool_sets_are_not_deferred() {
+    let s = Scratch::new("mcp-not-deferred");
+    let config = fake_server_config(&s, "legacy");
+    let model = replay_model(&s, "script.json", &json!(["Hi."]));
+    let record = s.path("record.jsonl");
+    let output = run_umbra_with(&s.path("home"), &["-m", &model, "-y", "-c", &config, "--cwd", &slash(&s.root), "task"], &[("UMBRA_REPLAY_RECORD", &slash(&record))], "");
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    assert_eq!(recorded_requests(&record)[0]["tools"], json!(["bash", "mcp__fake__echo"]));
+}

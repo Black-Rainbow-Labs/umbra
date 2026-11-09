@@ -36,7 +36,7 @@ Put the command in one fenced block tagged `umbra_bash`, after a sentence about 
 ```umbra_bash
 ls -la
 ```
-{%- if mcp_tools %}
+{%- if mcp_tools or deferred_tools is defined and deferred_tools %}
 
 To call an MCP tool instead, write one block like this, with the tool's name and a JSON object of its arguments:
 
@@ -63,7 +63,7 @@ Commands run with: {{shell}}
 You are a helpful assistant that can interact with a computer.
 {%- if action_format == "text" %}
 
-Your response must contain exactly ONE action: either ONE bash code block with ONE command (or commands connected with && or ||){% if mcp_tools %}, or ONE MCP tool call block{% endif %}.
+Your response must contain exactly ONE action: either ONE bash code block with ONE command (or commands connected with && or ||){% if mcp_tools or deferred_tools is defined and deferred_tools %}, or ONE MCP tool call block{% endif %}.
 Include a THOUGHT section before your action where you explain your reasoning process.
 Format your response as shown in <format_example>.
 
@@ -74,7 +74,7 @@ Your reasoning and analysis here. Explain why you want to perform the action.
 your_command_here
 ```
 </format_example>
-{%- if mcp_tools %}
+{%- if mcp_tools or deferred_tools is defined and deferred_tools %}
 
 To call an MCP tool instead, write ONE block like this, with the tool's name and a JSON object of its arguments:
 
@@ -122,4 +122,13 @@ Skills are folders of instructions, scripts and reference files for particular k
 </server>
 {%- endfor %}
 </mcp_server_instructions>
+{%- endif %}
+{%- if deferred_tools is defined and deferred_tools %}
+
+<deferred_tools>
+These MCP tools are available, but their definitions are not loaded yet, to keep the prompt small. Before you call one, load it with the `tool_search` tool{% if action_format == "text" %} in an umbra_mcp block, for example {"tool": "tool_search", "arguments": {"query": "select:mcp__server__tool_name"}}{% endif %}. Pass `select:<name>,<name>` to load tools by these names, or keywords to find the tools that match. A loaded tool is called by its name like any other tool. Only load the tools the task needs.
+{% for name in deferred_tools %}
+{{ name }}
+{%- endfor %}
+</deferred_tools>
 {%- endif %}

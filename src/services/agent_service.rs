@@ -4,6 +4,7 @@
 //! In the submit style it ends when a command prints COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT.
 //! Either way a limit also ends it.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -12,11 +13,12 @@ use serde_json::{json, Value};
 
 use super::action_parser::{parse_text_reply, parse_tool_reply, Parsed};
 use super::agent_events::AgentEvents;
-use super::compaction_service::{apply_mask, budget_for, estimate_request_tokens, estimate_tools_tokens, find_cut, mask_record, plan_mask, resolve_window, summarize, summary_record, ReportedSize, SummaryInputs};
+use super::compaction_service::{apply_mask, budget_for, estimate_history_tokens, estimate_request_tokens, estimate_tools_tokens, find_cut, mask_record, plan_mask, resolve_window, summarizable_tokens, summarize, summary_record, ReportedSize, SummaryInputs};
 use super::environment::{submission_from, Environment};
 use super::image_service::images_in_text;
 use super::interaction_service::{show_assistant, show_event, show_observation, show_reply_text, show_turn_end, show_user_text, Comment, Decision, HumanInput, Interaction, Tone, TurnSummary};
 use super::session_service::ResumedSession;
+use super::tool_search_service::{describe_found, is_tool_search, max_results, search_tools, should_defer, tool_search_spec, tool_search_tool};
 use super::mcp::McpManager;
 use super::prompt_service::{render, render_format_error, render_observation, Templates};
 use super::providers::anthropic::RAW_CONTENT_KEY;
@@ -109,7 +111,12 @@ pub struct Agent {
     parts: AgentParts,
     templates: Templates,
     tools: Vec<ToolSpec>,
+    /// Every tool the MCP servers offer.
     mcp_tools: Vec<McpTool>,
+    /// True when the MCP tools are sent by name only and loaded with `tool_search`.
+    deferred: bool,
+    /// The deferred tools loaded so far, by full name.
+    loaded: BTreeSet<String>,
     messages: Vec<Message>,
     stats: ModelStats,
     format_errors: u32,
@@ -135,14 +142,102 @@ struct CompactionState {
 }
 
 impl Agent {
-    /// Prepares a run: picks the templates and builds the tool list for tool mode.
+    /// Prepares a run: picks the templates, decides whether the MCP tools are deferred behind
+    /// `tool_search` (when their definitions would take a large share of the context window), and
+    /// builds the tool list for tool mode.
     /// @param parts - the provider, environment, MCP servers and settings
-    pub fn new(parts: AgentParts) -> Self {
+    pub fn new(mut parts: AgentParts) -> Self {
         let templates = Templates::resolve(&parts.config.templates, parts.config.action_format, parts.config.finish);
         let mcp_tools = parts.mcp.tools();
-        let tools = if parts.config.action_format == ActionFormat::Tools { tool_specs(&mcp_tools) } else { Vec::new() };
-        let compaction = CompactionState { tools_tokens: estimate_tools_tokens(&tools), ..Default::default() };
-        Agent { parts, templates, tools, mcp_tools, messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0) }
+        let window = resolve_window(&parts.config.compaction, parts.provider.as_mut());
+        let mcp_tokens = estimate_tools_tokens(&tool_specs(&mcp_tools)[1..]);
+        let mcp = &parts.config.mcp;
+        let deferred = !mcp_tools.is_empty() && should_defer(mcp.defer_tools, mcp_tokens, window, mcp.defer_ratio);
+        let compaction = CompactionState { window: Some(window), ..Default::default() };
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0) };
+        agent.rebuild_tools();
+        agent
+    }
+
+    /// Builds the tools sent with each request: `bash`, then every MCP tool, or with deferral
+    /// `bash`, `tool_search` and only the MCP tools loaded so far. Text mode sends no tools.
+    fn rebuild_tools(&mut self) {
+        self.tools = if self.parts.config.action_format != ActionFormat::Tools {
+            Vec::new()
+        } else if self.deferred {
+            let loaded: Vec<McpTool> = self.mcp_tools.iter().filter(|t| self.loaded.contains(&t.qualified_name())).cloned().collect();
+            let mut specs = tool_specs(&loaded);
+            specs.insert(1, tool_search_spec());
+            specs
+        } else {
+            tool_specs(&self.mcp_tools)
+        };
+        self.compaction.tools_tokens = estimate_tools_tokens(&self.tools);
+    }
+
+    /// Loads deferred tools by their full names, so their definitions go with every later request.
+    /// The size the provider last reported no longer counts the tools, so it is dropped.
+    /// @param names - the `mcp__server__tool` names
+    /// @param announce - true to say at the terminal which tools were loaded
+    fn load_tools(&mut self, names: Vec<String>, announce: bool) {
+        if !self.deferred {
+            return;
+        }
+        let new: Vec<String> = names.into_iter().filter(|n| !self.loaded.contains(n) && self.mcp_tools.iter().any(|t| t.qualified_name() == *n)).collect();
+        if new.is_empty() {
+            return;
+        }
+        if announce {
+            self.notice(Tone::Info, "tools", &format!("loaded {}", new.join(", ")));
+        }
+        self.loaded.extend(new);
+        self.rebuild_tools();
+        self.compaction.reported = None;
+    }
+
+    /// Runs `tool_search`: finds the deferred tools the query names, loads them, and returns
+    /// their definitions for the model to read.
+    /// @param arguments - the call's arguments: `query`, and `max_results`
+    fn run_tool_search(&mut self, arguments: &Value) -> Observation {
+        let query = arguments.get("query").and_then(Value::as_str).unwrap_or("");
+        let found = search_tools(query, &self.mcp_tools, max_results(arguments));
+        let output = describe_found(&found.iter().map(|&i| &self.mcp_tools[i]).collect::<Vec<_>>(), query);
+        let names = found.iter().map(|&i| self.mcp_tools[i].qualified_name()).collect();
+        self.load_tools(names, true);
+        Observation { output, returncode: if found.is_empty() { 1 } else { 0 }, exception_info: String::new(), images: Vec::new() }
+    }
+
+    /// The tools a reply may call: every MCP tool, and `tool_search` when tools are deferred.
+    /// A deferred tool that was never loaded can still be called; it is loaded when it runs.
+    fn callable_tools(&self) -> Vec<McpTool> {
+        let mut tools = self.mcp_tools.clone();
+        if self.deferred {
+            tools.push(tool_search_tool());
+        }
+        tools
+    }
+
+    /// Loads again the deferred tools a resumed session had loaded: the ones its searches found
+    /// and the ones it called.
+    fn restore_loaded_tools(&mut self) {
+        if !self.deferred {
+            return;
+        }
+        let mut names = Vec::new();
+        for message in self.messages.iter().filter(|m| m.role == Role::Assistant) {
+            let actions: Vec<Action> = serde_json::from_value(message.extra["actions"].clone()).unwrap_or_default();
+            for action in actions {
+                if let Action::Mcp { server, tool, arguments, .. } = action {
+                    if is_tool_search(&server, &tool) {
+                        let query = arguments.get("query").and_then(Value::as_str).unwrap_or("");
+                        names.extend(search_tools(query, &self.mcp_tools, max_results(&arguments)).into_iter().map(|i| self.mcp_tools[i].qualified_name()));
+                    } else {
+                        names.push(mcp_name(&server, &tool));
+                    }
+                }
+            }
+        }
+        self.load_tools(names, false);
     }
 
     /// Renders the system prompt for a task without running anything, for `umbra prompt`.
@@ -199,6 +294,7 @@ impl Agent {
         self.stats = session.stats;
         self.compaction.records = session.compactions;
         self.baseline = (self.stats.api_calls, self.stats.instance_cost);
+        self.restore_loaded_tools();
     }
 
     /// Gives the model its next task, the way a follow up task is given. An exit marker left by
@@ -486,9 +582,51 @@ impl Agent {
             return;
         }
         self.compact_by_masking(CompactionReason::Threshold);
-        if self.request_estimate() > budget.target {
-            self.compact_by_summary(CompactionReason::Threshold, "");
+        if self.request_estimate() <= budget.target {
+            return;
         }
+        // A summary only replaces the conversation history. When the system prompt, the
+        // instructions and the tool definitions fill most of the window, the history it could
+        // remove is small, and summarizing it before every call costs a model call each time
+        // and frees almost nothing (task-2588).
+        let removable = summarizable_tokens(&self.messages, budget.keep_recent);
+        if removable < budget.min_reclaim {
+            self.summary_not_worth_it(removable, window);
+            return;
+        }
+        self.compact_by_summary(CompactionReason::Threshold, "");
+    }
+
+    /// The tokens compaction can never remove: the system prompt, the first message and the tool
+    /// definitions. The character estimate is scaled by how the provider's last reported size
+    /// compared with the estimate for the same messages, so it is in the provider's own tokens.
+    fn fixed_tokens(&self) -> u64 {
+        let tools = self.compaction.tools_tokens;
+        let head_end = self.messages.iter().position(|m| m.role == Role::User).map_or(self.messages.len(), |i| i + 1);
+        let estimate = estimate_history_tokens(&self.messages[..head_end]) + tools;
+        match self.compaction.reported {
+            Some(reported) if reported.messages <= self.messages.len() => {
+                let estimated_then = estimate_history_tokens(&self.messages[..reported.messages]) + tools;
+                if estimated_then == 0 { estimate } else { estimate * reported.tokens / estimated_then }
+            }
+            _ => estimate,
+        }
+    }
+
+    /// Says, once until a compaction works again, that the context is past the trigger but a
+    /// summary would free too little to be worth a model call, and how big the fixed part is.
+    /// @param removable - the tokens a summary could remove
+    /// @param window - the context window in tokens
+    fn summary_not_worth_it(&mut self, removable: u64, window: u64) {
+        if self.compaction.stuck_warned && !console::is_verbose() {
+            return;
+        }
+        self.compaction.stuck_warned = true;
+        let used = self.request_estimate();
+        let fixed = self.fixed_tokens();
+        let percent = |n: u64| n * 100 / window.max(1);
+        let text = format!("Context is {}% full ({} of {}), but a summary could only remove {} tokens of conversation, so none was made. The system prompt, instruction files and tool definitions take {} ({}% of the window) and compaction cannot remove them. Start fewer MCP servers (--mcp or mcp.disabled) or use a model with a larger window.", percent(used), short_tokens(used), short_tokens(window), short_tokens(removable), short_tokens(fixed), percent(fixed));
+        self.notice(Tone::Warning, "compaction", &text);
     }
 
     /// Replaces old command outputs with placeholders, when that frees enough tokens to be
@@ -618,9 +756,10 @@ impl Agent {
     /// @param response - the model reply
     fn parse_actions(&self, response: &ModelResponse) -> Result<Parsed, String> {
         let finish = self.parts.config.finish;
+        let tools = self.callable_tools();
         match self.parts.config.action_format {
-            ActionFormat::Tools => parse_tool_reply(response, &self.mcp_tools, finish),
-            ActionFormat::Text => parse_text_reply(response, &self.templates.action_regex, &self.mcp_tools, finish),
+            ActionFormat::Tools => parse_tool_reply(response, &tools, finish),
+            ActionFormat::Text => parse_text_reply(response, &self.templates.action_regex, &tools, finish),
         }
     }
 
@@ -700,7 +839,14 @@ impl Agent {
     fn execute(&mut self, action: &Action) -> Observation {
         match action {
             Action::Bash { command, .. } => self.parts.environment.execute(command),
-            Action::Mcp { server, tool, arguments, .. } => self.parts.mcp.call(server, tool, arguments.clone()),
+            Action::Mcp { server, tool, arguments, .. } if is_tool_search(server, tool) => self.run_tool_search(arguments),
+            Action::Mcp { server, tool, arguments, .. } => {
+                let observation = self.parts.mcp.call(server, tool, arguments.clone());
+                // A deferred tool called without a search first is loaded now, so the history
+                // never names a tool the request does not send.
+                self.load_tools(vec![mcp_name(server, tool)], true);
+                observation
+            }
         }
     }
 
@@ -762,7 +908,11 @@ impl Agent {
         vars["elapsed_seconds"] = json!(self.started.elapsed().as_secs());
         vars["action_format"] = json!(self.parts.config.action_format);
         vars["finish"] = json!(self.parts.config.finish);
-        vars["mcp_tools"] = json!(self.mcp_tools.iter().map(|t| json!({ "qualified_name": t.qualified_name(), "description": t.description, "input_schema": t.input_schema })).collect::<Vec<_>>());
+        // With deferral the prompt lists the tools by name only; their definitions come from
+        // tool_search when the model needs them.
+        let described: Vec<&McpTool> = if self.deferred { Vec::new() } else { self.mcp_tools.iter().collect() };
+        vars["mcp_tools"] = json!(described.iter().map(|t| json!({ "qualified_name": t.qualified_name(), "description": t.description, "input_schema": t.input_schema })).collect::<Vec<_>>());
+        vars["deferred_tools"] = json!(if self.deferred { self.mcp_tools.iter().map(McpTool::qualified_name).collect::<Vec<_>>() } else { Vec::new() });
         vars
     }
 
@@ -797,6 +947,13 @@ pub fn tool_specs(mcp_tools: &[McpTool]) -> Vec<ToolSpec> {
     let mut specs = vec![bash];
     specs.extend(mcp_tools.iter().map(|t| ToolSpec { name: t.qualified_name(), description: format!("[MCP server {}] {}", t.server, t.description), input_schema: t.input_schema.clone() }));
     specs
+}
+
+/// The full `mcp__server__tool` name for an MCP action.
+/// @param server - the server name
+/// @param tool - the tool name
+fn mcp_name(server: &str, tool: &str) -> String {
+    McpTool { server: server.into(), name: tool.into(), description: String::new(), input_schema: Value::Null }.qualified_name()
 }
 
 /// Builds the assistant message for the history. For Anthropic the raw content blocks are kept

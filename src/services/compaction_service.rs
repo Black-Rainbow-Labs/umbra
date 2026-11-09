@@ -241,6 +241,15 @@ pub fn find_cut(messages: &[Message], keep_recent: u64) -> Option<Cut> {
     (tail_start > head_end).then_some(Cut { head_end, tail_start })
 }
 
+/// The tokens a summary would remove: the messages between the task and the kept newest turns,
+/// not counting the follow up tasks a summary keeps. 0 when there is nothing to summarize.
+/// @param messages - the whole history
+/// @param keep_recent - the most tokens the kept tail may hold
+pub fn summarizable_tokens(messages: &[Message], keep_recent: u64) -> u64 {
+    let Some(cut) = find_cut(messages, keep_recent) else { return 0 };
+    messages[cut.head_end..cut.tail_start].iter().filter(|m| !is_follow_up_task(m)).map(estimate_message_tokens).sum()
+}
+
 /// Returns true for a follow up task the person typed, which a summary must not replace.
 /// @param message - one history entry
 fn is_follow_up_task(message: &Message) -> bool {

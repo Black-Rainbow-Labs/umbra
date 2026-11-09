@@ -40,9 +40,12 @@ fn run(scratch: &Scratch, replies: Value, extra: &[&str], envs: &[(&str, &str)])
 fn a_compaction_that_cannot_shrink_the_history_warns_once() {
     let scratch = Scratch::new("stuck-compaction");
     let call = json!({ "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo hi" } }] });
-    let output = run(&scratch, json!([call, call, call, submit()]), &["--context-window", "500"], &[]);
-    assert_eq!(output.matches("compaction cannot shrink it").count(), 1, "said once, not before every call:\n{output}");
-    assert!(!output.contains("could not summarize"), "{output}");
+    let config = scratch.write("compaction.toml", "[compaction]\nmin_reclaim_ratio = 0.5\n");
+    let config = slash(&config);
+    let output = run(&scratch, json!([call, call, call, submit()]), &["--context-window", "500", "-c", &config], &[]);
+    assert_eq!(output.matches("compaction cannot remove them").count(), 1, "said once, not before every call:\n{output}");
+    assert!(output.contains("so none was made"), "{output}");
+    assert!(!output.contains("could not summarize") && !output.contains("Compaction failed"), "no summary is attempted:\n{output}");
 }
 
 #[test]
