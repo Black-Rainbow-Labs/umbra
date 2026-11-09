@@ -29,6 +29,7 @@ use crate::models::session::{SessionIndexEntry, SessionInfo};
 use crate::models::trajectory::{ModelStats, Trajectory, TrajectoryInfo};
 use crate::repositories::session_repository::save_index;
 use crate::repositories::trajectory_repository::save_trajectory;
+use crate::utils::console;
 use crate::utils::interrupt;
 use crate::utils::paths::absolute_path;
 
@@ -130,6 +131,11 @@ impl Agent {
     pub fn run(&mut self, opening: Opening) -> Result<RunResult> {
         self.open(opening)?;
         self.save();
+        // Read the terminal from the start, so a line typed while the first steps run is queued
+        // for the next model call rather than left waiting until the run ends.
+        if self.parts.interaction.interactive {
+            console::start_reading_stdin();
+        }
         loop {
             let step = self.step();
             let ended = match step {
@@ -198,6 +204,7 @@ impl Agent {
         if self.parts.interaction.mode == Mode::Human {
             return self.human_step();
         }
+        self.add_queued_messages();
         if let Some(exit) = self.check_limits() {
             return Ok(exit);
         }
@@ -229,6 +236,24 @@ impl Agent {
                 self.push_observations(&actions, &[], Some(NOT_RUN_INTERRUPTED))?;
                 self.interrupted()
             }
+        }
+    }
+
+    /// Adds the lines typed while the agent was working to the conversation, before the next model
+    /// call, so a message does not wait for the run to finish (task-2569). `/compact` typed this
+    /// way compacts. Nothing happens without a terminal.
+    fn add_queued_messages(&mut self) {
+        if !self.parts.interaction.interactive {
+            return;
+        }
+        for text in console::take_queued_lines() {
+            if let Some(focus) = compact_command(&text) {
+                self.compact_by_summary(CompactionReason::Manual, focus);
+                continue;
+            }
+            show_queued_message(&text);
+            let images = self.typed_images(&text);
+            self.messages.push(queued_message(&text).with_images(images));
         }
     }
 
@@ -567,6 +592,22 @@ fn assistant_message(response: &ModelResponse, actions: &[Action]) -> Message {
 
 /// The message that gives the model a follow up task, or the next task of a resumed session.
 /// @param task - the task text
+/// The message that gives the model a line typed while it was working.
+/// @param text - what the person typed
+fn queued_message(text: &str) -> Message {
+    Message::user(format!("The user sent this message while you were working: {text}")).with_extra(json!({ "interrupt_type": "UserMessage" }))
+}
+
+/// Shows that a typed message was picked up, so the person can see the agent has it.
+/// @param text - what the person typed
+fn show_queued_message(text: &str) {
+    if console::is_quiet() {
+        return;
+    }
+    console::heading("message from the user", "1;35");
+    println!("{text}");
+}
+
 fn new_task_message(task: &str) -> Message {
     Message::user(format!("The user added a new task: {task}")).with_extra(json!({ "interrupt_type": "UserNewTask" }))
 }

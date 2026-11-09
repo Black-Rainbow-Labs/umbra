@@ -185,6 +185,19 @@ mode, `/compact` compacts the history, and `/q` or a second Ctrl+C ends the run 
 not them. Without a terminal, Ctrl+C ends the run straight away. If Umbra ever stops responding,
 a third Ctrl+C exits.
 
+**Typing while the agent works.** A line you type and send with Enter while Umbra is working is
+queued. Before its next model call Umbra adds it to the conversation as `The user sent this
+message while you were working: <your text>` and shows it under a `message from the user`
+heading, so the agent sees it without the run having to finish. To have it read at once, press
+Ctrl+C after sending it: the current command or model call stops, and the queued line becomes the
+comment (`Interrupted by user: <your text>`). This is how the Tasks board in AI Service delivers a
+comment to an Umbra agent that is in the middle of a task.
+
+**`--keep-open`**, for a session another program types into: an empty line or a Ctrl+C at the
+task prompt or the follow up prompt asks again instead of ending the run, and a second Ctrl+C at
+the comment prompt carries on instead of ending it. Only `/q`, the end of input or a third
+unhandled Ctrl+C ends such a run.
+
 **Images** go to the model with the task:
 
 ```bash

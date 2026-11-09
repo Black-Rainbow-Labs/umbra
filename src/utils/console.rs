@@ -67,6 +67,10 @@ pub enum Input {
 /// The lines read by the stdin thread. None means end of input.
 static LINES: OnceLock<Mutex<Receiver<Option<String>>>> = OnceLock::new();
 
+/// Set when the end of input was taken off the channel by `take_queued_lines`, so a later prompt
+/// still sees it.
+static STDIN_CLOSED: AtomicBool = AtomicBool::new(false);
+
 /// Starts the thread that owns stdin, once, and returns its channel. Reading on a thread lets a
 /// prompt stop waiting when Ctrl+C is pressed, which a blocking read cannot do.
 fn lines() -> &'static Mutex<Receiver<Option<String>>> {
@@ -112,6 +116,33 @@ fn read_was_interrupted() -> bool {
     interrupt::is_pending()
 }
 
+/// Starts the stdin thread if it is not running yet, so lines typed while the agent works are
+/// read and queued instead of waiting in the console until the next prompt.
+pub fn start_reading_stdin() {
+    let _ = lines();
+}
+
+/// Takes every line typed since the last prompt without waiting, for the agent to add to the
+/// conversation between steps. Empty lines are dropped. Returns nothing before the stdin thread
+/// has started.
+pub fn take_queued_lines() -> Vec<String> {
+    let Some(lines) = LINES.get() else { return Vec::new() };
+    let receiver = lines.lock().unwrap_or_else(|e| e.into_inner());
+    let mut queued = Vec::new();
+    loop {
+        match receiver.try_recv() {
+            Ok(Some(line)) if !line.trim().is_empty() => queued.push(line),
+            Ok(Some(_)) => continue,
+            Ok(None) => {
+                STDIN_CLOSED.store(true, Ordering::SeqCst);
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+    queued
+}
+
 /// Prints a prompt and waits for one line, end of input, or Ctrl+C. A Ctrl+C that is already
 /// pending answers at once, and either way it is handled here.
 /// @param prompt - the text shown before the cursor
@@ -123,6 +154,9 @@ pub fn prompt_line(prompt: &str) -> Input {
         if interrupt::take() {
             println!();
             return Input::Interrupted;
+        }
+        if STDIN_CLOSED.load(Ordering::SeqCst) {
+            return Input::Eof;
         }
         match receiver.recv_timeout(interrupt::POLL) {
             Ok(Some(line)) => return Input::Line(line),

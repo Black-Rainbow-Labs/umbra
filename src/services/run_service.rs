@@ -22,7 +22,7 @@ use crate::models::session::{ResumeRecord, SessionInfo};
 use crate::repositories::config_repository::{load_config, merge_values};
 use crate::repositories::session_repository::new_session_id;
 use crate::repositories::trajectory_repository::trajectory_path;
-use crate::utils::console::{read_line, set_quiet, stdin_is_terminal};
+use crate::utils::console::{prompt_line, set_quiet, stdin_is_terminal, Input};
 use crate::utils::interrupt;
 use crate::utils::paths::{absolute_path, project_root, umbra_home};
 
@@ -330,9 +330,9 @@ fn task_text(args: &RunArgs, resumed: Option<&ResumedSession>, keep_open: bool) 
         bail!("no task given. Pass it as an argument or with -t");
     }
     loop {
-        match read_line(&prompt) {
-            Some(task) if !task.trim().is_empty() => return Ok(task),
-            Some(_) if keep_open => continue,
+        match prompt_line(&prompt) {
+            Input::Line(task) if !task.trim().is_empty() => return Ok(task),
+            Input::Line(_) | Input::Interrupted if keep_open => continue,
             _ => bail!("no task given. Pass it as an argument or with -t"),
         }
     }

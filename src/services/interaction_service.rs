@@ -122,7 +122,13 @@ impl Interaction {
         }
         let prompt = if self.keep_open { "Agent wants to finish. Type a new task: " } else { "Agent wants to finish. Type a new task, or press Enter to quit: " };
         loop {
-            let line = read_line(prompt)?;
+            let line = match prompt_line(prompt) {
+                Input::Line(line) => line,
+                // Ctrl+C at an idle prompt is a stop with nothing to stop. With keep_open it asks
+                // again, so a stop pressed while the agent waits cannot end the session.
+                Input::Interrupted if self.keep_open => continue,
+                Input::Interrupted | Input::Eof => return None,
+            };
             let line = line.trim();
             if !line.is_empty() {
                 return Some(line.to_string());
@@ -152,6 +158,9 @@ impl Interaction {
         loop {
             let line = match prompt_line(&prompt) {
                 Input::Line(line) => line,
+                // A second Ctrl+C ends the run, unless keep_open is set: then it carries on, so
+                // pressing stop twice in a board session never ends the agent.
+                Input::Interrupted if self.keep_open => return Comment::Text(TEMPORARY_INTERRUPTION.into()),
                 Input::Eof | Input::Interrupted => return Comment::Quit,
             };
             prompt = COMMENT_PROMPT.to_string();
