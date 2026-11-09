@@ -119,6 +119,29 @@ pub fn create_provider(config: &UmbraConfig, model_spec: &str) -> Result<Box<dyn
     }
 }
 
+/// Checks that a model is set and that its provider has what it needs to sign in, without making
+/// a request. Returns the reason it cannot be used, which says what to set.
+/// @param config - the merged config, which holds the provider table
+/// @param model_spec - the `provider/model` string
+pub fn check_credentials(config: &UmbraConfig, model_spec: &str) -> Result<()> {
+    let (provider_name, _) = split_model_spec(model_spec)?;
+    let Some(provider) = config.providers.get(provider_name) else {
+        bail!("unknown provider '{provider_name}'. Known providers: {}", config.providers.keys().cloned().collect::<Vec<_>>().join(", "));
+    };
+    match provider.kind.as_str() {
+        "anthropic" => credentials::anthropic_credential(provider).map(|_| ()),
+        "openai" if needs_api_key(provider) && credentials::api_key(provider).is_none() => bail!("no API key for provider '{provider_name}': set {} or api_key in ~/.umbra/config.toml", provider.api_key_env),
+        _ => Ok(()),
+    }
+}
+
+/// Returns true for an OpenAI compatible server that is not on this machine, which needs a key.
+/// @param provider - the provider settings
+fn needs_api_key(provider: &ProviderConfig) -> bool {
+    let url = provider.base_url.to_lowercase();
+    !(url.contains("://localhost") || url.contains("://127.0.0.1") || url.contains("://[::1]"))
+}
+
 /// Splits `provider/model`. A bare name that starts with `claude` means the anthropic provider.
 /// @param model_spec - the model string
 pub fn split_model_spec(model_spec: &str) -> Result<(&str, &str)> {

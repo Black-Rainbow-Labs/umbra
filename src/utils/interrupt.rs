@@ -1,9 +1,14 @@
 //! Ctrl+C. The handler only sets a flag; the agent loop, the environment, the providers and the
 //! console check it and stop what they are doing. A third press that Umbra has not handled exits
 //! the process, for the case where the main thread is stuck somewhere that never checks.
+//!
+//! A thread can also have a cancel flag of its own. The ACP server gives each session's thread
+//! one, so `session/cancel` stops that session's command or model call through the same checks,
+//! and leaves the other sessions alone.
 
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Once;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 /// Set by Ctrl+C, cleared when Umbra handles the interrupt.
@@ -13,6 +18,28 @@ static PENDING: AtomicBool = AtomicBool::new(false);
 static PRESSES: AtomicU32 = AtomicU32::new(0);
 
 static INSTALL: Once = Once::new();
+
+thread_local! {
+    /// This thread's own cancel flag, if it has one.
+    static THREAD_FLAG: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// Gives the current thread a cancel flag. Setting the flag then counts as Ctrl+C for every check
+/// made on this thread.
+/// @param flag - the flag another thread sets to cancel this one's work
+pub fn set_thread_flag(flag: Arc<AtomicBool>) {
+    THREAD_FLAG.with(|cell| *cell.borrow_mut() = Some(flag));
+}
+
+/// Reads this thread's cancel flag, clearing it when `clear` is true.
+/// @param clear - true to clear the flag as it is read
+fn thread_flag(clear: bool) -> bool {
+    THREAD_FLAG.with(|cell| match cell.borrow().as_ref() {
+        Some(flag) if clear => flag.swap(false, Ordering::SeqCst),
+        Some(flag) => flag.load(Ordering::SeqCst),
+        None => false,
+    })
+}
 
 /// The presses that force an exit when Umbra has not handled the earlier ones.
 const FORCE_EXIT_PRESSES: u32 = 3;
@@ -55,18 +82,19 @@ fn on_press() {
     }
 }
 
-/// Returns true when Ctrl+C was pressed and nothing has handled it yet.
+/// Returns true when Ctrl+C was pressed, or this thread was cancelled, and nothing has handled it yet.
 pub fn is_pending() -> bool {
-    PENDING.load(Ordering::SeqCst)
+    PENDING.load(Ordering::SeqCst) || thread_flag(false)
 }
 
-/// Handles a pending interrupt: returns true and clears it when there was one.
+/// Handles a pending interrupt: returns true and clears it when there was one. This thread's
+/// cancel flag is cleared with it.
 pub fn take() -> bool {
     let was = PENDING.swap(false, Ordering::SeqCst);
     if was {
         PRESSES.store(0, Ordering::SeqCst);
     }
-    was
+    thread_flag(true) || was
 }
 
 /// Sets the flag as if Ctrl+C had been pressed. Used by the unit tests.
@@ -104,5 +132,22 @@ mod tests {
         assert!(take());
         assert!(!take());
         assert!(sleep(Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn a_thread_flag_cancels_only_its_own_thread() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let theirs = flag.clone();
+        let other = std::thread::spawn(move || {
+            set_thread_flag(theirs);
+            while !is_pending() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            take()
+        });
+        assert!(!thread_flag(false));
+        flag.store(true, Ordering::SeqCst);
+        assert!(other.join().unwrap());
+        assert!(!flag.load(Ordering::SeqCst));
     }
 }

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 
+use super::agent_events::{AgentEvents, NoEvents};
 use super::agent_service::{now_seconds, Agent, AgentParts, Opening, RunResult, INTERRUPTED_STATUS};
 use super::context_service::{context_vars, discovery_context, expand_slash_command, load_run_context, RunContext};
 use super::environment::create_environment;
@@ -141,7 +142,7 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     let task = expand_slash_command(&task_text(&args, resumed.as_ref(), config.keep_open)?, &context);
     let images = opening_images(&args.images, &task, &cwd, &config.images)?;
     let (session, trajectory_path) = session_for_run(&config, &args, &cwd, &task, resumed.as_ref());
-    let mut agent = build_agent(config, &cwd, &context, interaction, AgentSession { session, trajectory_path, need_provider: true })?;
+    let mut agent = build_agent(config, &cwd, &context, interaction, AgentSession { session, trajectory_path, need_provider: true, events: Box::new(NoEvents) })?;
     let opening = match resumed {
         Some(resumed) => Opening::Resume { session: Box::new(resumed), task, images },
         None => Opening::New { task, images },
@@ -265,7 +266,7 @@ pub fn print_prompt(args: &PromptArgs) -> Result<()> {
     let context = load_run_context(&config, &discovery_context(&config, &cwd));
     let task = expand_slash_command(&args.task_words.join(" "), &context);
     let interaction = Interaction::new(Mode::Yolo, &[], false);
-    let session = AgentSession { session: SessionInfo::default(), trajectory_path: PathBuf::new(), need_provider: false };
+    let session = AgentSession { session: SessionInfo::default(), trajectory_path: PathBuf::new(), need_provider: false, events: Box::new(NoEvents) };
     let agent = build_agent(config, &cwd, &context, interaction, session)?;
     let (system, instance) = agent.render_prompts(&task)?;
     println!("===== system =====\n{system}\n\n===== user =====\n{instance}");
@@ -273,11 +274,13 @@ pub fn print_prompt(args: &PromptArgs) -> Result<()> {
 }
 
 /// The session parts of an agent.
-struct AgentSession {
-    session: SessionInfo,
-    trajectory_path: PathBuf,
+pub struct AgentSession {
+    pub session: SessionInfo,
+    pub trajectory_path: PathBuf,
     /// False for `umbra prompt`, which never calls a model.
-    need_provider: bool,
+    pub need_provider: bool,
+    /// What the front end is told as the run goes.
+    pub events: Box<dyn AgentEvents>,
 }
 
 /// Builds the agent: the model, the environment, the MCP servers and the template variables.
@@ -286,7 +289,7 @@ struct AgentSession {
 /// @param context - the loaded instructions, skills and MCP definitions
 /// @param interaction - the interactive settings
 /// @param run - the session record, the trajectory file, and whether a model is needed
-fn build_agent(config: UmbraConfig, cwd: &Path, context: &RunContext, interaction: Interaction, run: AgentSession) -> Result<Agent> {
+pub fn build_agent(config: UmbraConfig, cwd: &Path, context: &RunContext, interaction: Interaction, run: AgentSession) -> Result<Agent> {
     let provider = if run.need_provider { create_provider(&config, &config.model)? } else { Box::new(NoProvider) as Box<dyn super::providers::Provider> };
     let environment = create_environment(&config.environment, cwd)?;
     let mut mcp = connect_mcp(&config, context);
@@ -297,7 +300,7 @@ fn build_agent(config: UmbraConfig, cwd: &Path, context: &RunContext, interactio
     vars["mcp_instructions"] = json!(mcp.instructions().into_iter().map(|(name, instructions)| json!({ "name": name, "instructions": instructions })).collect::<Vec<_>>());
     vars["model_name"] = json!(provider.model_name());
     let config_record = json!({ "agent": { "mode": config.mode, "action_format": config.action_format, "step_limit": config.step_limit, "cost_limit": config.cost_limit, "compaction": config.compaction }, "model": provider.describe(), "environment": environment.describe(), "mcp_servers": mcp.connected(), "skills": context.skills.len(), "instruction_files": context.instructions.iter().map(|i| i.path.display().to_string()).collect::<Vec<_>>() });
-    Ok(Agent::new(AgentParts { config, provider, environment, mcp, interaction, vars, trajectory_path: run.trajectory_path, config_record, cwd: cwd.to_path_buf(), session: run.session }))
+    Ok(Agent::new(AgentParts { config, provider, environment, mcp, interaction, vars, trajectory_path: run.trajectory_path, config_record, cwd: cwd.to_path_buf(), session: run.session, events: run.events }))
 }
 
 /// Starts the MCP servers and says which ones did not start.

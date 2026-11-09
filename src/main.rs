@@ -9,7 +9,7 @@ mod utils;
 use clap::Parser;
 
 use cli::{Cli, Command};
-use services::{inspect_service, run_service};
+use services::{acp, inspect_service, run_service, setup_service};
 
 /// Runs the chosen subcommand and exits with its status code.
 fn main() {
@@ -24,6 +24,9 @@ fn main() {
         Some(Command::Config(args)) => inspect_service::show_config(&args).map(|_| 0),
         Some(Command::Prompt(args)) => run_service::print_prompt(&args).map(|_| 0),
         Some(Command::Sessions(args)) => inspect_service::list_sessions(&args).map(|_| 0),
+        Some(Command::Acp(args)) if args.setup => setup_service::run_setup(&cli::SetupArgs::default()),
+        Some(Command::Acp(args)) => acp::serve(&args),
+        Some(Command::Setup(args)) => setup_service::run_setup(&args),
     };
     match result {
         Ok(code) => std::process::exit(code),

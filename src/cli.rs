@@ -33,6 +33,45 @@ pub enum Command {
     Prompt(PromptArgs),
     /// List saved sessions, newest first, for --resume.
     Sessions(SessionsArgs),
+    /// Run as an Agent Client Protocol server on stdin and stdout, for an editor such as Zed,
+    /// a JetBrains IDE or Unluminous.
+    Acp(AcpArgs),
+    /// Choose a model and save it in ~/.umbra/config.toml.
+    Setup(SetupArgs),
+}
+
+/// Options for `umbra acp`. The working folder comes from the editor, one per session.
+#[derive(Debug, Clone, Args, Default)]
+pub struct AcpArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+    /// The mode a new session starts in: confirm (ask the editor before each command) or yolo.
+    #[arg(long)]
+    pub mode: Option<String>,
+    /// Start new sessions in yolo mode.
+    #[arg(short, long)]
+    pub yolo: bool,
+    /// Stop a turn once it has cost this many dollars. 0 means no limit.
+    #[arg(short = 'l', long)]
+    pub cost_limit: Option<f64>,
+    /// Stop a turn after this many model calls. 0 means no limit.
+    #[arg(long)]
+    pub step_limit: Option<u32>,
+    /// Run the setup wizard in this terminal instead of serving ACP. Editors run this for the
+    /// "Set up Umbra in a terminal" sign in method.
+    #[arg(long)]
+    pub setup: bool,
+}
+
+/// Options for `umbra setup`.
+#[derive(Debug, Clone, Args, Default)]
+pub struct SetupArgs {
+    /// Use this provider/model without asking, for example anthropic/claude-haiku-5-5.
+    #[arg(short, long)]
+    pub model: Option<String>,
+    /// Do not send the test request to the model.
+    #[arg(long)]
+    pub no_test: bool,
 }
 
 /// Options for running a task.

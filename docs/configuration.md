@@ -18,6 +18,7 @@ limits work unchanged.
 # ~/.umbra/config.toml
 
 model = "anthropic/claude-haiku-5-5"   # provider/model
+models = ["local/qwen"]                # more models an editor's picker offers
 mode = "confirm"                       # confirm, yolo or human
 action_format = "tools"                # tools or text
 step_limit = 0                         # model calls; 0 means no limit
@@ -127,6 +128,7 @@ detect_paths = true                    # attach image files named in a task or a
 | Setting | Default | Meaning |
 |---|---|---|
 | `model` | none | `provider/model`. Also `-m` or the `UMBRA_MODEL` environment variable. A bare `claude-...` name means the `anthropic` provider. |
+| `models` | [] | More `provider/model` strings an editor offers in its model picker over ACP, after `model`. See [editors and ACP](acp.md). |
 | `mode` | `confirm` | `confirm` asks before each command, `yolo` never asks, `human` lets you type the commands. |
 | `action_format` | `tools` | `tools` uses native tool calls; `text` asks for one fenced block per reply. |
 | `step_limit` | 0 | Stop after this many model calls. |

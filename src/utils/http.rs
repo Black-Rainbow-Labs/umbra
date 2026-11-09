@@ -27,11 +27,13 @@ pub fn http_agent(timeout_seconds: u64) -> ureq::Agent {
     build_agent(Some(Duration::from_secs(timeout_seconds)))
 }
 
-/// Builds an HTTP agent that uses the operating system's TLS library, with an optional overall
-/// timeout. A long lived event stream passes None.
+/// Builds an HTTP agent that trusts the machine's certificates, with an optional overall timeout.
+/// A long lived event stream passes None. Windows and macOS use the operating system's TLS
+/// library; Linux uses rustls, so the Linux build needs no OpenSSL.
 /// @param timeout - the whole request's time limit, or None for no limit
 pub fn build_agent(timeout: Option<Duration>) -> ureq::Agent {
-    let tls = ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
+    let provider = if cfg!(target_os = "linux") { ureq::tls::TlsProvider::Rustls } else { ureq::tls::TlsProvider::NativeTls };
+    let tls = ureq::tls::TlsConfig::builder().provider(provider).root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
     let config = ureq::Agent::config_builder().http_status_as_error(false).tls_config(tls).timeout_global(timeout).build();
     ureq::Agent::new_with_config(config)
 }

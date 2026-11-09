@@ -10,13 +10,19 @@ agent needs on a real machine. It reads the instruction files, skills, slash com
 servers you already set up for Claude Code, Codex, Gemini CLI, opencode, Cursor, Copilot, Windsurf
 and Cline, so it works with your existing setup on the first run.
 
+Umbra also speaks the [Agent Client Protocol](https://agentclientprotocol.com) (ACP), so editors
+such as Zed, the JetBrains IDEs and Unluminous can run it in their own agent panel with
+`umbra acp`.
+
 ```text
 $ umbra -m anthropic/claude-haiku-5-5 "add a --verbose flag to the CLI and test it"
 ```
 
 ## Contents
 
+- [Install](#install)
 - [Quick start](#quick-start)
+- [Use Umbra in an editor (ACP)](#use-umbra-in-an-editor-acp)
 - [How it works](#how-it-works)
 - [Choosing a model](#choosing-a-model)
 - [What Umbra reads from other tools](#what-umbra-reads-from-other-tools)
@@ -27,17 +33,59 @@ $ umbra -m anthropic/claude-haiku-5-5 "add a --verbose flag to the CLI and test 
 - [Project layout](#project-layout)
 - More detail: [architecture](docs/architecture.md), [configuration](docs/configuration.md),
   [where files are found](docs/discovery.md), [MCP](docs/mcp.md), [models](docs/providers.md),
-  [design document](tasks/umbra-harness-tdd.md), [compaction design](tasks/umbra-compaction-tdd.md),
+  [editors and ACP](docs/acp.md), [releases](docs/releasing.md),
+  [design document](tasks/umbra-harness-tdd.md), [ACP and distribution design](tasks/umbra-acp-distribution-tdd.md), [compaction design](tasks/umbra-compaction-tdd.md),
   [images, resume and Ctrl+C design](tasks/umbra-images-resume-interrupt-tdd.md)
 
-## Quick start
+## Install
 
-You need Rust 1.85 or newer. On Windows you also need [Git for Windows](https://gitforwindows.org),
-because Umbra runs commands with its `bash.exe`.
+**macOS and Linux**
 
-```bash
-cargo install --path .
+```sh
+curl -fsSL https://raw.githubusercontent.com/Black-Rainbow-Labs/umbra/main/install.sh | sh
 ```
+
+**Windows**, in PowerShell or Command Prompt
+
+```bat
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Black-Rainbow-Labs/umbra/main/install.ps1 | iex"
+```
+
+Both scripts download the build for your machine from the
+[latest GitHub release](https://github.com/Black-Rainbow-Labs/umbra/releases/latest), check it
+against the release's `SHA256SUMS`, and install it into your home folder (`~/.local/bin`, or
+`%LOCALAPPDATA%\Programs\umbra` on Windows). Neither needs administrator rights. On Windows, Umbra
+runs commands with Git Bash, so install [Git for Windows](https://gitforwindows.org) too.
+
+**Other ways**
+
+| How | Command |
+|---|---|
+| Homebrew (macOS and Linux) | `brew install black-rainbow-labs/umbra/umbra` |
+| cargo, from source | `cargo install --git https://github.com/Black-Rainbow-Labs/umbra --locked` |
+| A download | the `.tar.gz` or `.zip` for your machine from the [releases page](https://github.com/Black-Rainbow-Labs/umbra/releases/latest): macOS (Apple silicon and Intel), Linux (x86_64 and arm64, static binaries) and Windows (x86_64 and arm64) |
+| An editor | pick Umbra from the editor's ACP agent list, or see [editors](docs/acp.md) |
+
+Then choose a model. `umbra setup` asks which provider and model to use and saves it in
+`~/.umbra/config.toml`:
+
+```sh
+umbra setup
+```
+
+**To have a coding agent install it for you**, paste this to the agent:
+
+```text
+Install Umbra, the coding agent from https://github.com/Black-Rainbow-Labs/umbra.
+On macOS or Linux run: curl -fsSL https://raw.githubusercontent.com/Black-Rainbow-Labs/umbra/main/install.sh | sh
+On Windows run in PowerShell: irm https://raw.githubusercontent.com/Black-Rainbow-Labs/umbra/main/install.ps1 | iex
+On Windows, check that Git for Windows is installed, because Umbra runs commands with Git Bash.
+Then run `umbra --version` to check it is on the PATH, and run
+`umbra setup --model anthropic/claude-haiku-5-5 --no-test` (or another provider/model I name) to save the model.
+To add it to an editor that speaks ACP, the command is `umbra` with the argument `acp`.
+```
+
+## Quick start
 
 Run a task with Claude. If you are signed in to Claude Code, Umbra uses that login. Otherwise set
 `ANTHROPIC_API_KEY`.
@@ -55,6 +103,8 @@ umbra -m local/qwen "create sum.py that prints the sum of 1 to 100, run it, and 
 Umbra shows each command before it runs and waits for you to press Enter. Add `-y` to run
 commands without asking. Each run's full record is saved to `~/.umbra/trajectories/`.
 
+To build from a checkout instead, you need Rust 1.85 or newer: `cargo install --path .`.
+
 See what Umbra found on your machine before you run anything:
 
 ```bash
@@ -63,6 +113,34 @@ umbra skills          # every skill and where it came from
 umbra mcp --connect   # MCP servers and their tools
 umbra prompt "fix the failing test"   # the exact prompt a task would get
 ```
+
+## Use Umbra in an editor (ACP)
+
+`umbra acp` runs Umbra as an [Agent Client Protocol](https://agentclientprotocol.com) agent: the
+editor starts it and talks to it on stdin and stdout. The editor shows Umbra's messages, each
+command as a tool call with its output, and asks you before a command runs.
+
+| Editor | How to add Umbra |
+|---|---|
+| Zed | In `settings.json`: `"agent_servers": { "Umbra": { "type": "custom", "command": "umbra", "args": ["acp"] } }` |
+| JetBrains IDEs | In `~/.jetbrains/acp.json`: `{ "agent_servers": { "Umbra": { "command": "umbra", "args": ["acp"] } } }` |
+| Unluminous | `settings acp-add umbra`, or an `acp` endpoint with the command `umbra` and the argument `acp` |
+| Any ACP client | The command `umbra` with the argument `acp`. Add `-m provider/model` to pick the model. |
+
+What the editor gets:
+
+| ACP feature | What Umbra does |
+|---|---|
+| Modes | `confirm` asks the editor before each command; `yolo` runs them without asking. **Always allow** remembers the program for the rest of the session. |
+| Model picker | The configured model plus every `provider/model` in `models = [...]` in `~/.umbra/config.toml` |
+| Sessions | Saved after every step. `session/load`, `session/resume` and `session/list` use the same sessions as `umbra --resume`, so a session started in the editor can be continued in the terminal and the other way round. |
+| Stop | `session/cancel` stops the running command or model call, the way Ctrl+C does |
+| Images and files | Image blocks go to the model; attached files are added to the task |
+| MCP servers | The editor's servers are added to the ones Umbra finds in your other tools' config |
+| Slash commands | Your slash commands and skills are offered as the editor's commands |
+| Sign in | With no model set, a session asks the editor to sign in, which runs `umbra acp --setup` |
+
+The details, and every message Umbra sends, are in [editors and ACP](docs/acp.md).
 
 ## How it works
 
@@ -292,6 +370,7 @@ project's documentation as of November 2026.
 | Resume a past session | yes (`--resume`, `--continue`, `--fork`) | no | yes | yes | yes |
 | Ctrl+C stops the current step and asks for a comment | yes | yes | yes, with Esc | yes, with Esc | yes, with Esc |
 | Full screen terminal interface | no | no | yes | yes | yes |
+| Agent Client Protocol, for editors | yes (`umbra acp`) | no | through an adapter | through an adapter | yes |
 | Git checkpoints and undo | no | no | yes | not documented | yes |
 
 The items marked "no" for Umbra are left out on purpose for this version, to keep the loop as
@@ -310,6 +389,8 @@ search or a browser.
 | `umbra mcp [--connect]` | Lists MCP servers; with `--connect` starts them and lists their tools. |
 | `umbra config` | Prints the merged configuration. |
 | `umbra sessions [--all]` | Lists saved sessions, newest first, for `--resume`. |
+| `umbra acp` | Runs as an ACP agent on stdin and stdout, for an editor. Takes `-m`, `--yolo`, `--mode`, `-l` and `--step-limit`. |
+| `umbra setup` | Asks for a provider and model, saves it in `~/.umbra/config.toml`, and checks that the model answers. |
 
 The listing commands take `--json`. The options used most:
 
@@ -349,12 +430,16 @@ src/
   repositories/          reading and writing files: config, instructions, skills,
                          commands, MCP config, trajectories
   services/              the agent loop, model providers, environments, MCP client,
-                         prompt templates, the confirm prompt
+                         prompt templates, the confirm prompt, the setup wizard
+  services/acp/          the ACP server: JSON-RPC, sessions, session updates
   templates/             the Jinja prompt templates
   utils/                 paths, frontmatter, variable expansion, HTTP, terminal output, status bar
 tests/                   integration tests that run the real binary
 docs/                    the documents linked above
-tasks/                   the design document
+tasks/                   the design documents
+packaging/               the release script, the Homebrew formula and the ACP registry entry
+install.sh, install.ps1  the install scripts
+.github/workflows/       tests on every push, release builds on every tag
 ```
 
 Run the tests with `cargo test`. The integration tests use a fake home folder and never read your

@@ -1,0 +1,136 @@
+# Builds Umbra for macOS, Linux and Windows and publishes a GitHub release, when a tag such as
+# v0.4.0 is pushed. `packaging/release.ps1` raises the version, tags and pushes, then waits for
+# this workflow and updates the Homebrew tap from the SHA256SUMS it publishes.
+#
+# The archive names carry no version, so `releases/latest/download/<name>` always works for the
+# install scripts, and the version is in the `/download/v<version>/` path the ACP registry uses.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The tag to build, such as v0.4.0. It must already exist."
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  version:
+    name: check the tag matches Cargo.toml
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Compare
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$TAG" ]; then
+            echo "The tag is $TAG and Cargo.toml says $version" >&2
+            exit 1
+          fi
+
+  test:
+    name: test (${{ matrix.os }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-14, runs: true }
+          - { target: x86_64-apple-darwin, os: macos-14, runs: false }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04, runs: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, runs: true }
+          - { target: x86_64-pc-windows-msvc, os: windows-2022, runs: true }
+          - { target: aarch64-pc-windows-msvc, os: windows-2022, runs: false }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install the musl C compiler
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y musl-tools
+      - name: Build
+        shell: bash
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Run the binary it built
+        if: matrix.runs
+        shell: bash
+        run: |
+          exe=target/${{ matrix.target }}/release/umbra
+          [ -f "$exe.exe" ] && exe="$exe.exe"
+          "$exe" --version
+          answer=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}' | "$exe" acp)
+          echo "$answer"
+          echo "$answer" | grep -q '"protocolVersion":1'
+      - name: Check the Linux binary is static
+        if: contains(matrix.target, 'musl')
+        run: file target/${{ matrix.target }}/release/umbra | tee /dev/stderr | grep -q "statically linked"
+      - name: Pack
+        shell: bash
+        run: |
+          mkdir -p staging dist
+          cp README.md LICENSE staging/
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp target/${{ matrix.target }}/release/umbra.exe staging/
+            (cd staging && 7z a -tzip ../dist/umbra-${{ matrix.target }}.zip umbra.exe README.md LICENSE)
+          else
+            cp target/${{ matrix.target }}/release/umbra staging/
+            chmod +x staging/umbra
+            tar -czf dist/umbra-${{ matrix.target }}.tar.gz -C staging umbra README.md LICENSE
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: umbra-${{ matrix.target }}
+          path: dist/*
+
+  publish:
+    name: publish the release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write SHA256SUMS
+        run: (cd dist && sha256sum umbra-* > SHA256SUMS && cat SHA256SUMS)
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Install with \`curl -fsSL https://raw.githubusercontent.com/Black-Rainbow-Labs/umbra/main/install.sh | sh\` on macOS and Linux, \`irm https://raw.githubusercontent.com/Black-Rainbow-Labs/umbra/main/install.ps1 | iex\` on Windows, or \`brew install black-rainbow-labs/umbra/umbra\`. Check a download with \`sha256sum -c SHA256SUMS --ignore-missing\`."
+          gh release create "$TAG" dist/* --title "Umbra ${TAG#v}" --notes "$notes" --verify-tag

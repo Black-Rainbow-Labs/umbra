@@ -66,6 +66,14 @@ impl Interaction {
         Interaction { mode, whitelist, confirm_exit, keep_open: false, interactive }
     }
 
+    /// Builds the settings for a run with nobody at a terminal, such as an ACP session, without
+    /// looking at stdin. On Windows, asking whether stdin is a terminal waits while another thread
+    /// is reading the same pipe, which is what the ACP server's reader thread is always doing.
+    /// @param mode - the mode; nothing is ever asked
+    pub fn detached(mode: Mode) -> Self {
+        Interaction { mode, whitelist: Vec::new(), confirm_exit: false, keep_open: false, interactive: false }
+    }
+
     /// Asks the person to approve actions in confirm mode. Whitelisted commands, yolo mode and a
     /// run with no terminal never ask.
     /// @param actions - the actions the model wants to run

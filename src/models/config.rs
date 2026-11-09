@@ -35,6 +35,8 @@ pub enum Mode {
 pub struct UmbraConfig {
     /// `provider/model`, for example `anthropic/claude-haiku-5-5` or `local/qwen`.
     pub model: String,
+    /// More `provider/model` strings an editor offers in its model picker, after `model`.
+    pub models: Vec<String>,
     pub mode: Mode,
     pub action_format: ActionFormat,
     pub step_limit: u32,
@@ -71,6 +73,7 @@ impl Default for UmbraConfig {
     fn default() -> Self {
         UmbraConfig {
             model: String::new(),
+            models: Vec::new(),
             mode: Mode::Confirm,
             action_format: ActionFormat::Tools,
             step_limit: 0,

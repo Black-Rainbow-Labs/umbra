@@ -1,9 +1,12 @@
 [package]
 name = "umbra"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
-description = "A small coding agent harness modeled after mini-swe-agent"
+description = "A small coding agent for the terminal and for editors that speak the Agent Client Protocol, modeled after mini-swe-agent"
+license = "MIT"
+homepage = "https://github.com/Black-Rainbow-Labs/umbra"
+readme = "README.md"
 repository = "https://github.com/Black-Rainbow-Labs/umbra"
 
 [dependencies]
@@ -19,8 +22,21 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 serde_norway = "0.9.42"
 toml = "1.2.1"
-ureq = { version = "3.5.1", default-features = false, features = ["native-tls", "json", "gzip"] }
+ureq = { version = "3.5.1", default-features = false, features = ["json", "gzip"] }
 wait-timeout = "0.2.1"
+
+# The operating system's TLS library on Windows and macOS. Linux uses rustls with the platform
+# certificate verifier, so the Linux release can be a static musl binary that needs no OpenSSL.
+[target."cfg(not(target_os = \"linux\"))".dependencies]
+ureq = { version = "3.5.1", default-features = false, features = ["native-tls", "json", "gzip"] }
+
+[target."cfg(target_os = \"linux\")".dependencies]
+ureq = { version = "3.5.1", default-features = false, features = ["rustls", "platform-verifier", "json", "gzip"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
 
 [target."cfg(windows)".dev-dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_JobObjects", "Win32_Security", "Win32_Storage_FileSystem"] }

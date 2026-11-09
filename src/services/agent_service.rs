@@ -9,6 +9,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use super::action_parser::{parse_text_action, parse_tool_actions};
+use super::agent_events::AgentEvents;
 use super::compaction_service::{apply_mask, budget_for, estimate_request_tokens, estimate_tools_tokens, mask_record, plan_mask, resolve_window, summarize, summary_record, ReportedSize, SummaryInputs};
 use super::environment::{submission_from, Environment};
 use super::image_service::images_in_text;
@@ -79,6 +80,16 @@ pub struct AgentParts {
     pub cwd: PathBuf,
     /// What the trajectory records about the session.
     pub session: SessionInfo,
+    /// What the front end is told as the run goes. The terminal passes `NoEvents`.
+    pub events: Box<dyn AgentEvents>,
+}
+
+/// How one turn ended: the exit status and the final output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnEnd {
+    /// `Submitted`, `LimitsExceeded`, `TimeExceeded`, `RepeatedFormatError`, `ModelError`, `UserQuit` or `Interrupted`.
+    pub status: String,
+    pub submission: String,
 }
 
 /// A run in progress.
@@ -130,7 +141,13 @@ impl Agent {
     /// Runs the task to the end and returns how it ended. The trajectory is saved after every step.
     /// @param opening - a new task, or a saved session and the next task
     pub fn run(&mut self, opening: Opening) -> Result<RunResult> {
-        self.open(opening)?;
+        match opening {
+            Opening::New { task, images } => self.open_new(&task, images)?,
+            Opening::Resume { session, task, images } => {
+                self.open_resumed(*session);
+                self.add_task(&task, images);
+            }
+        }
         self.save();
         self.show_status(Phase::Starting);
         // Read the terminal from the start, so a line typed while the first steps run is queued
@@ -139,63 +156,123 @@ impl Agent {
             console::start_reading_stdin();
         }
         loop {
-            let step = self.step();
-            let ended = match step {
-                Ok(Step::Continue) => false,
-                Ok(Step::Exit(status, submission)) => self.finish_or_continue(status, submission),
-                Err(error) => self.finish_or_continue("ModelError".into(), format!("{error:#}")),
-            };
-            self.save();
-            if ended {
-                break;
+            let end = self.run_turn();
+            if end.status == "Submitted" && self.follow_up() {
+                continue;
             }
+            self.end_turn(&end);
+            break;
         }
-        self.parts.environment.close();
-        self.parts.mcp.close();
+        self.close();
         Ok(RunResult { exit_status: self.exit.0.clone(), submission: self.exit.1.clone(), trajectory_path: self.parts.trajectory_path.clone(), stats: self.stats.clone(), session_id: self.parts.session.id.clone() })
     }
 
-    /// Sets up the history. A new task renders the prompts; a resumed session continues from its
-    /// saved history and totals, with the next task added the way a follow up task is.
-    /// @param opening - how the run starts
-    fn open(&mut self, opening: Opening) -> Result<()> {
-        match opening {
-            Opening::New { task, images } => {
-                let (system, instance) = self.render_prompts(&task)?;
-                self.messages = vec![Message::system(system), Message::user(instance).with_images(images)];
-            }
-            Opening::Resume { session, task, images } => {
-                let session = *session;
-                self.messages = session.messages;
-                self.stats = session.stats;
-                self.compaction.records = session.compactions;
-                self.baseline = (self.stats.api_calls, self.stats.instance_cost);
-                self.messages.push(new_task_message(&task).with_images(images));
-            }
-        }
+    /// Starts a new session: renders the system prompt and the first message. The person's own
+    /// words are kept in `extra.user_text`, so a front end can show them again later.
+    /// @param task - the task text
+    /// @param images - the images attached to the task
+    pub fn open_new(&mut self, task: &str, images: Vec<ImageData>) -> Result<()> {
+        let (system, instance) = self.render_prompts(task)?;
+        self.messages = vec![Message::system(system), Message::user(instance).with_images(images).with_extra(json!({ "user_text": task }))];
         Ok(())
     }
 
-    /// Handles a step that wants to end the run. After a submission the person may give a
-    /// follow up task, which continues the same conversation. Returns true when the run is over.
-    /// @param status - the exit status
-    /// @param submission - the final output
-    fn finish_or_continue(&mut self, status: String, submission: String) -> bool {
-        if status == "Submitted" {
-            self.show_status(Phase::Waiting);
-            while let Some(task) = self.parts.interaction.follow_up_task() {
-                if let Some(focus) = compact_command(&task) {
-                    self.compact_by_summary(CompactionReason::Manual, focus);
-                    continue;
-                }
-                let images = self.typed_images(&task);
-                self.messages.push(new_task_message(&task).with_images(images));
-                return false;
+    /// Continues a saved session from its history and totals.
+    /// @param session - the saved session
+    pub fn open_resumed(&mut self, session: ResumedSession) {
+        self.messages = session.messages;
+        self.stats = session.stats;
+        self.compaction.records = session.compactions;
+        self.baseline = (self.stats.api_calls, self.stats.instance_cost);
+    }
+
+    /// Gives the model its next task, the way a follow up task is given. An exit marker left by
+    /// the previous turn is removed first, so the history stays one conversation.
+    /// @param task - the task text
+    /// @param images - the images attached to it
+    pub fn add_task(&mut self, task: &str, images: Vec<ImageData>) {
+        while self.messages.last().is_some_and(|m| m.role == Role::Exit) {
+            self.messages.pop();
+        }
+        self.messages.push(new_task_message(task).with_images(images));
+    }
+
+    /// Makes the step, cost and time limits count from now, for a front end that runs one turn
+    /// per request.
+    pub fn start_turn_limits(&mut self) {
+        self.baseline = (self.stats.api_calls, self.stats.instance_cost);
+        self.started = Instant::now();
+        self.format_errors = 0;
+    }
+
+    /// Runs steps until one ends the run, saving after each, and returns how it ended. It does
+    /// not ask for a follow up task and does not add the exit marker; `end_turn` does that.
+    pub fn run_turn(&mut self) -> TurnEnd {
+        loop {
+            let ended = match self.step() {
+                Ok(Step::Continue) => None,
+                Ok(Step::Exit(status, submission)) => Some(TurnEnd { status, submission }),
+                Err(error) => Some(TurnEnd { status: "ModelError".into(), submission: format!("{error:#}") }),
+            };
+            self.save();
+            if let Some(end) = ended {
+                return end;
             }
         }
-        self.messages.push(Message::exit(&status, &submission));
-        self.exit = (status, submission);
-        true
+    }
+
+    /// Records how a turn ended: the exit marker in the history, then a save.
+    /// @param end - how the turn ended
+    pub fn end_turn(&mut self, end: &TurnEnd) {
+        self.messages.push(Message::exit(&end.status, &end.submission));
+        self.exit = (end.status.clone(), end.submission.clone());
+        self.save();
+    }
+
+    /// Stops the environment and the MCP servers.
+    pub fn close(&mut self) {
+        self.parts.environment.close();
+        self.parts.mcp.close();
+    }
+
+    /// Replaces the model, for a front end that lets the person pick another one.
+    /// @param provider - the new model
+    /// @param model - its `provider/model` string, recorded in the session
+    pub fn set_provider(&mut self, provider: Box<dyn Provider>, model: &str) {
+        self.parts.provider = provider;
+        self.parts.config.model = model.to_string();
+        self.parts.session.model = model.to_string();
+        self.compaction.window = None;
+        self.compaction.reported = None;
+    }
+
+    /// The conversation so far.
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    /// Names the session after its first task, for listings, when it has no name yet.
+    /// @param task - the person's words
+    pub fn name_session(&mut self, task: &str) {
+        if self.parts.session.task.is_empty() {
+            self.parts.session.task = task.chars().take(200).collect();
+        }
+    }
+
+    /// After a submission, asks the person at the terminal for a follow up task, which continues
+    /// the same conversation. `/compact` compacts and asks again. Returns true when there is one.
+    fn follow_up(&mut self) -> bool {
+        self.show_status(Phase::Waiting);
+        while let Some(task) = self.parts.interaction.follow_up_task() {
+            if let Some(focus) = compact_command(&task) {
+                self.compact_by_summary(CompactionReason::Manual, focus);
+                continue;
+            }
+            let images = self.typed_images(&task);
+            self.add_task(&task, images);
+            return true;
+        }
+        false
     }
 
     /// One step: a model call (or a typed command in human mode), then the actions. A Ctrl+C
@@ -223,6 +300,7 @@ impl Agent {
             Err(error) => return Err(error),
         };
         self.record_usage(&response);
+        self.report_usage();
         let actions = match self.parse_actions(&response) {
             Ok(actions) => actions,
             Err(error) => return self.format_error(&response, &error),
@@ -230,8 +308,13 @@ impl Agent {
         self.format_errors = 0;
         self.messages.push(assistant_message(&response, &actions));
         show_assistant(self.stats.api_calls, self.stats.instance_cost, &response.content, &actions);
+        self.parts.events.reply(&response.content, &actions);
         self.show_status(running_phase(&actions));
-        match self.parts.interaction.confirm(&actions) {
+        let decision = match self.parts.events.confirm(&actions) {
+            Some(decision) => decision,
+            None => self.parts.interaction.confirm(&actions),
+        };
+        match decision {
             Decision::Run => self.execute_actions(&actions),
             Decision::Reject(reason) => {
                 self.push_observations(&actions, &[], Some(&reason))?;
@@ -288,13 +371,13 @@ impl Agent {
 
     /// Loads the images named in text the person typed, and says what was attached.
     /// @param text - what the person typed
-    fn typed_images(&self, text: &str) -> Vec<ImageData> {
+    fn typed_images(&mut self, text: &str) -> Vec<ImageData> {
         let (images, notices) = images_in_text(text, &self.parts.cwd, &self.parts.config.images);
         for notice in notices {
-            show_notice("image", &notice);
+            self.notice("image", &notice);
         }
         for image in &images {
-            show_notice("image", &format!("attached {} {}", image.source, image.describe()));
+            self.notice("image", &format!("attached {} {}", image.source, image.describe()));
         }
         images
     }
@@ -328,7 +411,7 @@ impl Agent {
     fn call_model(&mut self) -> Result<ModelResponse> {
         match self.call_model_once() {
             Err(error) if error.context_overflow && !error.interrupted && self.parts.config.compaction.enabled => {
-                show_notice("compaction", &format!("the model refused the request as too long ({}), so the session is being summarized and the call sent again", error.message.lines().next().unwrap_or("")));
+                self.notice("compaction", &format!("the model refused the request as too long ({}), so the session is being summarized and the call sent again", error.message.lines().next().unwrap_or("")));
                 if !self.compact_by_summary(CompactionReason::Overflow, "") {
                     return Err(anyhow::anyhow!("model call failed: {}", error.message));
                 }
@@ -394,7 +477,7 @@ impl Agent {
         apply_mask(&mut self.messages, &indexes);
         self.compaction.reported = None;
         let after = self.request_estimate();
-        show_notice("compaction", &format!("removed {} old command outputs: about {before} to {after} tokens of a {window} token window", indexes.len()));
+        self.notice("compaction", &format!("removed {} old command outputs: about {before} to {after} tokens of a {window} token window", indexes.len()));
         self.compaction.records.push(mask_record(reason, self.stats.api_calls, (before, after, window), indexes));
         self.stats.compactions += 1;
         self.show_status(Phase::Compacting);
@@ -414,7 +497,7 @@ impl Agent {
         let outcome = match summarize(&self.messages, keep_recent, inputs) {
             Ok(outcome) => outcome,
             Err(error) => {
-                show_notice("compaction", &format!("could not summarize the session: {error:#}"));
+                self.notice("compaction", &format!("could not summarize the session: {error:#}"));
                 return false;
             }
         };
@@ -422,7 +505,7 @@ impl Agent {
         self.messages = outcome.history.clone();
         self.compaction.reported = None;
         let after = self.request_estimate();
-        show_notice("compaction", &format!("summarized {} messages: about {before} to {after} tokens of a {window} token window", outcome.removed.len()));
+        self.notice("compaction", &format!("summarized {} messages: about {before} to {after} tokens of a {window} token window", outcome.removed.len()));
         self.compaction.records.push(summary_record(reason, self.stats.api_calls, (before, after, window), &outcome));
         self.stats.compactions += 1;
         self.show_status(Phase::Compacting);
@@ -444,6 +527,21 @@ impl Agent {
         let model = self.parts.provider.model_name().to_string();
         let info = StatusInfo { phase, model, used: self.request_estimate(), window, trigger, compactions: self.stats.compactions, summaries, step: self.stats.api_calls, cost: self.stats.instance_cost, elapsed_secs: self.started.elapsed().as_secs() };
         console::update_status(info);
+    }
+
+    /// Shows a notice at the terminal and tells the front end.
+    /// @param label - the heading
+    /// @param text - the notice
+    fn notice(&mut self, label: &str, text: &str) {
+        show_notice(label, text);
+        self.parts.events.notice(label, text);
+    }
+
+    /// Tells the front end the size of the next request, the context window and the cost.
+    fn report_usage(&mut self) {
+        let window = self.context_window();
+        let used = self.request_estimate();
+        self.parts.events.usage(used, window, self.stats.instance_cost);
     }
 
     /// Adds a call's tokens and cost to the totals.
@@ -470,7 +568,7 @@ impl Agent {
     fn format_error(&mut self, response: &ModelResponse, error: &str) -> Result<Step> {
         self.format_errors += 1;
         let text = render_format_error(&self.templates.format_error, error, &response.finish_reason, !response.tool_calls.is_empty())?;
-        show_notice("format error", &format!("{error}\n(reply was: {})", response.content.chars().take(500).collect::<String>()));
+        self.notice("format error", &format!("{error}\n(reply was: {})", response.content.chars().take(500).collect::<String>()));
         self.messages.push(Message::user(text).with_extra(json!({ "interrupt_type": "FormatError", "model_response": response.content, "cost": response.cost })));
         let max = self.parts.config.max_consecutive_format_errors;
         if max > 0 && self.format_errors >= max {
@@ -486,9 +584,11 @@ impl Agent {
     fn execute_actions(&mut self, actions: &[Action]) -> Result<Step> {
         let mut outputs = Vec::new();
         let mut submitted = None;
-        for action in actions {
+        for (index, action) in actions.iter().enumerate() {
+            self.parts.events.action_started(index, action);
             let observation = self.execute(action);
             show_observation(&observation);
+            self.parts.events.action_finished(index, action, &observation);
             if matches!(action, Action::Bash { .. }) {
                 submitted = submission_from(&observation);
             }
@@ -522,7 +622,14 @@ impl Agent {
     fn push_observations(&mut self, actions: &[Action], outputs: &[Observation], reason: Option<&str>) -> Result<()> {
         let vars = self.template_vars("");
         for (index, action) in actions.iter().enumerate() {
-            let observation = outputs.get(index).cloned().unwrap_or_else(|| Observation::failed("", reason.unwrap_or("action was not executed")));
+            let observation = match outputs.get(index) {
+                Some(observation) => observation.clone(),
+                None => {
+                    let reason = reason.unwrap_or("action was not executed");
+                    self.parts.events.action_not_run(index, action, reason);
+                    Observation::failed("", reason)
+                }
+            };
             let content = render_observation(&self.templates.observation, &vars, &observation)?;
             let message = match action.tool_call_id() {
                 Some(id) => Message::tool(id, content),
@@ -617,8 +724,6 @@ fn assistant_message(response: &ModelResponse, actions: &[Action]) -> Message {
     message.with_extra(extra)
 }
 
-/// The message that gives the model a follow up task, or the next task of a resumed session.
-/// @param task - the task text
 /// The message that gives the model a line typed while it was working.
 /// @param text - what the person typed
 fn queued_message(text: &str) -> Message {
@@ -635,8 +740,11 @@ fn show_queued_message(text: &str) {
     console::emit(text);
 }
 
+/// The message that gives the model a follow up task, or the next task of a resumed session. The
+/// person's own words are kept in `extra.user_text`.
+/// @param task - the task text
 fn new_task_message(task: &str) -> Message {
-    Message::user(format!("The user added a new task: {task}")).with_extra(json!({ "interrupt_type": "UserNewTask" }))
+    Message::user(format!("The user added a new task: {task}")).with_extra(json!({ "interrupt_type": "UserNewTask", "user_text": task }))
 }
 
 /// Reads `/compact` or `/compact <focus>` typed at the follow up prompt. Returns the focus text,

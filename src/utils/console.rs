@@ -55,9 +55,24 @@ pub fn emit(text: &str) {
     write_out(&out);
 }
 
-/// Writes text to stdout at once and flushes it.
+/// When set, everything the console writes goes to stderr. The ACP server sets it, because its
+/// stdout carries the protocol and must hold nothing else.
+static USE_STDERR: AtomicBool = AtomicBool::new(false);
+
+/// Sends everything the console writes to stderr from now on.
+pub fn use_stderr() {
+    USE_STDERR.store(true, Ordering::SeqCst);
+}
+
+/// Writes text to stdout at once and flushes it, or to stderr after `use_stderr`.
 /// @param text - the text, escape codes included
 fn write_out(text: &str) {
+    if USE_STDERR.load(Ordering::SeqCst) {
+        let mut stderr = std::io::stderr().lock();
+        let _ = stderr.write_all(text.as_bytes());
+        let _ = stderr.flush();
+        return;
+    }
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(text.as_bytes());
     let _ = stdout.flush();
