@@ -95,7 +95,7 @@ jobs:
           echo "$answer" | grep -q '"protocolVersion":1'
       - name: Check the Linux binary is static
         if: contains(matrix.target, 'musl')
-        run: file target/${{ matrix.target }}/release/umbra | tee /dev/stderr | grep -q "statically linked"
+        run: file target/${{ matrix.target }}/release/umbra | tee /dev/stderr | grep -qE "statically linked|static-pie linked"
       - name: Pack
         shell: bash
         run: |

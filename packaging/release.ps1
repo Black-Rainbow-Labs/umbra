@@ -28,6 +28,10 @@
 .PARAMETER NoBump
     Release the version in Cargo.toml as it is.
 
+.PARAMETER AfterTag
+    The tag of the version in Cargo.toml is already pushed: start at the wait for the release.
+    For a release whose workflow had to be run again.
+
 .PARAMETER TapPath
     The checkout of Black-Rainbow-Labs/homebrew-umbra. Cloned there when missing. The default is
     homebrew-umbra beside this repository's main checkout.
@@ -38,6 +42,7 @@
 param(
     [ValidateSet('patch', 'minor', 'major')][string]$Part = 'patch',
     [switch]$NoBump,
+    [switch]$AfterTag,
     [string]$TapPath,
     [switch]$WhatIf
 )
@@ -236,7 +241,7 @@ if (-not $TapPath) {
     $TapPath = Join-Path (Split-Path -Parent $mainCheckout) 'homebrew-umbra'
 }
 $current = Get-CargoVersion
-$version = if ($NoBump) { $current } else { Get-NextVersion $current $Part }
+$version = if ($NoBump -or $AfterTag) { $current } else { Get-NextVersion $current $Part }
 $tag = "v$version"
 Write-Host "Release $tag from $root (Cargo.toml has $current). Tap: $TapPath"
 if ($WhatIf) {
@@ -245,14 +250,16 @@ if ($WhatIf) {
 }
 
 Use-GitHubToken
-if (-not $NoBump) {
-    Set-Version $version
-    git -C $root add Cargo.toml Cargo.lock
-    git -C $root commit -m "Release $version"
+if (-not $AfterTag) {
+    if (-not $NoBump) {
+        Set-Version $version
+        git -C $root add Cargo.toml Cargo.lock
+        git -C $root commit -m "Release $version"
+    }
+    git -C $root tag $tag
+    git -C $root push origin main
+    git -C $root push origin $tag
 }
-git -C $root tag $tag
-git -C $root push origin main
-git -C $root push origin $tag
 Wait-Release $tag
 $sums = Get-Checksums $tag
 Write-Formula $version $sums
