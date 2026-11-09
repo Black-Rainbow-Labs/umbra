@@ -181,7 +181,8 @@ function Write-Formula {
     #>
     param([string]$Version, [hashtable]$Sums)
     if (-not (Test-Path $TapPath)) { git clone "https://github.com/$tapRepo.git" $TapPath }
-    git -C $TapPath pull --ff-only
+    git -C $TapPath checkout -B main
+    if (git -C $TapPath ls-remote --heads origin main) { git -C $TapPath pull --ff-only origin main }
     $text = [IO.File]::ReadAllText((Join-Path $root 'packaging/homebrew/umbra.rb.template')).Replace('@VERSION@', $Version)
     foreach ($target in $targets) {
         $text = $text.Replace("@SHA_$target@", $Sums[(Archive-Name $target)])
@@ -191,7 +192,7 @@ function Write-Formula {
     [IO.File]::WriteAllText((Join-Path $TapPath 'Formula/umbra.rb'), $text)
     git -C $TapPath add Formula/umbra.rb
     git -C $TapPath commit -m "umbra $Version"
-    git -C $TapPath push
+    git -C $TapPath push origin main
 }
 
 function Write-RegistryEntry {
