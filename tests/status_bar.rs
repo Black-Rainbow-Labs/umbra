@@ -78,11 +78,11 @@ fn the_bar_is_drawn_under_a_prompt() {
     let scratch = Scratch::new("status-bar-prompt");
     let envs = [("UMBRA_STATUS_BAR", "1"), ("UMBRA_FORCE_INTERACTIVE", "1"), ("COLUMNS", "120")];
     let (stdout, _) = run(&scratch, &[], &envs, "");
-    let prompt = "Agent wants to finish. Type a new task, or press Enter to quit: ";
-    let at = stdout.find(prompt).expect("the follow up prompt is shown");
+    let hint = stdout.find("Type a follow up task, or press Enter to quit").expect("the follow up hint is shown");
+    let at = hint + stdout[hint..].find("❯ ").expect("the follow up prompt is shown under the hint");
     let before = &stdout[..at];
     assert!(before.ends_with(BAR_END), "the bar is drawn just before the prompt, under the prompt's line");
-    let bar = frames(&stdout[..at + 1]).pop().unwrap();
+    let bar = frames(&stdout[..at + "❯".len()]).pop().unwrap();
     assert!(bar.contains("● waiting for you"), "{bar}");
 }
 

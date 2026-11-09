@@ -86,8 +86,8 @@ impl Setup {
 /// @param output - the run's output
 fn trajectory_from_output(output: &std::process::Output) -> PathBuf {
     let all = text(output);
-    let line = all.lines().find(|l| l.starts_with("trajectory: ")).unwrap_or_else(|| panic!("no trajectory line in:\n{all}"));
-    PathBuf::from(line.trim_start_matches("trajectory: ").trim())
+    let line = all.lines().map(str::trim_start).find(|l| l.starts_with("trajectory ")).unwrap_or_else(|| panic!("no trajectory line in:\n{all}"));
+    PathBuf::from(line.trim_start_matches("trajectory ").trim())
 }
 
 /// The session id of a trajectory.

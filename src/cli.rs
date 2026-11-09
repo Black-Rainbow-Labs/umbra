@@ -111,6 +111,10 @@ pub struct RunArgs {
     /// Do not draw the status bar under the output.
     #[arg(long)]
     pub no_status_bar: bool,
+    /// Print every detail of the run: step headings with the cost, whole command outputs, full
+    /// format errors and every compaction attempt.
+    #[arg(long)]
+    pub verbose: bool,
     /// Print only the final output (and errors), for scripts.
     #[arg(short, long)]
     pub quiet: bool,

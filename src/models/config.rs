@@ -50,6 +50,11 @@ pub struct UmbraConfig {
     /// Draw the status bar under the output in a terminal: context use, room before compaction
     /// and the compaction count.
     pub status_bar: bool,
+    /// Draw the UMBRA banner with the version, model and folder when a run starts in a terminal.
+    pub banner: bool,
+    /// Print every detail of the run: step headings with the cost, whole command outputs, full
+    /// format errors and every compaction attempt. Off, routine events take one line each.
+    pub verbose: bool,
     /// Regexes. A command that matches one at its start runs without confirmation.
     pub whitelist_actions: Vec<String>,
     /// Where the trajectory JSON is written. Empty means `~/.umbra/trajectories/<time>.traj.json`.
@@ -83,6 +88,8 @@ impl Default for UmbraConfig {
             confirm_exit: true,
             keep_open: false,
             status_bar: true,
+            banner: true,
+            verbose: false,
             whitelist_actions: Vec::new(),
             output: String::new(),
             environment: EnvironmentConfig::default(),

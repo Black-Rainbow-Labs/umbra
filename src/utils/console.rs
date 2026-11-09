@@ -22,8 +22,27 @@ pub fn is_quiet() -> bool {
     QUIET.load(Ordering::Relaxed)
 }
 
+/// When set, the run prints every detail: step headings, whole outputs and every notice.
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+/// Turns the detailed output on or off.
+/// @param verbose - true to print every detail of the run
+pub fn set_verbose(verbose: bool) {
+    VERBOSE.store(verbose, Ordering::Relaxed);
+}
+
+/// Returns true when the detailed output is on.
+pub fn is_verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
+
+/// Returns true when stdout is a terminal.
+pub fn stdout_is_terminal() -> bool {
+    std::io::stdout().is_terminal()
+}
+
 /// Returns true when stdout is a terminal and `NO_COLOR` is not set.
-fn color_enabled() -> bool {
+pub fn color_enabled() -> bool {
     std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
 }
 
@@ -32,13 +51,6 @@ fn color_enabled() -> bool {
 /// @param text - the text to color
 pub fn paint(code: &str, text: &str) -> String {
     if color_enabled() { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() }
-}
-
-/// Prints a heading line such as `── assistant (step 3, $0.0123) ──`.
-/// @param label - the heading text
-/// @param code - the ANSI color for the heading
-pub fn heading(label: &str, code: &str) {
-    emit(&format!("\n{}", paint(code, &format!("── {label} ──"))));
 }
 
 /// Prints text and a line break. While the status bar is on, the bar is erased first and drawn
@@ -172,7 +184,7 @@ pub fn finish_status(phase: Phase) {
 }
 
 /// The terminal's width in columns: asked of the console, then `COLUMNS`, then 100.
-fn terminal_width() -> usize {
+pub fn terminal_width() -> usize {
     console_width().or_else(|| std::env::var("COLUMNS").ok().and_then(|c| c.trim().parse().ok())).filter(|w| *w > 0).unwrap_or(100)
 }
 

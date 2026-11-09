@@ -1,5 +1,6 @@
 //! Small helpers with no knowledge of the agent.
 
+pub mod banner;
 pub mod console;
 pub mod env_expand;
 pub mod frontmatter;

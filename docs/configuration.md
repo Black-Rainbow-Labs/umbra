@@ -27,6 +27,8 @@ wall_time_limit_seconds = 0
 max_consecutive_format_errors = 3
 confirm_exit = true                    # ask for a follow up task when the agent finishes
 status_bar = true                      # context and compaction bar under the output
+banner = true                          # UMBRA banner with the version, model and folder at start
+verbose = false                        # every detail: step costs, whole outputs, full errors
 whitelist_actions = ["ls", "cat ", "git (status|diff|log)"]   # run without asking
 output = ""                            # trajectory path; empty means ~/.umbra/trajectories/<time>.traj.json
 
@@ -137,6 +139,8 @@ detect_paths = true                    # attach image files named in a task or a
 | `max_consecutive_format_errors` | 3 | End the run after this many unusable replies in a row. |
 | `confirm_exit` | true | When the agent finishes in a terminal, ask for a follow up task. |
 | `status_bar` | true | Draw the status bar under the output in a terminal: what the agent is doing, how full the context window is, the tokens left before compaction, and the session's compaction count. `--no-status-bar` or `UMBRA_STATUS_BAR=0` turns it off for a run. |
+| `banner` | true | Draw the UMBRA banner when a run starts in a terminal: the version, the model, the folder, the mode, and how many instruction files, skills and MCP servers were loaded. Never drawn into a pipe or with `--quiet`. `UMBRA_BANNER=0` turns it off and `UMBRA_BANNER=1` draws it into a pipe. |
+| `verbose` | false | Print every detail of a run: the step number and cost before each reply, command output up to 2000 characters instead of the first 10 lines, the whole text of a format error, and the context warning every time compaction cannot help instead of once. `--verbose` turns it on for a run. |
 | `whitelist_actions` | empty | Regexes matched at the start of a command. A match runs without asking in confirm mode. |
 | `environment.timeout` | 30 | Seconds before a command and everything it started is killed. |
 | `environment.shell` | bash | The program and flags that run a command string, such as `["zsh", "-c"]`. |

@@ -11,7 +11,7 @@ use super::agent_service::{now_seconds, Agent, AgentParts, Opening, RunResult, I
 use super::context_service::{context_vars, discovery_context, expand_slash_command, load_run_context, RunContext};
 use super::environment::create_environment;
 use super::image_service::{images_in_text, load_image};
-use super::interaction_service::{show_notice, Interaction};
+use super::interaction_service::{prompt_with_hint, show_event, show_user_text, Interaction, Tone};
 use super::mcp::McpManager;
 use super::prompt_service::platform_vars;
 use super::providers::create_provider;
@@ -23,7 +23,8 @@ use crate::models::session::{ResumeRecord, SessionInfo};
 use crate::repositories::config_repository::{load_config, merge_values};
 use crate::repositories::session_repository::new_session_id;
 use crate::repositories::trajectory_repository::trajectory_path;
-use crate::utils::console::{enable_status_bar, finish_status, prompt_line, set_quiet, stdin_is_terminal, Input};
+use crate::utils::banner::{display_folder, render_banner, BannerInfo};
+use crate::utils::console::{color_enabled, emit, paint, enable_status_bar, finish_status, is_verbose, set_quiet, set_verbose, stdin_is_terminal, stdout_is_terminal, terminal_width, Input};
 use crate::utils::status_bar::Phase;
 use crate::utils::interrupt;
 use crate::utils::paths::{absolute_path, project_root, umbra_home};
@@ -110,6 +111,9 @@ fn apply_run_args(config: &mut UmbraConfig, args: &RunArgs) -> Result<()> {
     if args.keep_open {
         config.keep_open = true;
     }
+    if args.verbose {
+        config.verbose = true;
+    }
     config.status_bar &= !args.no_status_bar;
     config.compaction.enabled &= !args.no_compact;
     if let Some(window) = args.context_window {
@@ -125,13 +129,14 @@ fn apply_run_args(config: &mut UmbraConfig, args: &RunArgs) -> Result<()> {
 pub fn run_task(args: &RunArgs) -> Result<i32> {
     interrupt::install();
     let mut args = args.clone();
-    let resumed = load_resume_target(&args)?;
+    let (resumed, resume_notice) = load_resume_target(&args)?;
     if let Some(resumed) = &resumed {
         fill_from_session(&mut args, &resumed.session);
     }
     let (mut config, cwd) = prepare_config(&args.common)?;
     apply_run_args(&mut config, &args)?;
     set_quiet(args.quiet);
+    set_verbose(config.verbose && !args.quiet);
     enable_status_bar(config.status_bar);
     let mut interaction = Interaction::new(config.mode, &config.whitelist_actions, config.confirm_exit);
     interaction.keep_open = config.keep_open;
@@ -139,7 +144,17 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
         bail!("stdin is not a terminal, so Umbra cannot ask before running commands. Pass --yolo to run without asking");
     }
     let context = load_run_context(&config, &discovery_context(&config, &cwd));
-    let task = expand_slash_command(&task_text(&args, resumed.as_ref(), config.keep_open)?, &context);
+    if !args.quiet {
+        show_banner(&config, &cwd, &context);
+        if let Some(notice) = &resume_notice {
+            show_event(Tone::Info, "↺", notice);
+        }
+    }
+    let typed = task_text(&args, resumed.as_ref(), config.keep_open)?;
+    if args.task.is_some() || !args.task_words.is_empty() {
+        show_user_text("❯", &typed);
+    }
+    let task = expand_slash_command(&typed, &context);
     let images = opening_images(&args.images, &task, &cwd, &config.images)?;
     let (session, trajectory_path) = session_for_run(&config, &args, &cwd, &task, resumed.as_ref());
     let mut agent = build_agent(config, &cwd, &context, interaction, AgentSession { session, trajectory_path, need_provider: true, events: Box::new(NoEvents) })?;
@@ -157,10 +172,10 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     })
 }
 
-/// Loads the session named by `--resume` or `--continue`, if either was given, and says what
-/// was loaded.
+/// Loads the session named by `--resume` or `--continue`, if either was given, with a line that
+/// says what was loaded.
 /// @param args - the run options
-fn load_resume_target(args: &RunArgs) -> Result<Option<ResumedSession>> {
+fn load_resume_target(args: &RunArgs) -> Result<(Option<ResumedSession>, Option<String>)> {
     let here = match &args.common.cwd {
         Some(dir) => absolute_path(dir),
         None => std::env::current_dir()?,
@@ -169,17 +184,35 @@ fn load_resume_target(args: &RunArgs) -> Result<Option<ResumedSession>> {
         if args.fork {
             bail!("--fork needs --resume or --continue");
         }
-        return Ok(None);
+        return Ok((None, None));
     };
     let resumed = load_resumed(&path)?;
-    let mut notice = format!("session {} from {}: {} messages, {} model calls so far", resumed.session.id, path.display(), resumed.messages.len(), resumed.stats.api_calls);
+    let mut notice = format!("resuming session {} from {}: {} messages, {} model calls so far", resumed.session.id, path.display(), resumed.messages.len(), resumed.stats.api_calls);
     if resumed.repaired > 0 {
         notice.push_str(&format!(". {} tool calls that never ran were given a result", resumed.repaired));
     }
-    if !args.quiet {
-        show_notice("resuming", &notice);
+    Ok((Some(resumed), Some(notice)))
+}
+
+/// Prints the UMBRA banner: version, model, folder, mode and what was loaded. Only in a terminal,
+/// unless `UMBRA_BANNER=1` asks for it in a pipe; `UMBRA_BANNER=0` or `banner = false` turns it off.
+/// @param config - the merged config
+/// @param cwd - the working folder
+/// @param context - the loaded instructions, skills and MCP definitions
+fn show_banner(config: &UmbraConfig, cwd: &Path, context: &RunContext) {
+    let wanted = match std::env::var("UMBRA_BANNER").ok().as_deref() {
+        Some("0") => false,
+        Some("1") => true,
+        _ => config.banner && stdout_is_terminal(),
+    };
+    if !wanted {
+        return;
     }
-    Ok(Some(resumed))
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned());
+    let mode = serde_json::to_value(config.mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+    let mcp_servers = if config.mcp.enabled { context.mcp_servers.len() } else { 0 };
+    let info = BannerInfo { version: env!("CARGO_PKG_VERSION").into(), model: config.model.clone(), folder: display_folder(&cwd.to_string_lossy(), home.as_deref()), mode, instruction_files: context.instructions.len(), skills: context.skills.len(), mcp_servers };
+    emit(&render_banner(&info, terminal_width(), color_enabled()).join("\n"));
 }
 
 /// A resumed session runs in its own folder and with its own model unless the command line
@@ -213,10 +246,10 @@ fn opening_images(paths: &[PathBuf], task: &str, cwd: &Path, settings: &ImagesCo
         }
     }
     for notice in notices {
-        show_notice("image", &notice);
+        show_event(Tone::Warning, "", &notice);
     }
     for image in &images {
-        show_notice("image", &format!("attached {} {}", image.source, image.describe()));
+        show_event(Tone::Info, "+", &format!("attached {} {}", image.source, image.describe()));
     }
     Ok(images)
 }
@@ -312,7 +345,7 @@ fn connect_mcp(config: &UmbraConfig, context: &RunContext) -> McpManager {
     }
     let manager = McpManager::connect_all(&context.mcp_servers, &config.mcp, &umbra_home().join("logs").join("mcp"));
     for failure in &manager.failures {
-        eprintln!("umbra: MCP server {} was not started: {}", failure.name, failure.error.lines().next().unwrap_or(""));
+        show_event(Tone::Warning, "", &format!("MCP server {} was not started: {}", failure.name, failure.error.lines().next().unwrap_or("")));
     }
     manager
 }
@@ -329,15 +362,15 @@ fn task_text(args: &RunArgs, resumed: Option<&ResumedSession>, keep_open: bool) 
     if !args.task_words.is_empty() {
         return Ok(args.task_words.join(" "));
     }
-    let prompt = match resumed {
-        Some(r) => format!("Resuming session {} ({} messages). What next? ", r.session.id, r.messages.len()),
-        None => "What do you want to do? ".to_string(),
+    let hint = match resumed {
+        Some(r) => format!("  Resuming session {} ({} messages). What next?", r.session.id, r.messages.len()),
+        None => "  What do you want to do?".to_string(),
     };
     if !stdin_is_terminal() {
         bail!("no task given. Pass it as an argument or with -t");
     }
     loop {
-        match prompt_line(&prompt) {
+        match prompt_with_hint(&hint) {
             Input::Line(task) if !task.trim().is_empty() => return Ok(task),
             Input::Line(_) | Input::Interrupted if keep_open => continue,
             _ => bail!("no task given. Pass it as an argument or with -t"),
@@ -345,8 +378,9 @@ fn task_text(args: &RunArgs, resumed: Option<&ResumedSession>, keep_open: bool) 
     }
 }
 
-/// Prints how the run ended and how to resume it. An interrupted run always says how, even
-/// in quiet mode, on stderr.
+/// Prints where the trajectory was saved, and the run's totals in verbose mode. Each turn's
+/// ending, final output and resume command were already printed as the turn ended. In quiet mode prints only the final output, and an
+/// interrupted run says how to resume on stderr.
 /// @param result - the run's result
 /// @param quiet - print only the submission
 fn report(result: &RunResult, quiet: bool) {
@@ -357,11 +391,11 @@ fn report(result: &RunResult, quiet: bool) {
         }
         return;
     }
-    let summary = format!("exit status: {}\nmodel calls: {}, cost: ${:.4}, tokens in/out: {}/{}, compactions: {}\ntrajectory: {}\nsession: {} (resume with: umbra --resume {})", result.exit_status, result.stats.api_calls, result.stats.instance_cost, result.stats.input_tokens, result.stats.output_tokens, result.stats.compactions, result.trajectory_path.display(), result.session_id, result.session_id);
-    show_notice("finished", &summary);
-    if !result.submission.trim().is_empty() {
-        show_notice("final output", &result.submission);
+    if is_verbose() {
+        let details = format!("exit status {} · {} model calls · tokens in/out {}/{} · {} compactions", result.exit_status, result.stats.api_calls, result.stats.input_tokens, result.stats.output_tokens, result.stats.compactions);
+        show_event(Tone::Info, "·", &details);
     }
+    emit(&paint("90", &format!("  trajectory {}", result.trajectory_path.display())));
 }
 
 /// A provider that is never called, used when only the prompts are printed.

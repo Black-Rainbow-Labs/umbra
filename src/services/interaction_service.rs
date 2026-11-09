@@ -5,7 +5,8 @@ use regex::Regex;
 
 use crate::models::action::{Action, Observation};
 use crate::models::config::Mode;
-use crate::utils::console::{clip, emit, heading, is_quiet, paint, prompt_line, read_line, stdin_is_terminal, Input};
+use crate::utils::status_bar::short_duration;
+use crate::utils::console::{clip, emit, is_quiet, is_verbose, paint, prompt_line, read_line, stdin_is_terminal, stdout_is_terminal, terminal_width, Input};
 
 /// What the person decided about a set of actions.
 pub enum Decision {
@@ -33,6 +34,11 @@ pub const TEMPORARY_INTERRUPTION: &str = "Temporary interruption caught.";
 
 /// The comment prompt, mini-swe-agent's wording.
 const COMMENT_PROMPT: &str = "\nInterrupted. Type a comment/command (/h for available commands)\n> ";
+
+/// The hint above the follow up prompt.
+pub const FOLLOW_UP: &str = "  Type a follow up task, or press Enter to quit";
+/// The hint above the follow up prompt when an empty line does not end the run.
+pub const FOLLOW_UP_KEEP_OPEN: &str = "  Type a follow up task";
 
 /// What the person typed in human mode.
 pub enum HumanInput {
@@ -128,9 +134,9 @@ impl Interaction {
         if !self.confirm_exit || !self.interactive {
             return None;
         }
-        let prompt = if self.keep_open { "Agent wants to finish. Type a new task: " } else { "Agent wants to finish. Type a new task, or press Enter to quit: " };
+        let hint = if self.keep_open { FOLLOW_UP_KEEP_OPEN } else { FOLLOW_UP };
         loop {
-            let line = match prompt_line(prompt) {
+            let line = match prompt_with_hint(hint) {
                 Input::Line(line) => line,
                 // Ctrl+C at an idle prompt is a stop with nothing to stop. With keep_open it asks
                 // again, so a stop pressed while the agent waits cannot end the session.
@@ -231,7 +237,32 @@ fn print_help() {
     emit("  Enter  run the commands\n  /y     switch to yolo mode and run\n  /c     confirm mode\n  /u     human mode: you type the commands\n  text   reject the commands and send the text to the model");
 }
 
-/// Prints the model's reply.
+/// How much attention a run event asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// Routine: one dim line.
+    Info,
+    /// Something the person may want to act on: yellow.
+    Warning,
+    /// Something went wrong: red.
+    Failure,
+}
+
+/// The color codes of the run's output.
+const CYAN: &str = "36";
+const MAGENTA: &str = "35";
+const GREEN: &str = "32";
+const YELLOW: &str = "33";
+const RED: &str = "31";
+const DIM: &str = "90";
+
+/// The command output lines shown when the output is not verbose.
+const OUTPUT_LINES: usize = 10;
+/// The longest output line shown when the output is not verbose.
+const OUTPUT_LINE_CHARS: usize = 400;
+
+/// Prints the model's reply: its text after a `●`, then each action. In verbose mode a dim line
+/// with the step number and the cost comes first.
 /// @param step - the step number
 /// @param cost - the run's cost so far
 /// @param content - the reply text
@@ -240,36 +271,253 @@ pub fn show_assistant(step: u32, cost: f64, content: &str, actions: &[Action]) {
     if is_quiet() {
         return;
     }
-    heading(&format!("assistant (step {step}, ${cost:.4})"), "1;36");
-    if !content.trim().is_empty() {
-        emit(&clip(content.trim(), 4000));
+    if is_verbose() {
+        emit(&paint(DIM, &format!("\n  step {step} · ${cost:.4}")));
     }
+    show_reply_text(content);
     for action in actions {
-        emit(&format!("{} {}", paint("1;35", "▶"), paint("35", &clip(&action.describe(), 2000))));
+        show_action(action);
     }
 }
 
-/// Prints an action's result.
+/// Prints the text of a reply after a `●`, indented to line up under it. A blank line comes
+/// first, so each reply starts a new block.
+/// @param content - the reply text
+pub fn show_reply_text(content: &str) {
+    if is_quiet() {
+        return;
+    }
+    let text = content.trim();
+    if !is_verbose() {
+        emit("");
+    }
+    if text.is_empty() {
+        return;
+    }
+    emit(&format!("{} {}", paint(CYAN, "●"), indent_after_first(&wrap(&clip(text, 4000), 2), "  ")));
+}
+
+/// Prints one action: `$ command` for a shell command, `→ server.tool arguments` for an MCP tool.
+/// @param action - the action
+fn show_action(action: &Action) {
+    let line = match action {
+        Action::Bash { command, .. } if !is_verbose() && command.contains(SUBMIT_MARKER) => {
+            let limit = if stdout_is_terminal() { terminal_width().saturating_sub(6).clamp(20, 80) } else { 80 };
+            emit(&format!("  {}", paint(DIM, &format!("$ {}", first_line_cut(command.trim(), limit)))));
+            return;
+        }
+        Action::Bash { command, .. } => format!("$ {}", clip(command.trim(), 2000)),
+        Action::Mcp { .. } if is_verbose() => format!("→ {}", clip(&action.describe(), 2000)),
+        Action::Mcp { server, tool, arguments, .. } => format!("→ {server}.{tool} {}", clip(&arguments.to_string(), 200)),
+    };
+    emit(&format!("  {}", paint(MAGENTA, &indent_after_first(&line, "    "))));
+}
+
+/// Prints an action's result under a `⎿` gutter. Without verbose output only the first lines are
+/// shown, with a count of the rest. An exit code other than 0 is shown in red.
 /// @param observation - the result
 pub fn show_observation(observation: &Observation) {
     if is_quiet() {
         return;
     }
-    let code = if observation.returncode == 0 { "32" } else { "31" };
-    heading(&format!("output (exit {})", observation.returncode), code);
+    let output = observation.output.trim_end();
+    let mut lines: Vec<String> = if is_verbose() { clip(output, 2000).lines().map(String::from).collect() } else { short_output(output) };
     if !observation.exception_info.is_empty() {
-        emit(&paint("31", &observation.exception_info));
+        lines.extend(observation.exception_info.lines().map(|l| paint(RED, l)));
     }
-    emit(&clip(observation.output.trim_end(), 2000));
+    if observation.returncode != 0 {
+        lines.push(paint(RED, &format!("exit {}", observation.returncode)));
+    }
+    if lines.is_empty() {
+        lines.push(paint(DIM, "(no output)"));
+    }
+    let gutter = paint(DIM, "⎿");
+    let body: Vec<String> = lines.iter().enumerate().map(|(i, line)| if i == 0 { format!("  {gutter}  {line}") } else { format!("     {line}") }).collect();
+    emit(&body.join("\n"));
 }
 
-/// Prints a notice line.
-/// @param label - the heading
-/// @param text - the notice
-pub fn show_notice(label: &str, text: &str) {
+/// The first lines of a command's output, each cut to fit the terminal after the gutter, with a
+/// dim count of the lines left out.
+/// @param output - the whole output
+fn short_output(output: &str) -> Vec<String> {
+    if output.is_empty() {
+        return Vec::new();
+    }
+    let all: Vec<&str> = output.lines().collect();
+    let limit = if stdout_is_terminal() { terminal_width().saturating_sub(7).clamp(20, OUTPUT_LINE_CHARS) } else { OUTPUT_LINE_CHARS };
+    let mut lines: Vec<String> = all.iter().take(OUTPUT_LINES).map(|l| cut_line(l, limit)).collect();
+    if all.len() > OUTPUT_LINES {
+        let more = all.len() - OUTPUT_LINES;
+        lines.push(paint(DIM, &format!("… {more} more {} (--verbose shows more)", if more == 1 { "line" } else { "lines" })));
+    }
+    lines
+}
+
+/// Cuts one line to `limit` characters with an ellipsis.
+/// @param line - the line
+/// @param limit - the most characters to keep
+fn cut_line(line: &str, limit: usize) -> String {
+    if line.chars().count() <= limit {
+        return line.to_string();
+    }
+    let kept: String = line.chars().take(limit).collect();
+    format!("{kept}…")
+}
+
+/// The text a command prints to submit. A command that contains it is shown on one dim line,
+/// because what it prints is shown as the final output when the turn ends.
+const SUBMIT_MARKER: &str = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT";
+
+/// The first line of text cut to `limit` characters, with an ellipsis when anything was left out.
+/// @param text - the text
+/// @param limit - the most characters to keep
+fn first_line_cut(text: &str, limit: usize) -> String {
+    let first = text.lines().next().unwrap_or("");
+    let cut = cut_line(first, limit);
+    if cut.len() < text.len() && !cut.ends_with('…') { format!("{cut} …") } else { cut }
+}
+
+/// Wraps text at spaces to fit the terminal after an indent, so long lines stay under their
+/// marker instead of running back to the first column. Only in a terminal; a pipe gets the text
+/// as it is. A word longer than the line is left whole.
+/// @param text - the text
+/// @param indent - the columns before the text on every line
+fn wrap(text: &str, indent: usize) -> String {
+    if !stdout_is_terminal() {
+        return text.to_string();
+    }
+    let room = terminal_width().saturating_sub(indent + 1).max(20);
+    text.lines().map(|line| wrap_line(line, room)).collect::<Vec<_>>().join("\n")
+}
+
+/// Wraps one line at spaces into lines of at most `room` characters.
+/// @param line - the line
+/// @param room - the most characters on a line
+fn wrap_line(line: &str, room: usize) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in line.split(' ') {
+        let needed = current.chars().count() + word.chars().count() + usize::from(!current.is_empty());
+        if needed > room && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    out.push(current);
+    out.join("\n")
+}
+
+/// Indents every line after the first, so wrapped text lines up under a marker.
+/// @param text - the text
+/// @param pad - the indent
+fn indent_after_first(text: &str, pad: &str) -> String {
+    text.replace('\n', &format!("\n{pad}"))
+}
+
+/// Prints one event of the run. Routine events are one dim line with a marker such as `↻`;
+/// warnings are yellow with `▲` and failures red with `✖`.
+/// @param tone - how much attention it asks for
+/// @param marker - the marker of a routine event
+/// @param text - what happened
+pub fn show_event(tone: Tone, marker: &str, text: &str) {
     if is_quiet() {
         return;
     }
-    heading(label, "1;33");
-    emit(&clip(text, 2000));
+    let text = clip(text.trim(), 2000);
+    let line = match tone {
+        Tone::Info => paint(DIM, &format!("  {marker} {}", indent_after_first(&wrap(&text, 4), "    "))),
+        Tone::Warning => format!("\n{}", paint(YELLOW, &format!("▲ {}", indent_after_first(&wrap(&text, 2), "  ")))),
+        Tone::Failure => format!("\n{}", paint(RED, &format!("✖ {}", indent_after_first(&wrap(&text, 2), "  ")))),
+    };
+    emit(&line);
+}
+
+/// Prints what the person typed after a marker: `❯` for a task, `›` for a line sent while the
+/// agent worked.
+/// @param marker - the marker
+/// @param text - what they typed
+pub fn show_user_text(marker: &str, text: &str) {
+    if is_quiet() {
+        return;
+    }
+    emit(&format!("\n{} {}", paint("1;33", marker), indent_after_first(&wrap(&clip(text.trim(), 2000), 2), "  ")));
+}
+
+/// The numbers shown at the end of a turn.
+pub struct TurnSummary<'a> {
+    pub status: &'a str,
+    pub submission: &'a str,
+    pub steps: u32,
+    pub cost: f64,
+    pub elapsed_secs: u64,
+    pub session_id: &'a str,
+}
+
+/// Prints how a turn ended: `✔ Done` or why it stopped, the steps, cost and time, the final
+/// output, and how to resume the session.
+/// @param summary - the turn's ending and numbers
+pub fn show_turn_end(summary: &TurnSummary) {
+    if is_quiet() {
+        return;
+    }
+    let (code, headline, show_output) = turn_headline(summary.status, summary.submission);
+    let mut numbers = vec![format!("{} {}", summary.steps, if summary.steps == 1 { "step" } else { "steps" })];
+    if summary.cost > 0.0 {
+        numbers.push(format!("${:.4}", summary.cost));
+    }
+    numbers.push(short_duration(summary.elapsed_secs));
+    emit(&format!("\n{}{}", paint(code, &headline), paint(DIM, &format!(" · {}", numbers.join(" · ")))));
+    if show_output && !summary.submission.trim().is_empty() {
+        emit(&format!("  {}", indent_after_first(&wrap(&clip(summary.submission.trim(), 4000), 2), "  ")));
+    }
+    if !summary.session_id.is_empty() {
+        emit(&format!("  {} umbra --resume {}", paint(DIM, "resume with"), summary.session_id));
+    }
+}
+
+/// The color, the headline and whether to show the final output, for a turn's exit status.
+/// @param status - the exit status
+/// @param submission - the final output, or the error for a failed model call
+fn turn_headline(status: &str, submission: &str) -> (&'static str, String, bool) {
+    match status {
+        "Submitted" => (GREEN, "✔ Done".into(), true),
+        "UserQuit" => (DIM, "■ Ended".into(), false),
+        "Interrupted" => (YELLOW, "▲ Interrupted".into(), false),
+        "LimitsExceeded" => (RED, "✖ Stopped: the step or cost limit was reached".into(), true),
+        "TimeExceeded" => (RED, "✖ Stopped: the time limit was reached".into(), true),
+        "RepeatedFormatError" => (RED, "✖ Stopped: the model replied without a usable command too many times in a row".into(), true),
+        "ModelError" => (RED, format!("✖ Stopped: {}", submission.lines().next().unwrap_or("the model call failed")), false),
+        other => (RED, format!("✖ Stopped: {other}"), true),
+    }
+}
+
+/// Prints a dim hint line, then a `❯` prompt, and reads one line.
+/// @param hint - the hint above the prompt
+pub fn prompt_with_hint(hint: &str) -> Input {
+    if !hint.is_empty() {
+        emit(&format!("\n{}", paint(DIM, hint)));
+    }
+    prompt_line("❯ ")
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    #[test]
+    fn wraps_at_spaces_and_keeps_long_words_whole() {
+        assert_eq!(wrap_line("aaa bbb ccc", 7), "aaa bbb\nccc");
+        assert_eq!(wrap_line("a averyveryverylongword b", 6), "a\naveryveryverylongword\nb");
+        assert_eq!(wrap_line("short", 40), "short");
+    }
+
+    #[test]
+    fn a_submit_command_is_cut_to_its_first_line() {
+        assert_eq!(first_line_cut("echo X && echo done", 80), "echo X && echo done");
+        assert_eq!(first_line_cut("echo X\ncat file", 80), "echo X …");
+        assert_eq!(first_line_cut(&"x".repeat(100), 10), format!("{}…", "x".repeat(10)));
+    }
 }

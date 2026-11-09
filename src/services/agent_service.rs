@@ -10,10 +10,10 @@ use serde_json::{json, Value};
 
 use super::action_parser::{parse_text_action, parse_tool_actions};
 use super::agent_events::AgentEvents;
-use super::compaction_service::{apply_mask, budget_for, estimate_request_tokens, estimate_tools_tokens, mask_record, plan_mask, resolve_window, summarize, summary_record, ReportedSize, SummaryInputs};
+use super::compaction_service::{apply_mask, budget_for, estimate_request_tokens, estimate_tools_tokens, find_cut, mask_record, plan_mask, resolve_window, summarize, summary_record, ReportedSize, SummaryInputs};
 use super::environment::{submission_from, Environment};
 use super::image_service::images_in_text;
-use super::interaction_service::{show_assistant, show_notice, show_observation, Comment, Decision, HumanInput, Interaction};
+use super::interaction_service::{show_assistant, show_event, show_observation, show_reply_text, show_turn_end, show_user_text, Comment, Decision, HumanInput, Interaction, Tone, TurnSummary};
 use super::session_service::ResumedSession;
 use super::mcp::McpManager;
 use super::prompt_service::{render, render_format_error, render_observation, Templates};
@@ -33,7 +33,7 @@ use crate::repositories::trajectory_repository::save_trajectory;
 use crate::utils::console;
 use crate::utils::interrupt;
 use crate::utils::paths::absolute_path;
-use crate::utils::status_bar::{Phase, StatusInfo};
+use crate::utils::status_bar::{short_tokens, Phase, StatusInfo};
 
 /// How a run ended.
 #[derive(Debug, Clone)]
@@ -118,6 +118,8 @@ struct CompactionState {
     /// The estimate for the tool definitions, added when there is no reported size.
     tools_tokens: u64,
     records: Vec<CompactionRecord>,
+    /// True once the person was told compaction cannot shrink the history, so it is said once.
+    stuck_warned: bool,
 }
 
 impl Agent {
@@ -157,6 +159,7 @@ impl Agent {
         }
         loop {
             let end = self.run_turn();
+            self.show_turn_end(&end);
             if end.status == "Submitted" && self.follow_up() {
                 continue;
             }
@@ -227,6 +230,14 @@ impl Agent {
         self.messages.push(Message::exit(&end.status, &end.submission));
         self.exit = (end.status.clone(), end.submission.clone());
         self.save();
+    }
+
+    /// Prints how a turn ended at the terminal, with the session's steps and cost.
+    /// @param end - how the turn ended
+    fn show_turn_end(&mut self, end: &TurnEnd) {
+        self.show_status(Phase::Waiting);
+        let session_id = self.parts.session.id.clone();
+        show_turn_end(&TurnSummary { status: &end.status, submission: &end.submission, steps: self.stats.api_calls, cost: self.stats.instance_cost, elapsed_secs: self.started.elapsed().as_secs(), session_id: &session_id });
     }
 
     /// Stops the environment and the MCP servers.
@@ -374,10 +385,10 @@ impl Agent {
     fn typed_images(&mut self, text: &str) -> Vec<ImageData> {
         let (images, notices) = images_in_text(text, &self.parts.cwd, &self.parts.config.images);
         for notice in notices {
-            self.notice("image", &notice);
+            self.notice(Tone::Warning, "image", &notice);
         }
         for image in &images {
-            self.notice("image", &format!("attached {} {}", image.source, image.describe()));
+            self.notice(Tone::Info, "image", &format!("attached {} {}", image.source, image.describe()));
         }
         images
     }
@@ -411,7 +422,7 @@ impl Agent {
     fn call_model(&mut self) -> Result<ModelResponse> {
         match self.call_model_once() {
             Err(error) if error.context_overflow && !error.interrupted && self.parts.config.compaction.enabled => {
-                self.notice("compaction", &format!("the model refused the request as too long ({}), so the session is being summarized and the call sent again", error.message.lines().next().unwrap_or("")));
+                self.notice(Tone::Warning, "compaction", &format!("The model refused the request as too long ({}), so the session is being summarized and the call sent again.", error.message.lines().next().unwrap_or("")));
                 if !self.compact_by_summary(CompactionReason::Overflow, "") {
                     return Err(anyhow::anyhow!("model call failed: {}", error.message));
                 }
@@ -477,7 +488,8 @@ impl Agent {
         apply_mask(&mut self.messages, &indexes);
         self.compaction.reported = None;
         let after = self.request_estimate();
-        self.notice("compaction", &format!("removed {} old command outputs: about {before} to {after} tokens of a {window} token window", indexes.len()));
+        self.notice(Tone::Info, "compaction", &format!("compacted: cleared {} old command {} · {} → {} tokens of {}", indexes.len(), if indexes.len() == 1 { "output" } else { "outputs" }, short_tokens(before), short_tokens(after), short_tokens(window)));
+        self.compaction.stuck_warned = false;
         self.compaction.records.push(mask_record(reason, self.stats.api_calls, (before, after, window), indexes));
         self.stats.compactions += 1;
         self.show_status(Phase::Compacting);
@@ -491,13 +503,17 @@ impl Agent {
         let window = self.context_window();
         let keep_recent = budget_for(&self.parts.config.compaction, window).keep_recent;
         let before = self.request_estimate();
+        if find_cut(&self.messages, keep_recent).is_none() {
+            self.nothing_to_summarize(reason, before, window);
+            return false;
+        }
         self.show_status(Phase::Compacting);
         let vars = self.template_vars("");
         let inputs = SummaryInputs { provider: self.parts.provider.as_mut(), tools: &self.tools, vars: &vars, summary_template: &self.templates.compact_summary, resume_template: &self.templates.compact_resume, focus };
         let outcome = match summarize(&self.messages, keep_recent, inputs) {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.notice("compaction", &format!("could not summarize the session: {error:#}"));
+                self.notice(Tone::Failure, "compaction", &format!("Compaction failed: {error:#}. The history was left as it was."));
                 return false;
             }
         };
@@ -505,11 +521,33 @@ impl Agent {
         self.messages = outcome.history.clone();
         self.compaction.reported = None;
         let after = self.request_estimate();
-        self.notice("compaction", &format!("summarized {} messages: about {before} to {after} tokens of a {window} token window", outcome.removed.len()));
+        self.notice(Tone::Info, "compaction", &format!("compacted: summarized {} {} · {} → {} tokens of {}", outcome.removed.len(), if outcome.removed.len() == 1 { "message" } else { "messages" }, short_tokens(before), short_tokens(after), short_tokens(window)));
+        self.compaction.stuck_warned = false;
         self.compaction.records.push(summary_record(reason, self.stats.api_calls, (before, after, window), &outcome));
         self.stats.compactions += 1;
         self.show_status(Phase::Compacting);
         true
+    }
+
+    /// Says why a summary was not made when the history has nothing between the task and the
+    /// newest turns. The person asked with `/compact`, so they get an answer. Past the trigger it
+    /// is a warning, once until a compaction works again, because the same check runs before every
+    /// model call and would otherwise print the same line each time.
+    /// @param reason - why the compaction was asked for
+    /// @param used - the estimated request size in tokens
+    /// @param window - the context window in tokens
+    fn nothing_to_summarize(&mut self, reason: CompactionReason, used: u64, window: u64) {
+        const WHY: &str = "the history is only the system prompt, the task and the newest turns";
+        if reason == CompactionReason::Manual {
+            self.notice(Tone::Info, "compaction", &format!("nothing to compact yet: {WHY}"));
+            return;
+        }
+        if self.compaction.stuck_warned && !console::is_verbose() {
+            return;
+        }
+        self.compaction.stuck_warned = true;
+        let percent = used * 100 / window.max(1);
+        self.notice(Tone::Warning, "compaction", &format!("Context is {percent}% full ({} of {}) and compaction cannot shrink it: {WHY}.", short_tokens(used), short_tokens(window)));
     }
 
     /// Draws the status bar with the run's current numbers: the size of the next request, the
@@ -529,11 +567,17 @@ impl Agent {
         console::update_status(info);
     }
 
-    /// Shows a notice at the terminal and tells the front end.
-    /// @param label - the heading
-    /// @param text - the notice
-    fn notice(&mut self, label: &str, text: &str) {
-        show_notice(label, text);
+    /// Shows an event at the terminal and tells the front end.
+    /// @param tone - how much attention it asks for
+    /// @param label - what kind of event it is, such as compaction or image
+    /// @param text - what happened
+    fn notice(&mut self, tone: Tone, label: &str, text: &str) {
+        let marker = match label {
+            "compaction" => "↻",
+            "image" => "+",
+            _ => "·",
+        };
+        show_event(tone, marker, text);
         self.parts.events.notice(label, text);
     }
 
@@ -568,13 +612,27 @@ impl Agent {
     fn format_error(&mut self, response: &ModelResponse, error: &str) -> Result<Step> {
         self.format_errors += 1;
         let text = render_format_error(&self.templates.format_error, error, &response.finish_reason, !response.tool_calls.is_empty())?;
-        self.notice("format error", &format!("{error}\n(reply was: {})", response.content.chars().take(500).collect::<String>()));
+        self.show_format_error(response, error);
         self.messages.push(Message::user(text).with_extra(json!({ "interrupt_type": "FormatError", "model_response": response.content, "cost": response.cost })));
         let max = self.parts.config.max_consecutive_format_errors;
         if max > 0 && self.format_errors >= max {
             return Ok(Step::Exit("RepeatedFormatError".into(), String::new()));
         }
         Ok(Step::Continue)
+    }
+
+    /// Shows a reply that could not be used. Its text is shown like any reply, because it is often
+    /// a real answer to the person, followed by one dim line saying it was sent back. Verbose
+    /// output shows the whole error as well.
+    /// @param response - the rejected reply
+    /// @param error - what was wrong
+    fn show_format_error(&mut self, response: &ModelResponse, error: &str) {
+        show_reply_text(&response.content);
+        let max = self.parts.config.max_consecutive_format_errors;
+        let count = if max > 0 { format!(" ({} of {max})", self.format_errors) } else { String::new() };
+        let detail = if console::is_verbose() { error.to_string() } else { first_sentence(error) };
+        show_event(Tone::Info, "↺", &format!("{detail}; asked the model again{count}"));
+        self.parts.events.notice("format error", &format!("{error}\n(reply was: {})", response.content.chars().take(500).collect::<String>()));
     }
 
     /// Runs the actions in order. A command that submits ends the run; the actions after it are
@@ -587,11 +645,13 @@ impl Agent {
         for (index, action) in actions.iter().enumerate() {
             self.parts.events.action_started(index, action);
             let observation = self.execute(action);
-            show_observation(&observation);
-            self.parts.events.action_finished(index, action, &observation);
             if matches!(action, Action::Bash { .. }) {
                 submitted = submission_from(&observation);
             }
+            if submitted.is_none() || console::is_verbose() {
+                show_observation(&observation);
+            }
+            self.parts.events.action_finished(index, action, &observation);
             outputs.push(observation);
             if submitted.is_some() || interrupt::is_pending() {
                 break;
@@ -736,8 +796,7 @@ fn show_queued_message(text: &str) {
     if console::is_quiet() {
         return;
     }
-    console::heading("message from the user", "1;35");
-    console::emit(text);
+    show_user_text("›", text);
 }
 
 /// The message that gives the model a follow up task, or the next task of a resumed session. The
@@ -745,6 +804,19 @@ fn show_queued_message(text: &str) {
 /// @param task - the task text
 fn new_task_message(task: &str) -> Message {
     Message::user(format!("The user added a new task: {task}")).with_extra(json!({ "interrupt_type": "UserNewTask", "user_text": task }))
+}
+
+/// The first sentence of an error, without its final full stop and starting lowercase, for a
+/// one line note.
+/// @param error - the error text
+fn first_sentence(error: &str) -> String {
+    let line = error.lines().next().unwrap_or("").trim();
+    let sentence = line.split(". ").next().unwrap_or(line).trim_end_matches('.');
+    let mut chars = sentence.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => "the reply could not be used".into(),
+    }
 }
 
 /// Reads `/compact` or `/compact <focus>` typed at the follow up prompt. Returns the focus text,

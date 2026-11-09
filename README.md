@@ -300,6 +300,17 @@ drawn when stdout is a terminal and the run is not `--quiet`. `--no-status-bar`,
 false` in the config, or `UMBRA_STATUS_BAR=0` turns it off; `UMBRA_STATUS_BAR=1` draws it even
 into a pipe, which is how the tests read it.
 
+**The output** above the bar is kept short. A run in a terminal starts with the UMBRA banner: the
+version, the model, the folder, the mode and what was loaded (`banner = false` turns it off). Each
+reply is shown after a `●`, each command as `$ command`, and its output under a `⎿` with the first
+10 lines and a count of the rest. Exit code 0 is not shown; any other exit code is shown in red.
+Routine events are one dim line: `↻` for a compaction that freed space, `↺` for a reply with no
+usable command that was sent back to the model, `+` for an attached image. Warnings are yellow with
+`▲` and failures red with `✖`. When the system prompt and the newest turns alone are past the
+compaction point, compaction has nothing to remove, and Umbra says so once instead of before every
+call. Each turn ends with `✔ Done`, the steps, cost and time, the final output, and the command that
+resumes the session. `--verbose` (or `verbose = true`) shows every detail instead.
+
 **Images** go to the model with the task:
 
 ```bash
@@ -411,6 +422,7 @@ The listing commands take `--json`. The options used most:
 | `--exit-immediately` | Do not ask for a follow up task |
 | `-q, --quiet` | Print only the final answer |
 | `--no-status-bar` | Do not draw the status bar under the output |
+| `--verbose` | Print every detail: step costs, whole command outputs, full format errors |
 | `--no-compact` | Never compact the history |
 | `--context-window <tokens>` | The model's context window, for compaction |
 | `-i, --image <file>` | Attach an image to the task. Repeatable. |
