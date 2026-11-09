@@ -49,6 +49,8 @@ pub struct Interaction {
     pub mode: Mode,
     whitelist: Vec<Regex>,
     pub confirm_exit: bool,
+    /// An empty line at the follow up prompt asks again instead of ending the run.
+    pub keep_open: bool,
     /// False when stdin is not a terminal; then Umbra never asks and never waits.
     pub interactive: bool,
 }
@@ -61,7 +63,7 @@ impl Interaction {
     pub fn new(mode: Mode, whitelist: &[String], confirm_exit: bool) -> Self {
         let whitelist = whitelist.iter().filter_map(|p| Regex::new(&format!("^(?:{p})")).ok()).collect();
         let interactive = stdin_is_terminal();
-        Interaction { mode, whitelist, confirm_exit, interactive }
+        Interaction { mode, whitelist, confirm_exit, keep_open: false, interactive }
     }
 
     /// Asks the person to approve actions in confirm mode. Whitelisted commands, yolo mode and a
@@ -112,14 +114,23 @@ impl Interaction {
         }
     }
 
-    /// When the agent finishes, asks for a follow up task. Returns None to end the run.
+    /// When the agent finishes, asks for a follow up task. Returns None to end the run. With
+    /// keep_open an empty line asks again, so only Ctrl+C or the end of input ends the run.
     pub fn follow_up_task(&self) -> Option<String> {
         if !self.confirm_exit || !self.interactive {
             return None;
         }
-        let line = read_line("Agent wants to finish. Type a new task, or press Enter to quit: ")?;
-        let line = line.trim();
-        if line.is_empty() { None } else { Some(line.to_string()) }
+        let prompt = if self.keep_open { "Agent wants to finish. Type a new task: " } else { "Agent wants to finish. Type a new task, or press Enter to quit: " };
+        loop {
+            let line = read_line(prompt)?;
+            let line = line.trim();
+            if !line.is_empty() {
+                return Some(line.to_string());
+            }
+            if !self.keep_open {
+                return None;
+            }
+        }
     }
 
     /// Asks for higher limits when one is reached. Returns the new step and cost limits.

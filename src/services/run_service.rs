@@ -105,6 +105,9 @@ fn apply_run_args(config: &mut UmbraConfig, args: &RunArgs) -> Result<()> {
     if args.exit_immediately {
         config.confirm_exit = false;
     }
+    if args.keep_open {
+        config.keep_open = true;
+    }
     config.compaction.enabled &= !args.no_compact;
     if let Some(window) = args.context_window {
         config.compaction.context_window = window;
@@ -126,12 +129,13 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     let (mut config, cwd) = prepare_config(&args.common)?;
     apply_run_args(&mut config, &args)?;
     set_quiet(args.quiet);
-    let interaction = Interaction::new(config.mode, &config.whitelist_actions, config.confirm_exit);
+    let mut interaction = Interaction::new(config.mode, &config.whitelist_actions, config.confirm_exit);
+    interaction.keep_open = config.keep_open;
     if !interaction.interactive && config.mode != Mode::Yolo {
         bail!("stdin is not a terminal, so Umbra cannot ask before running commands. Pass --yolo to run without asking");
     }
     let context = load_run_context(&config, &discovery_context(&config, &cwd));
-    let task = expand_slash_command(&task_text(&args, resumed.as_ref())?, &context);
+    let task = expand_slash_command(&task_text(&args, resumed.as_ref(), config.keep_open)?, &context);
     let images = opening_images(&args.images, &task, &cwd, &config.images)?;
     let (session, trajectory_path) = session_for_run(&config, &args, &cwd, &task, resumed.as_ref());
     let mut agent = build_agent(config, &cwd, &context, interaction, AgentSession { session, trajectory_path, need_provider: true })?;
@@ -307,10 +311,11 @@ fn connect_mcp(config: &UmbraConfig, context: &RunContext) -> McpManager {
 }
 
 /// Gets the task from the options, or asks for it in a terminal. A resumed session asks for
-/// the next task.
+/// the next task. With keep_open an empty line asks again rather than ending the run.
 /// @param args - the run options
 /// @param resumed - the saved session, if resuming
-fn task_text(args: &RunArgs, resumed: Option<&ResumedSession>) -> Result<String> {
+/// @param keep_open - ask again after an empty line
+fn task_text(args: &RunArgs, resumed: Option<&ResumedSession>, keep_open: bool) -> Result<String> {
     if let Some(task) = &args.task {
         return Ok(task.clone());
     }
@@ -324,9 +329,12 @@ fn task_text(args: &RunArgs, resumed: Option<&ResumedSession>) -> Result<String>
     if !stdin_is_terminal() {
         bail!("no task given. Pass it as an argument or with -t");
     }
-    match read_line(&prompt) {
-        Some(task) if !task.trim().is_empty() => Ok(task),
-        _ => bail!("no task given. Pass it as an argument or with -t"),
+    loop {
+        match read_line(&prompt) {
+            Some(task) if !task.trim().is_empty() => return Ok(task),
+            Some(_) if keep_open => continue,
+            _ => bail!("no task given. Pass it as an argument or with -t"),
+        }
     }
 }
 

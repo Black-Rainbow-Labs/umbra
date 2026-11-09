@@ -64,6 +64,11 @@ pub struct RunArgs {
     /// Exit when the agent finishes instead of asking for a follow up task.
     #[arg(long)]
     pub exit_immediately: bool,
+    /// Never end the run because of an empty line. The task prompt and the follow up prompt ask
+    /// again instead. For a session another program types into, such as a task board, where a
+    /// stray Enter must not end the agent.
+    #[arg(long)]
+    pub keep_open: bool,
     /// Print only the final output (and errors), for scripts.
     #[arg(short, long)]
     pub quiet: bool,
