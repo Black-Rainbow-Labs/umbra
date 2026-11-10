@@ -14,7 +14,7 @@ use super::image_service::{images_in_text, load_image};
 use super::interaction_service::{prompt_with_hint, show_event, show_user_text, Interaction, Tone};
 use super::mcp::McpManager;
 use super::prompt_service::platform_vars;
-use super::providers::create_provider;
+use super::providers::{check_credentials, create_provider};
 use super::session_service::{find_resume_target, load_resumed, ResumedSession};
 use crate::cli::{CommonArgs, PromptArgs, RunArgs};
 use crate::models::config::{ActionFormat, ImagesConfig, Mode, UmbraConfig};
@@ -147,6 +147,8 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     if !interaction.interactive && config.mode != Mode::Yolo {
         bail!("stdin is not a terminal, so Umbra cannot ask before running commands. Pass --yolo to run without asking");
     }
+    // Before the prompt, so a task is never asked for and then dropped because no model can run it.
+    check_credentials(&config, &config.model)?;
     let context = load_run_context(&config, &discovery_context(&config, &cwd));
     // Closes the fullscreen view on every way out of this function, errors included.
     let _view = LeaveViewOnDrop;

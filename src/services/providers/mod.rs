@@ -146,7 +146,7 @@ fn needs_api_key(provider: &ProviderConfig) -> bool {
 /// @param model_spec - the model string
 pub fn split_model_spec(model_spec: &str) -> Result<(&str, &str)> {
     if model_spec.is_empty() {
-        bail!("no model set. Pass -m provider/model, for example -m anthropic/claude-haiku-5-5 or -m local/qwen, or set model in ~/.umbra/config.toml");
+        bail!("no model set. Run `umbra setup` to choose one, pass -m provider/model, for example -m anthropic/claude-haiku-5-5 or -m local/qwen, or set model in ~/.umbra/config.toml");
     }
     match model_spec.split_once('/') {
         Some((provider, model)) => Ok((provider, model)),

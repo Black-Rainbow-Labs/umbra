@@ -167,3 +167,17 @@ fn confirm_mode_refuses_to_run_without_a_terminal() {
     assert_eq!(output.status.code(), Some(2));
     assert!(text(&output).contains("Pass --yolo"));
 }
+
+/// With no model set, an interactive start says so before it asks for a task, so what the person
+/// types is never taken and thrown away when the run fails.
+#[test]
+fn no_model_is_reported_before_the_prompt() {
+    let scratch = Scratch::new("no-model");
+    let envs = [("UMBRA_FORCE_INTERACTIVE", "1")];
+    let output = run_umbra_with(&scratch.path("home"), &["--no-mcp", "--cwd", &slash(&scratch.root)], &envs, "hello\n");
+    let shown = text(&output);
+    assert_eq!(output.status.code(), Some(2), "{shown}");
+    assert!(shown.contains("no model set"), "{shown}");
+    assert!(shown.contains("umbra setup"), "the message names the setup command:\n{shown}");
+    assert!(!shown.contains("What do you want to do?"), "no prompt is shown when no model can answer it:\n{shown}");
+}
