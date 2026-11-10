@@ -22,11 +22,14 @@ const MAX_INPUT_ROWS: usize = 5;
 /// Rows the mouse wheel scrolls.
 const WHEEL_ROWS: usize = 3;
 
-/// Alternate screen, mouse wheel reports in SGR encoding, bracketed paste, then a clear screen.
-const ENTER: &str = "\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[H\x1b[2J";
+/// Alternate screen, alternate scroll (mode 1007: the terminal sends the mouse wheel as Up and Down
+/// arrows, which scroll the transcript), bracketed paste, then a clear screen. Mouse reporting
+/// (mode 1000) is left off, because with it on a click goes to Umbra and the person cannot select
+/// text without holding Shift.
+const ENTER: &str = "\x1b[?1049h\x1b[?1007h\x1b[?2004h\x1b[H\x1b[2J";
 
 /// The reverse of `ENTER`, with the cursor shown, back on the main screen.
-const LEAVE: &str = "\x1b[?2004l\x1b[?1006l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l";
+const LEAVE: &str = "\x1b[?2004l\x1b[?1007l\x1b[0m\x1b[?25h\x1b[?1049l";
 
 /// The prompt shown on the input line while the agent works and no question is asked.
 const WORKING_PROMPT: &str = "› ";
