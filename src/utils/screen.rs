@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::keys::Key;
@@ -40,17 +40,41 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The view's state while it is on.
 static VIEW: Mutex<Option<View>> = Mutex::new(None);
 
+/// Lays out rows for a screen width. The banner and the status bar are drawn this way, so a
+/// resize (a split pane, a narrower window) lays them out again instead of wrapping the rows that
+/// were drawn for the old width.
+pub type Layout = Arc<dyn Fn(usize) -> Vec<String> + Send + Sync>;
+
+/// One entry of the transcript.
+enum Entry {
+    /// A printed line, with color codes, wrapped to the screen width when drawn.
+    Text(String),
+    /// Rows laid out again for each screen width.
+    Laid(Layout),
+}
+
+impl Entry {
+    /// The rows this entry takes at a screen width. Rows wider than the screen are wrapped.
+    /// @param width - the screen width
+    fn rows(&self, width: usize) -> Vec<String> {
+        match self {
+            Entry::Text(line) => wrap_ansi(line, width),
+            Entry::Laid(layout) => layout(width).iter().flat_map(|row| wrap_ansi(row, width)).collect(),
+        }
+    }
+}
+
 /// What the fullscreen view shows.
 #[derive(Default)]
 pub struct View {
-    /// The transcript, one entry per printed line, with color codes.
-    lines: VecDeque<String>,
+    /// The transcript, one entry per printed line or laid out block.
+    lines: VecDeque<Entry>,
     /// Lines dropped from the front of the transcript, so line numbers stay stable.
     dropped: usize,
     /// Rows of the transcript below the bottom of the view. 0 follows new output.
     scroll: usize,
-    /// The status bar, already drawn as one line.
-    status: Option<String>,
+    /// The status bar, laid out for the screen width when drawn. Only its first row is shown.
+    status: Option<Layout>,
     /// The prompt on the input line, with color codes. Empty while the agent works.
     prompt: String,
     /// What the person is typing.
@@ -131,7 +155,25 @@ pub fn push_text(text: &str) {
 /// Shows a new status bar line, or none.
 /// @param status - the status bar, already drawn as one line
 pub fn set_status(status: Option<String>) {
+    set_status_layout(status.map(|line| Arc::new(move |_: usize| vec![line.clone()]) as Layout));
+}
+
+/// Shows a status bar that is laid out again for each screen width, or none.
+/// @param status - lays out the status bar for a width; the first row is shown
+pub fn set_status_layout(status: Option<Layout>) {
     with_view(|view, _| view.status = status);
+}
+
+/// Adds rows to the transcript that are laid out again whenever the screen width changes, such
+/// as the banner, and draws the screen again.
+/// @param layout - lays out the rows for a width
+pub fn push_layout(layout: Layout) {
+    with_view(|view, width| {
+        if view.scroll > 0 {
+            view.scroll += Entry::Laid(layout.clone()).rows(width).len();
+        }
+        view.lines.push_back(Entry::Laid(layout));
+    });
 }
 
 /// Shows a prompt on the input line. An empty prompt shows the prompt for typing while the
@@ -229,7 +271,7 @@ impl View {
             if self.scroll > 0 {
                 self.scroll += wrap_ansi(&line, width).len();
             }
-            self.lines.push_back(line);
+            self.lines.push_back(Entry::Text(line));
         }
         while self.lines.len() > MAX_LINES {
             self.lines.pop_front();
@@ -242,7 +284,9 @@ impl View {
         let Some(start) = self.epilogue else { return Vec::new() };
         let from = start.saturating_sub(self.dropped);
         let to = self.epilogue_end.map_or(self.lines.len(), |end| end.saturating_sub(self.dropped));
-        self.lines.iter().skip(from).take(to.saturating_sub(from)).filter(|l| !l.trim().is_empty()).cloned().collect()
+        let width = self.size.0.max(10);
+        let lines = self.lines.iter().skip(from).take(to.saturating_sub(from));
+        lines.flat_map(|entry| match entry { Entry::Text(line) => vec![line.clone()], Entry::Laid(layout) => layout(width) }).filter(|l| !l.trim().is_empty()).collect()
     }
 
     /// Applies one key.
@@ -304,7 +348,7 @@ impl View {
     /// @param width - the screen width
     /// @param height - the screen height
     fn scroll_by(&mut self, rows: usize, width: usize, height: usize) {
-        let total: usize = self.lines.iter().map(|l| wrap_ansi(l, width).len()).sum();
+        let total: usize = self.lines.iter().map(|entry| entry.rows(width).len()).sum();
         // Once scrolled, the note under the transcript takes one more row.
         let room = transcript_height(self, width, height).saturating_sub(usize::from(self.scroll == 0)).max(1);
         self.scroll = self.scroll.saturating_add(rows).min(total.saturating_sub(room));
@@ -352,8 +396,8 @@ fn transcript_height(view: &View, width: usize, height: usize) -> usize {
 fn visible_rows(view: &View, width: usize, room: usize) -> Vec<String> {
     let needed = room + view.scroll;
     let mut rows: Vec<String> = Vec::new();
-    for line in view.lines.iter().rev() {
-        let mut wrapped = wrap_ansi(line, width);
+    for entry in view.lines.iter().rev() {
+        let mut wrapped = entry.rows(width);
         wrapped.reverse();
         rows.extend(wrapped);
         if rows.len() >= needed {
@@ -383,15 +427,20 @@ pub fn render_frame(view: &View, width: usize, height: usize) -> String {
         rows.push(super::console::paint("2", &format!("↓ {} more rows below · PageDown, the mouse wheel or Ctrl+End to return", view.scroll)));
     }
     if let Some(status) = &view.status {
-        rows.push(status.clone());
+        let line = status(width).into_iter().next().unwrap_or_default();
+        rows.push(wrap_ansi(&line, width).swap_remove(0));
     }
     let input_top = rows.len();
     rows.extend(input);
     rows.truncate(height);
     let mut out = String::from("\x1b[?2026h\x1b[?25l\x1b[H");
+    // Each row is cleared before it is written, not after. A row as wide as the screen leaves the
+    // cursor on the last column with a wrap pending, and an erase to the end of the line from
+    // there erases that last character (task-2590: "haiku" showed as "aiku" after a split).
     for (index, row) in rows.iter().enumerate() {
+        out.push_str("\x1b[0m\x1b[2K");
         out.push_str(row);
-        out.push_str("\x1b[0m\x1b[K");
+        out.push_str("\x1b[0m");
         if index + 1 < rows.len() {
             out.push_str("\r\n");
         }
@@ -520,7 +569,7 @@ mod tests {
         for n in 1..=lines {
             view.push(&format!("line {n}"), 40);
         }
-        view.status = Some("status".into());
+        view.status = Some(Arc::new(|_| vec!["status".to_string()]));
         view.prompt = "❯ ".into();
         view
     }
@@ -570,6 +619,32 @@ mod tests {
         assert_eq!(view.apply_key(Key::CtrlD, 40, 6), KeyOutcome::Eof);
         view.apply_key(Key::Paste("a\nb".into()), 40, 6);
         assert_eq!(plain(&render_frame(&view, 40, 6)).last().unwrap(), "❯ a↵b");
+    }
+
+    #[test]
+    fn a_full_width_row_keeps_its_last_character() {
+        // task-2590: each row ended with an erase to the end of the line. After a row as wide as
+        // the screen the cursor waits on the last column, so that erase removed the last character.
+        let mut view = view_with(0);
+        view.push(&"x".repeat(40), 40);
+        let frame = render_frame(&view, 40, 6);
+        assert!(!frame.contains("\x1b[K"), "no row is erased after it is written: {frame:?}");
+        assert!(frame.contains(&format!("\x1b[0m\x1b[2K{}\x1b[0m", "x".repeat(40))), "{frame:?}");
+    }
+
+    #[test]
+    fn a_laid_out_block_and_the_status_bar_follow_the_screen_width() {
+        // task-2590: a new split pane made the screen narrower, and the banner drawn for the old
+        // width wrapped into a jumble. A laid out block is drawn again for the new width.
+        let mut view = view_with(0);
+        view.lines.push_back(Entry::Laid(Arc::new(|width: usize| vec![format!("╭{}╮", "─".repeat(width - 2))])));
+        view.status = Some(Arc::new(|width: usize| vec![format!("bar {width}{}", "!".repeat(100))]));
+        let wide = plain(&render_frame(&view, 60, 6));
+        assert_eq!(wide[0].chars().count(), 60);
+        let narrow = plain(&render_frame(&view, 30, 6));
+        assert_eq!(narrow[0], format!("╭{}╮", "─".repeat(28)));
+        assert_eq!(narrow[1], "", "the block takes one row at the new width");
+        assert!(narrow[4].starts_with("bar 30") && narrow[4].chars().count() == 30, "{narrow:?}");
     }
 
     #[test]

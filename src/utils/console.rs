@@ -174,7 +174,8 @@ pub fn update_status(info: StatusInfo) {
         return;
     }
     if screen::is_active() {
-        screen::set_status(Some(render_status(&info, terminal_width(), color_enabled())));
+        let (shown, color) = (info.clone(), color_enabled());
+        screen::set_status_layout(Some(std::sync::Arc::new(move |width| vec![render_status(&shown, width, color)])));
         footer.info = Some(info);
         return;
     }

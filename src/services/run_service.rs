@@ -223,6 +223,12 @@ fn show_banner(config: &UmbraConfig, cwd: &Path, context: &RunContext) {
     let mode = serde_json::to_value(config.mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     let mcp_servers = if config.mcp.enabled { context.mcp_servers.len() } else { 0 };
     let info = BannerInfo { version: env!("CARGO_PKG_VERSION").into(), model: config.model.clone(), folder: display_folder(&cwd.to_string_lossy(), home.as_deref()), mode, instruction_files: context.instructions.len(), skills: context.skills.len(), mcp_servers };
+    if screen::is_active() {
+        // Laid out again for each width, so a split pane redraws the banner instead of wrapping it.
+        let color = color_enabled();
+        screen::push_layout(std::sync::Arc::new(move |width| render_banner(&info, width, color)));
+        return;
+    }
     emit(&render_banner(&info, terminal_width(), color_enabled()).join("\n"));
 }
 
