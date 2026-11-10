@@ -99,9 +99,9 @@ fn ask_for_key(provider: &str, quiet: bool) -> Result<Option<String>> {
     Ok((!key.trim().is_empty()).then(|| key.trim().to_string()))
 }
 
-/// Returns true when Claude Code's saved login exists.
+/// Returns true when Claude Code's saved login exists, in its file or the macOS Keychain.
 fn claude_code_login_exists() -> bool {
-    crate::utils::paths::home_dir().join(".claude").join(".credentials.json").is_file()
+    super::providers::credentials::claude_code_login_exists()
 }
 
 /// Writes `model`, and the key when given, into the config file, keeping everything else in it.

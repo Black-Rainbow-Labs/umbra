@@ -32,12 +32,13 @@ Umbra finds a credential in this order:
 1. `api_key` or the variable named by `api_key_env` in the provider config (`ANTHROPIC_API_KEY`
    by default), sent as `x-api-key`.
 2. `ANTHROPIC_AUTH_TOKEN`, sent as a bearer token.
-3. The login Claude Code saved in `~/.claude/.credentials.json`, sent as a bearer token with the
+3. The login Claude Code saved, sent as a bearer token with the
    `oauth-2025-04-20` beta header. Requests made with this login must start their system prompt
    with Claude Code's identity line, and Umbra adds it. Umbra only reads this file. It never
    refreshes the token, because a refresh replaces the refresh token Claude Code depends on. When
-   the token has expired, run `claude` once to refresh it. On macOS, Claude Code keeps its login
-   in the Keychain instead of this file, so set `ANTHROPIC_API_KEY` there.
+   the token has expired, run `claude` once to refresh it. Umbra reads the login from
+   `~/.claude/.credentials.json`, and on macOS, where Claude Code keeps it in the Keychain, from the
+   `Claude Code-credentials` Keychain entry through `/usr/bin/security`.
 
 Set `auth = "api_key"` to use only a key, or `auth = "claude_code"` to use only the Claude Code
 login.
