@@ -73,6 +73,28 @@ pub fn emit(text: &str) {
     write_out(&out);
 }
 
+/// Prints text in place of the last `previous` lines printed on the main screen, so a banner can be
+/// drawn again with a change: the cursor moves up over those lines and they are cleared. In the
+/// fullscreen view the text is added like `emit`, because there the banner is a laid out block.
+/// @param previous - how many lines the text replaces
+/// @param text - one or more lines, with color codes
+pub fn emit_replacing(previous: usize, text: &str) {
+    if screen::is_active() {
+        screen::push_text(text);
+        return;
+    }
+    let mut footer = FOOTER.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = String::new();
+    footer.erase(&mut out);
+    if previous > 0 {
+        out.push_str(&format!("\x1b[{previous}F\x1b[J"));
+    }
+    out.push_str(text);
+    out.push('\n');
+    footer.draw(&mut out);
+    write_out(&out);
+}
+
 /// When set, everything the console writes goes to stderr. The ACP server sets it, because its
 /// stdout carries the protocol and must hold nothing else.
 static USE_STDERR: AtomicBool = AtomicBool::new(false);

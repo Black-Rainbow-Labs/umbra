@@ -23,8 +23,9 @@ use crate::models::session::{ResumeRecord, SessionInfo};
 use crate::repositories::config_repository::{load_config, merge_values};
 use crate::repositories::session_repository::new_session_id;
 use crate::repositories::trajectory_repository::trajectory_path;
-use crate::utils::banner::{display_folder, render_banner, BannerInfo};
-use crate::utils::console::{color_enabled, emit, paint, enable_status_bar, finish_status, is_verbose, set_quiet, set_verbose, start_fullscreen, stdin_is_terminal, stdout_is_terminal, terminal_width, Input};
+use crate::utils::banner::{display_folder, render_banner_frames, render_banner_step, BannerInfo, REVEAL_STEPS, STEP_MS};
+use crate::utils::terminal_mode::terminal_height;
+use crate::utils::console::{color_enabled, emit, emit_replacing, paint, enable_status_bar, finish_status, is_verbose, set_quiet, set_verbose, start_fullscreen, stdin_is_terminal, stdout_is_terminal, terminal_width, Input};
 use crate::utils::screen;
 use crate::utils::status_bar::Phase;
 use crate::utils::interrupt;
@@ -205,8 +206,10 @@ fn load_resume_target(args: &RunArgs) -> Result<(Option<ResumedSession>, Option<
     Ok((Some(resumed), Some(notice)))
 }
 
-/// Prints the UMBRA banner: version, model, folder, mode and what was loaded. Only in a terminal,
-/// unless `UMBRA_BANNER=1` asks for it in a pipe; `UMBRA_BANNER=0` or `banner = false` turns it off.
+/// Prints the umbra banner: the logo, version, model, folder, mode and what was loaded. Only in a
+/// terminal, unless `UMBRA_BANNER=1` asks for it in a pipe; `UMBRA_BANNER=0` or `banner = false`
+/// turns it off. In a terminal the logo's stripes appear one at a time, unless
+/// `UMBRA_BANNER_ANIMATION=0` turns that off.
 /// @param config - the merged config
 /// @param cwd - the working folder
 /// @param context - the loaded instructions, skills and MCP definitions
@@ -223,13 +226,51 @@ fn show_banner(config: &UmbraConfig, cwd: &Path, context: &RunContext) {
     let mode = serde_json::to_value(config.mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     let mcp_servers = if config.mcp.enabled { context.mcp_servers.len() } else { 0 };
     let info = BannerInfo { version: env!("CARGO_PKG_VERSION").into(), model: config.model.clone(), folder: display_folder(&cwd.to_string_lossy(), home.as_deref()), mode, instruction_files: context.instructions.len(), skills: context.skills.len(), mcp_servers };
+    let color = color_enabled();
+    let animate = color && stdout_is_terminal() && std::env::var("UMBRA_BANNER_ANIMATION").map_or(true, |v| v != "0");
     if screen::is_active() {
-        // Laid out again for each width, so a split pane redraws the banner instead of wrapping it.
-        let color = color_enabled();
-        screen::push_layout(std::sync::Arc::new(move |width| render_banner(&info, width, color)));
+        show_banner_in_view(info, color, animate);
         return;
     }
-    emit(&render_banner(&info, terminal_width(), color_enabled()).join("\n"));
+    play_banner(&render_banner_frames(&info, terminal_width(), color), animate);
+}
+
+/// Adds the banner to the fullscreen view as a block laid out again for each width, so a split
+/// pane redraws the banner instead of wrapping it. When `animate` is set, the block starts at the
+/// first step of the reveal and moves one step on after each pause.
+/// @param info - what the banner shows
+/// @param color - true to add ANSI colors
+/// @param animate - true to play the stripe reveal
+fn show_banner_in_view(info: BannerInfo, color: bool, animate: bool) {
+    let step = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(if animate { 0 } else { REVEAL_STEPS }));
+    let shown = step.clone();
+    screen::push_layout(std::sync::Arc::new(move |width| render_banner_step(&info, width, color, shown.load(std::sync::atomic::Ordering::Relaxed))));
+    if !animate {
+        return;
+    }
+    for next in 1..=REVEAL_STEPS {
+        std::thread::sleep(std::time::Duration::from_millis(STEP_MS));
+        step.store(next, std::sync::atomic::Ordering::Relaxed);
+        screen::redraw();
+    }
+}
+
+/// Shows the banner's reveal on the main screen: the first step, then each next step drawn over it
+/// after a pause. Only the finished banner is printed when `animate` is off or the banner is taller
+/// than the terminal.
+/// @param frames - the banner's lines at each step, the finished banner last
+/// @param animate - true to play the stripe reveal
+fn play_banner(frames: &[Vec<String>], animate: bool) {
+    let Some(last) = frames.last() else { return };
+    if !animate || frames.len() < 2 || last.len() + 2 >= terminal_height() {
+        emit(&last.join("\n"));
+        return;
+    }
+    emit(&frames[0].join("\n"));
+    for pair in frames.windows(2) {
+        std::thread::sleep(std::time::Duration::from_millis(STEP_MS));
+        emit_replacing(pair[0].len(), &pair[1].join("\n"));
+    }
 }
 
 /// A resumed session runs in its own folder and with its own model unless the command line

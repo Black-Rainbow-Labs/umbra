@@ -92,9 +92,9 @@ fn the_banner_shows_the_version_and_model() {
     let scratch = Scratch::new("banner");
     let output = run(&scratch, json!([submit()]), &[], &[("UMBRA_BANNER", "1"), ("COLUMNS", "100")]);
     assert!(output.contains(&format!("umbra v{}", env!("CARGO_PKG_VERSION"))), "{output}");
-    assert!(output.contains("█▄ ▄█") && output.contains("model   replay/"), "{output}");
+    assert!(output.contains("by Black Rainbow Labs") && output.contains("model   replay/"), "{output}");
     assert!(output.contains("❯ say hello"), "the task is echoed under the banner:\n{output}");
     let scratch = Scratch::new("no-banner");
     let output = run(&scratch, json!([submit()]), &[], &[]);
-    assert!(!output.contains("█▄ ▄█"), "no banner in a pipe:\n{output}");
+    assert!(!output.contains("by Black Rainbow Labs"), "no banner in a pipe:\n{output}");
 }

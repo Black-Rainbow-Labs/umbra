@@ -28,7 +28,7 @@ wall_time_limit_seconds = 0
 max_consecutive_format_errors = 3
 confirm_exit = true                    # ask for a follow up task when the agent finishes
 status_bar = true                      # context and compaction bar under the output
-banner = true                          # UMBRA banner with the version, model and folder at start
+banner = true                          # umbra banner with the logo, version, model and folder at start
 fullscreen = true                      # open on the alternate screen with a scrollable transcript
 verbose = false                        # every detail: step costs, whole outputs, full errors
 whitelist_actions = ["ls", "cat ", "git (status|diff|log)"]   # run without asking
@@ -147,7 +147,7 @@ detect_paths = true                    # attach image files named in a task or a
 | `mcp.defer_tools` | `auto` | `auto` sends MCP tools by name only, with a `tool_search` tool that loads their definitions, when the definitions would take more than `mcp.defer_ratio` of the context window. `always` and `never` force it. Loaded tools are sent with every later request and loaded again on `--resume`. |
 | `mcp.defer_ratio` | 0.1 | The share of the context window the MCP tool definitions may take before `auto` defers them. |
 | `status_bar` | true | Draw the status bar under the output in a terminal: what the agent is doing, how full the context window is, the tokens left before compaction, and the session's compaction count. `--no-status-bar` or `UMBRA_STATUS_BAR=0` turns it off for a run. |
-| `banner` | true | Draw the UMBRA banner when a run starts in a terminal: the version, the model, the folder, the mode, and how many instruction files, skills and MCP servers were loaded. Never drawn into a pipe or with `--quiet`. `UMBRA_BANNER=0` turns it off and `UMBRA_BANNER=1` draws it into a pipe. |
+| `banner` | true | Draw the umbra banner when a run starts in a terminal: the logo with "by Black Rainbow Labs" under it, the version, the model, the folder, the mode, and how many instruction files, skills and MCP servers were loaded. The logo's stripes appear one at a time over about 1.4 seconds; `UMBRA_BANNER_ANIMATION=0` shows the finished logo at once. The logo goes beside the text when both fit, above the text when only the logo fits, and is left out in a terminal narrower than about 64 columns. It uses 24 bit color when `COLORTERM` is `truecolor` or `24bit`, and the nearest of the 256 colors otherwise. Never drawn into a pipe or with `--quiet`. `UMBRA_BANNER=0` turns it off and `UMBRA_BANNER=1` draws it into a pipe. |
 | `verbose` | false | Print every detail of a run: the step number and cost before each reply, command output up to 2000 characters instead of the first 10 lines, the whole text of a format error, and the context warning every time compaction cannot help instead of once. `--verbose` turns it on for a run. |
 | `whitelist_actions` | empty | Regexes matched at the start of a command. A match runs without asking in confirm mode. |
 | `environment.timeout` | 30 | Seconds before a command and everything it started is killed. |

@@ -335,8 +335,11 @@ drawn when stdout is a terminal and the run is not `--quiet`. `--no-status-bar`,
 false` in the config, or `UMBRA_STATUS_BAR=0` turns it off; `UMBRA_STATUS_BAR=1` draws it even
 into a pipe, which is how the tests read it.
 
-**The output** above the bar is kept short. A run in a terminal starts with the UMBRA banner: the
-version, the model, the folder, the mode and what was loaded (`banner = false` turns it off). Each
+**The output** above the bar is kept short. A run in a terminal starts with the umbra banner: the
+logo with "by Black Rainbow Labs" under it, the version, the model, the folder, the mode and what was
+loaded (`banner = false` turns it off). The logo's cream letters show first and its green, yellow,
+orange, red and blue stripes appear one at a time over about 1.4 seconds; `UMBRA_BANNER_ANIMATION=0`
+shows the finished logo at once. Each
 reply is shown after a `●`, each command as `$ command`, and its output under a `⎿` with the first
 10 lines and a count of the rest. Exit code 0 is not shown; any other exit code is shown in red.
 Routine events are one dim line: `↻` for a compaction that freed space, `↺` for a reply with no

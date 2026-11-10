@@ -218,8 +218,8 @@ fn with_view(change: impl FnOnce(&mut View, usize)) {
     write_raw(&render_frame(view, size.0, size.1));
 }
 
-/// Draws the screen again with no change.
-fn redraw() {
+/// Draws the screen again with no change, such as after a laid out block changed what it draws.
+pub fn redraw() {
     with_view(|_, _| {});
 }
 
