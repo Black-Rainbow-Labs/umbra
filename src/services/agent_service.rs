@@ -152,6 +152,8 @@ pub struct Agent {
     next: Option<NextSession>,
     /// Set by `/quit` typed while the agent works: the run ends before the next step.
     quit_requested: bool,
+    /// The MCP servers whose failure was already printed in the inline view.
+    announced_failures: BTreeSet<String>,
     /// The background request for the session's title, after the first turn.
     title_job: Option<std::thread::JoinHandle<Option<(String, String, f64)>>>,
     /// True once the first turn has ended, so the title is asked for once.
@@ -186,7 +188,7 @@ impl Agent {
         let mcp = &parts.config.mcp;
         let deferred = !mcp_tools.is_empty() && should_defer(mcp.defer_tools, mcp_tokens, window, mcp.defer_ratio);
         let compaction = CompactionState { window: Some(window), ..Default::default() };
-        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, title_job: None, titled: false };
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, announced_failures: BTreeSet::new(), title_job: None, titled: false };
         agent.rebuild_tools();
         agent
     }
@@ -221,6 +223,14 @@ impl Agent {
         for (server, _, count) in self.parts.mcp.connected() {
             if !before.contains(&server) && self.parts.interaction.interactive {
                 self.notice(Tone::Info, "mcp", &format!("mcp {server} ready, {count} {}", if count == 1 { "tool" } else { "tools" }));
+            }
+        }
+        // The fullscreen view shows failures in its error box; the inline view prints each once.
+        if !crate::utils::screen::is_active() && self.parts.interaction.interactive {
+            for failure in self.parts.mcp.failures() {
+                if self.announced_failures.insert(failure.name.clone()) {
+                    show_event(Tone::Warning, "", &format!("MCP server {} was not started: {}", failure.name, failure.error.lines().next().unwrap_or("")));
+                }
             }
         }
         let window = self.context_window();

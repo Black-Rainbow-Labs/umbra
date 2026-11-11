@@ -127,12 +127,22 @@ fn start_in_console(scratch: &Scratch, replies: Value) -> ConsoleRun {
 /// @param replies - the scripted replies
 /// @param extra - more options, written into the command line as they are
 fn start_in_console_with(scratch: &Scratch, replies: Value, extra: &str) -> ConsoleRun {
+    start_in_console_env(scratch, replies, extra, &[])
+}
+
+/// Starts umbra in a console of its own with extra options and environment variables.
+/// @param scratch - the test folder
+/// @param replies - the scripted replies
+/// @param extra - more options, written into the command line as they are
+/// @param envs - more environment variables
+fn start_in_console_env(scratch: &Scratch, replies: Value, extra: &str, envs: &[(&str, &str)]) -> ConsoleRun {
     std::fs::create_dir_all(scratch.path("work")).unwrap();
     let model = replay_model(scratch, "script.json", &replies);
     let trajectory = scratch.path("run.traj.json");
     let exe = env!("CARGO_BIN_EXE_umbra").replace('/', "\\");
     let line = format!("/c start \"umbra-console-test\" /wait \"{exe}\" -m \"{model}\" -y --no-mcp --exit-immediately {extra} --cwd \"{}\" -o \"{}\" task", slash(&scratch.path("work")), slash(&trajectory));
-    let settings = umbra_command(&scratch.path("home"), &[]);
+    let mut settings = umbra_command(&scratch.path("home"), &[]);
+    settings.envs(envs.iter().copied());
     let mut launch = std::process::Command::new("cmd");
     launch.raw_arg(line).envs(settings.get_envs().filter_map(|(k, v)| v.map(|v| (k.to_owned(), v.to_owned())))).creation_flags(CREATE_NEW_CONSOLE);
     launch.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
@@ -208,9 +218,16 @@ fn a_real_ctrl_c_at_the_comment_prompt_ends_the_run() {
 /// Reads the console's input mode while umbra's fullscreen view is up, then stops umbra.
 /// @param extra - more options for umbra
 fn mode_while_fullscreen(extra: &str) -> u32 {
+    mode_while_fullscreen_env(extra, &[])
+}
+
+/// Reads the console's input mode while the fullscreen view is up, with environment variables.
+/// @param extra - more options for umbra
+/// @param envs - more environment variables
+fn mode_while_fullscreen_env(extra: &str, envs: &[(&str, &str)]) -> u32 {
     let s = Scratch::new("console-mode");
     let sleep = json!({ "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "sleep 20" } }] });
-    let mut run = start_in_console_with(&s, json!([sleep]), extra);
+    let mut run = start_in_console_env(&s, json!([sleep]), extra, envs);
     std::thread::sleep(Duration::from_secs(3));
     let file = s.path("mode.txt");
     helper(run.pid, &format!("getmode:{}", file.display()));
@@ -240,8 +257,15 @@ fn with_the_mouse_off_quick_edit_stays_on_so_a_drag_selects_text() {
 #[test]
 #[ignore = "opens a console window"]
 fn with_the_mouse_on_quick_edit_is_off_and_mouse_input_stays_off() {
-    let mode = mode_while_fullscreen("");
+    let mode = mode_while_fullscreen_env("", &[("UMBRA_MOUSE", "1")]);
     assert_eq!(mode & QUICK_EDIT, 0, "conhost must not take the drag: {mode:#x}");
     assert_eq!(mode & MOUSE_INPUT, 0, "the mouse arrives as escape sequences, not console events: {mode:#x}");
     assert_eq!(mode & VIRTUAL_TERMINAL_INPUT, VIRTUAL_TERMINAL_INPUT, "{mode:#x}");
+}
+
+#[test]
+#[ignore = "opens a console window"]
+fn a_classic_console_window_keeps_quick_edit_unless_the_mouse_is_asked_for() {
+    let mode = mode_while_fullscreen("");
+    assert_eq!(mode & QUICK_EDIT, QUICK_EDIT, "in a conhost window the mouse is off by default: {mode:#x}");
 }

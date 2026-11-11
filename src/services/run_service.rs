@@ -169,7 +169,7 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     let context = load_run_context(&config, &discovery_context(&config, &cwd));
     // Closes the fullscreen view on every way out of this function, errors included.
     let _view = LeaveViewOnDrop;
-    start_fullscreen(config.fullscreen && !args.no_fullscreen, config.mouse);
+    start_fullscreen(config.fullscreen && !args.no_fullscreen, mouse_wanted(&config));
     let off = resumed.as_ref().map(|r| r.session.mcp_off.clone()).unwrap_or_default();
     let mcp = start_mcp(&config, &context, &off);
     share_with_view(&config, &cwd, &context, &mcp);
@@ -676,6 +676,17 @@ impl super::providers::Provider for NoProvider {
     fn describe(&self) -> serde_json::Value {
         json!({ "provider": "none" })
     }
+}
+
+/// True when the fullscreen view turns mouse reporting on: `mouse = true`, except in a classic
+/// Windows console window, where the mouse reports could not be confirmed (task-2611), so the
+/// console keeps quick edit and selects text itself. `UMBRA_MOUSE=1` turns it on there too.
+/// @param config - the merged config
+fn mouse_wanted(config: &UmbraConfig) -> bool {
+    if !config.mouse {
+        return false;
+    }
+    std::env::var("UMBRA_MOUSE").is_ok_and(|v| v == "1") || !crate::utils::terminal_mode::in_classic_console_window()
 }
 
 /// The interactive settings for a new session of the run.

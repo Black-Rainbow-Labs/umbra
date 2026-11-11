@@ -156,6 +156,26 @@ fn set_raw() -> Option<SavedMode> {
 #[cfg(not(any(unix, windows)))]
 fn put_back(_previous: SavedMode) {}
 
+/// True when Umbra runs in a classic console window (conhost), not in a terminal that hosts the
+/// console through a pseudoconsole, such as Windows Terminal. A pseudoconsole's window is hidden;
+/// a conhost window is shown.
+#[cfg(windows)]
+pub fn in_classic_console_window() -> bool {
+    use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+    // SAFETY: plain Win32 calls with no arguments that write memory.
+    unsafe {
+        let window = GetConsoleWindow();
+        !window.is_null() && IsWindowVisible(window) != 0
+    }
+}
+
+/// Only Windows has console windows.
+#[cfg(not(windows))]
+pub fn in_classic_console_window() -> bool {
+    false
+}
+
 /// The terminal's height in rows: asked of the terminal, then `LINES`, then 24.
 pub fn terminal_height() -> usize {
     console_height().or_else(|| std::env::var("LINES").ok().and_then(|l| l.trim().parse().ok())).filter(|h| *h > 0).unwrap_or(24)
