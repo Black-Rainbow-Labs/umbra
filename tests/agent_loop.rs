@@ -230,3 +230,23 @@ fn a_reply_after_a_check_command_ends_the_turn() {
     assert_eq!(checks, 0);
     assert_eq!(trajectory["info"]["submission"], "Done.");
 }
+
+#[test]
+fn the_edit_tool_changes_only_the_match_when_it_is_on() {
+    let scratch = Scratch::new("edit-tool");
+    let work = scratch.path("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("a.txt"), b"one\r\ntwo\r\n").unwrap();
+    std::fs::create_dir_all(scratch.path("home/.umbra")).unwrap();
+    std::fs::write(scratch.path("home/.umbra/config.toml"), "edit_tool = true\nfinish_check = false\n").unwrap();
+    let model = script(&scratch, json!([
+        { "content": "Editing.", "tool_calls": [{ "name": "edit", "arguments": { "path": "a.txt", "old_text": "two", "new_text": "two\nthree" } }] },
+        "Done."
+    ]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "--cwd", &slash(&work), "-o", &slash(&traj), "add a line"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    assert_eq!(std::fs::read(work.join("a.txt")).unwrap(), b"one\r\ntwo\r\nthree\r\n");
+    let tools = read_trajectory(&traj)["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").count();
+    assert_eq!(tools, 1);
+}

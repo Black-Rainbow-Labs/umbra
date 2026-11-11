@@ -19,6 +19,7 @@ use super::context_service::RunContext;
 use super::session_title_service::{initial_title, request_title, summary_from_compaction};
 use super::{usage_service, work_clock};
 use super::compaction_service::{apply_mask, budget_for, estimate_history_tokens, estimate_request_tokens, estimate_tools_tokens, find_cut, mask_record, plan_mask, resolve_window, summarizable_tokens, summarize, summary_record, ReportedSize, SummaryInputs};
+use super::edit_tool_service::{edit_spec, edit_tool, is_edit, run_edit};
 use super::environment::{submission_from, Environment};
 use super::finish_check_service::{FinishCheck, FINISH_CHECK_TEXT};
 use super::image_service::images_in_text;
@@ -210,7 +211,17 @@ impl Agent {
         } else {
             tool_specs(&self.mcp_tools)
         };
+        if self.edit_tool_on() {
+            self.tools.insert(1, edit_spec());
+        }
         self.compaction.tools_tokens = estimate_tools_tokens(&self.tools);
+    }
+
+    /// Returns true when the `edit` tool is offered: tool mode, the local environment, and the
+    /// `edit_tool` setting on.
+    fn edit_tool_on(&self) -> bool {
+        let config = &self.parts.config;
+        config.edit_tool && config.action_format == ActionFormat::Tools && config.environment.kind == "local"
     }
 
     /// Reads the tools again when an MCP server became ready, failed or was turned on or off since
@@ -346,6 +357,9 @@ impl Agent {
         let mut tools = self.mcp_tools.clone();
         if self.deferred {
             tools.push(tool_search_tool());
+        }
+        if self.edit_tool_on() {
+            tools.push(edit_tool());
         }
         tools
     }
@@ -1086,12 +1100,15 @@ impl Agent {
         for (index, action) in actions.iter().enumerate() {
             self.parts.events.action_started(index, action);
             let is_bash = matches!(action, Action::Bash { .. });
-            if is_bash {
+            let changes_files = is_bash || matches!(action, Action::Mcp { server, tool, .. } if is_edit(server, tool));
+            if changes_files {
                 self.finish_check.before_command(&self.parts.cwd);
             }
             let observation = self.execute(action);
             if is_bash {
                 submitted = submission_from(&observation);
+            }
+            if changes_files {
                 self.finish_check.after_command(&self.parts.cwd);
             }
             if submitted.is_none() || console::is_verbose() {
@@ -1128,6 +1145,7 @@ impl Agent {
         match action {
             Action::Bash { command, .. } => self.parts.environment.execute(command),
             Action::Mcp { server, tool, arguments, .. } if is_tool_search(server, tool) => self.run_tool_search(arguments),
+            Action::Mcp { server, tool, arguments, .. } if is_edit(server, tool) => run_edit(&self.parts.cwd, arguments),
             Action::Mcp { server, tool, arguments, .. } => {
                 let observation = self.parts.mcp.call(server, tool, arguments.clone());
                 // A deferred tool called without a search first is loaded now, so the history
@@ -1198,6 +1216,7 @@ impl Agent {
         vars["elapsed_seconds"] = json!(self.started.elapsed().as_secs());
         vars["action_format"] = json!(self.parts.config.action_format);
         vars["finish"] = json!(self.parts.config.finish);
+        vars["edit_tool"] = json!(self.edit_tool_on());
         // With deferral the prompt lists the tools by name only; their definitions come from
         // tool_search when the model needs them.
         let described: Vec<&McpTool> = if self.deferred { Vec::new() } else { self.mcp_tools.iter().collect() };

@@ -61,6 +61,9 @@ pub struct UmbraConfig {
     /// command run since, send it one message asking it to run the check that proves the change
     /// and compare the result with the request. Once per turn.
     pub finish_check: bool,
+    /// Offer the `edit` tool beside `bash` in tool mode: an exact text replacement that keeps the
+    /// file's line endings and encoding.
+    pub edit_tool: bool,
     /// Ask for a follow up task when the agent submits, instead of exiting.
     pub confirm_exit: bool,
     /// An empty line at the task prompt or the follow up prompt asks again instead of ending the run.
@@ -113,6 +116,7 @@ impl Default for UmbraConfig {
             wall_time_limit_seconds: 0,
             max_consecutive_format_errors: 3,
             finish_check: true,
+            edit_tool: false,
             confirm_exit: true,
             keep_open: false,
             status_bar: true,
