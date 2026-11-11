@@ -1,0 +1,7 @@
+{
+  "id": "facts-report",
+  "contextWindow": 32768,
+  "stepLimit": 150,
+  "timeoutSeconds": 2400,
+  "prompt": "The folder notes/ holds 30 files of meeting notes, part-01.md to part-30.md. Read them one at a time, in order, with a separate command for each file. Do not read several files in one command and do not write a script that processes them.\n\nEach file has one line that starts with \"Keyword:\". After reading each file, append that file's keyword (just the word) as a new line to keywords.txt, before you read the next file. keywords.txt must end up with 30 lines, in file order.\n\nWhile reading, pay attention to these five facts, which are stated somewhere in the notes: the vault code for the archive room, the executive sponsor of the project, the launch city, the hostname of the backup server, and the budget cap in dollars.\n\nWhen all 30 files are done, write report.json with exactly these keys: \"vault_code\" (string), \"sponsor\" (string, full name), \"launch_city\" (string), \"backup_host\" (string), \"budget_cap\" (number, no separators), \"keyword_count\" (number of lines in keywords.txt). Then reply with a one line summary."
+}

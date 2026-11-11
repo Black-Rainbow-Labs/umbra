@@ -1,0 +1,7 @@
+{
+  "id": "giant-json-line",
+  "prompt": "data/catalog.json is an 8 MB JSON file stored on a single line (minified), so printing it or opening it in an editor will flood your context. It lists stores, each store has sections, and each section has items with a sku and a price. In store `store-0027`, in the section named `frozen`, change the price of the item with sku `SKU-4411` to 24.99. The same sku also appears in many other sections and stores; those must not change. Everything else in the file must stay exactly as it is and the file must remain valid JSON. Use a script (node or python) to make the edit instead of reading the file.",
+  "timeoutSeconds": 600,
+  "largeFixtures": ["data/catalog.json"],
+  "seed": 2614
+}

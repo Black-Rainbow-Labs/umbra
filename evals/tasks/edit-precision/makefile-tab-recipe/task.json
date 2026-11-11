@@ -1,0 +1,6 @@
+{
+  "id": "makefile-tab-recipe",
+  "prompt": "The Makefile in this folder is long and has a block of targets for each service. Add one more recipe line at the end of the recipe of the billing-package target, after its last existing line: @echo \"billing package signed\"  (the line starts with the @ sign, and like every recipe line in this Makefile it must be indented with a tab). Do not change any other target or any other line. Check it with make -n billing-package.",
+  "timeoutSeconds": 600,
+  "seed": 2614
+}

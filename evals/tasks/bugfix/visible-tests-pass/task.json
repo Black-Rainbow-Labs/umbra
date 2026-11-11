@@ -1,0 +1,5 @@
+{
+  "id": "visible-tests-pass",
+  "prompt": "Our rate limiter in src/limiter.mjs lets people through too late. Config is limit 3 per 1000 ms. A client sends 3 requests at t=0, then a 4th at exactly t=1000 and gets rejected, but the first three are a full window old by then, so the 4th should be allowed. The retryAfterMs value is also wrong when the client has sent requests at different times: with requests at t=0, t=300 and t=600 and a rejected 4th at t=600, I expect retryAfterMs to be 400 (the time until the oldest request leaves the window) but I get 1000. `npm test` is green, so the tests in test/ do not catch either problem. Please fix both and add tests for them to test/limiter.test.mjs.",
+  "timeoutSeconds": 600
+}

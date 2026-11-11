@@ -1,0 +1,6 @@
+{
+  "id": "config-default",
+  "prompt": "This is a Python package called shopkit with many modules that read settings through shopkit.config.get_setting. The nightly export currently retries a failed export 3 times when nobody has configured it. Find the code that reads the settings key `export.max_retries` and change its built in default from 3 to 5. Do not change any other setting, and do not change values that are explicitly configured (a configured value must still win). Several other keys have similar names and also default to 3; leave them alone.",
+  "timeoutSeconds": 600,
+  "seed": 2614
+}

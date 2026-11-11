@@ -1,0 +1,5 @@
+{
+  "id": "tokenizer",
+  "prompt": "Our little expression tokenizer in tokenizer/ reports wrong positions and chokes on some strings. I ran `python -m unittest` and two tests fail. In test_position_on_second_line, tokenizing \"a\\nb\" should put b at line 2, column 1 but the column is 2 (columns seem to keep counting across lines). In test_string_ending_in_escaped_backslash, the source \"C:\\\\\" + x (a string whose last character is an escaped backslash) raises an unterminated string error, but it is a valid string. Backslash escapes should work in general inside strings, including a string that spans several lines, and line and column numbers (both start at 1) must stay right for every token after it. Please fix it and make sure the tests pass.",
+  "timeoutSeconds": 600
+}

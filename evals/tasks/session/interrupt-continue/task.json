@@ -1,0 +1,9 @@
+{
+  "id": "interrupt-continue",
+  "scenario": "interrupt",
+  "timeoutSeconds": 900,
+  "phases": [
+    { "label": "interrupted", "killAfterSeconds": 20, "prompt": "Convert each CSV file in data/ into a JSON file in out/ with the same base name (data/alpha.csv becomes out/alpha.json). Each JSON file is an array of objects, one per row, with keys id (number), name (string), active (boolean: yes is true, no is false) and score (number). Convert the files one at a time in alphabetical order, checking each output before you move on, and do not write one script that converts all of them. When all ten are done, write out/index.json containing {\"files\": [the JSON file names in alphabetical order], \"total_rows\": <total number of rows>}. Then reply with the total number of rows." },
+    { "label": "continue", "mode": "resume", "from": 0, "prompt": "continue" }
+  ]
+}

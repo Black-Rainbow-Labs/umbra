@@ -1,0 +1,6 @@
+{
+  "id": "twelve-scattered-constants",
+  "prompt": "settings.mjs holds the configuration constants for about thirty services, so the same setting name appears once per service (for example AUTH_MAX_RETRIES and BILLING_MAX_RETRIES). Make these twelve changes, each to the constant with exactly that name:\n\n1. AUTH_MAX_RETRIES = 11\n2. BILLING_TIMEOUT_MS = 45000\n3. CATALOG_BATCH_SIZE = 750\n4. SEARCH_CACHE_TTL_SECONDS = 7200\n5. SHIPPING_ENABLED = false\n6. REPORTS_DEBUG = true\n7. INVENTORY_LOG_LEVEL = \"trace\"\n8. GATEWAY_ENDPOINT = \"https://gw.internal.example/v9\"\n9. QUEUE_POOL_SIZE = 64\n10. MAILER_BACKOFF_FACTOR = 3.5\n11. STORAGE_ALLOWED_METHODS = [\"GET\", \"HEAD\", \"OPTIONS\"]\n12. TAX_REGION = \"eu-north-1\"\n\nChange only those twelve values. Do not touch any other constant, comment, blank line or spacing in the file.",
+  "timeoutSeconds": 600,
+  "seed": 2614
+}

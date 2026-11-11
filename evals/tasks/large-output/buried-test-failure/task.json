@@ -1,0 +1,6 @@
+{
+  "id": "buried-test-failure",
+  "prompt": "`node run-tests.mjs` runs about 20,000 test cases against parseDuration in src/duration.mjs and prints one line per case. Something in the code is wrong and at least one case fails, but nearly every line is a PASS. Find the failing case, work out the bug and fix it in the source under src/. Do not edit tests/cases.json or run-tests.mjs. The command should end with 0 failed. Do not print all of the output into your context; filter it (for example look only at lines that start with FAIL).",
+  "timeoutSeconds": 600,
+  "seed": 2614
+}

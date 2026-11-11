@@ -1,0 +1,9 @@
+{
+  "id": "resume-decisions",
+  "scenario": "resume",
+  "timeoutSeconds": 600,
+  "phases": [
+    { "label": "first-half", "prompt": "We are triaging the customer messages in inbox/ (msg-01.txt to msg-10.txt). For each message, write a file triage/<same file name> containing exactly one line: <label> <priority>.\n\nThe rules for this job:\n- Label FIN for messages about billing, invoices or payments. Label ACC for messages about logging in or account access. Label GEN for everything else.\n- Exception: any message that mentions the Lisbon office gets label LIS, whatever its topic.\n- Priority P1 when the message mentions a deadline or a date by which something is needed, otherwise P3.\n\nDo only msg-01.txt to msg-05.txt now, then stop and tell me you are done with the first half. I will ask you to carry on later. Do not write these rules into any file." },
+    { "label": "carry-on", "mode": "resume", "from": 0, "prompt": "Carry on." }
+  ]
+}

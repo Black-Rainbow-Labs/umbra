@@ -1,0 +1,19 @@
+{
+  "id": "long-resume",
+  "scenario": "long-resume",
+  "timeoutSeconds": 1800,
+  "stepLimit": 100,
+  "phases": [
+    {
+      "label": "build-history",
+      "prompt": "The archive passphrase for this job is copper-lantern-58. Remember it, but do not write it into any file.\n\nThe folder chapters/ holds 30 files, ch-01.txt to ch-30.txt. Read them one at a time, in order, each with its own command that prints the whole file (do not read several files in one command, and do not use grep or a script to pull lines out). Each file has one line that starts with \"Marker:\". After reading each file, append its marker word as a new line to markers.txt before reading the next file. When all 30 are done, reply that you are finished."
+    },
+    {
+      "label": "resume-small-window",
+      "mode": "resume",
+      "from": 0,
+      "contextWindow": 32768,
+      "prompt": "Write summary.json with exactly these keys: \"passphrase\" (the archive passphrase I gave you at the start), \"marker_count\" (number of lines in markers.txt), \"first_marker\" and \"last_marker\" (the first and last lines of markers.txt). Then stop."
+    }
+  ]
+}

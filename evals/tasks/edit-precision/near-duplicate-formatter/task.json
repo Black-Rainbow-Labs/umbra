@@ -1,0 +1,6 @@
+{
+  "id": "near-duplicate-formatter",
+  "prompt": "src/rows.mjs has one formatter function per record type (formatAccountRow, formatInvoiceRow, formatShipmentRow and so on). They look almost the same. Change only formatShipmentRow so that the weight column shows kilograms instead of grams: the weight value is in grams, so divide it by 1000, show exactly one decimal place, and end it with \" kg\" (for example 1234 becomes \"1.2 kg\"). Leave every other function and every other line exactly as it is.",
+  "timeoutSeconds": 600,
+  "seed": 2614
+}

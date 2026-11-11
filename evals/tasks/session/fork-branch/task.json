@@ -1,0 +1,10 @@
+{
+  "id": "fork-branch",
+  "scenario": "fork",
+  "timeoutSeconds": 600,
+  "phases": [
+    { "label": "base", "prompt": "We are writing the deployment config for a service called atlas. Create config/base.json containing {\"name\": \"atlas\", \"port\": 8080}. The deployment region for this service is eu-west-2. Remember the region, but do not write it into any file yet. Stop when base.json is written." },
+    { "label": "fork", "mode": "fork", "from": 0, "prompt": "On this branch we are trying a different region: ap-south-1 replaces the region I gave you before. Create config/region-trial.json containing {\"region\": \"<the region for this branch>\"} and stop." },
+    { "label": "resume-original", "mode": "resume", "from": 0, "prompt": "Create config/region.json containing {\"region\": \"<the deployment region I gave you>\"} and stop." }
+  ]
+}

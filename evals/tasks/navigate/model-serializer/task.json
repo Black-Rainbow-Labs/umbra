@@ -1,0 +1,6 @@
+{
+  "id": "model-serializer",
+  "prompt": "This Python package (shopkit) has a model, a serializer, a repository and a service for each entity. Add a field `loyalty_tier` to the Customer model. It is a string and defaults to \"standard\", so existing code that builds a Customer without it keeps working. Then include it as `loyalty_tier` in the dict returned by serialize_customer. Only the Customer model and its serializer should change. CustomerProfile and CustomerSummary are different entities and stay as they are.",
+  "timeoutSeconds": 600,
+  "seed": 2614
+}

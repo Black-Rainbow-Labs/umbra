@@ -1,0 +1,5 @@
+{
+  "id": "date-ranges",
+  "prompt": "merge_ranges in the dateranges/ package gives wrong answers for our booking calendar. Running `python -m unittest` shows test_unsorted_input failing: I pass in [Jan 10-15, Jan 1-5, Jan 4-8] and expect [Jan 1-8, Jan 10-15], but the ranges come back in the wrong order. I also noticed that when one booking sits entirely inside a longer one (say Jan 1-31 and Jan 5-10), the merged range comes out shorter than the long booking. Ranges are inclusive on both ends, and ranges that share a day or touch (one starts the day after the other ends) should merge. Please fix it and make sure the tests pass.",
+  "timeoutSeconds": 600
+}

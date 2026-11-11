@@ -1,0 +1,7 @@
+{
+  "id": "buried-log-line",
+  "prompt": "Last night's import left exactly one record that the importer could not repair by itself. logs/import.log is the importer's log for that night. It is very large and mostly noise: many lines mention errors, corrupt payloads and retries, and most of those were fixed automatically. Find the single line where the reason is payload_corrupt and the action is exactly manual_fix (not auto_retry, not manual_fix_done). That line names a record id. In data/records.json, set that record's status to \"quarantined\". Change nothing else in the file. Do not try to print the whole log; it is about 40 MB.",
+  "timeoutSeconds": 600,
+  "largeFixtures": ["logs/import.log"],
+  "seed": 2614
+}

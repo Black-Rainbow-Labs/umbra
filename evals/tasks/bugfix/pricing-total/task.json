@@ -1,0 +1,5 @@
+{
+  "id": "pricing-total",
+  "prompt": "The cart totals in the pricing/ package are wrong. I ran `python -m unittest` and tests/test_cart.py fails in test_percent_coupon_with_tax: three mugs at 19.99, a 10 percent coupon and 8 percent tax. I expected a total of 5829 cents and got 5875. Prices go in as dollars and everything inside the package is whole cents. Please find the cause and fix it so the cart prices correctly in general, not just for that case, and make sure the tests pass.",
+  "timeoutSeconds": 600
+}

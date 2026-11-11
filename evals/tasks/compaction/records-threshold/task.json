@@ -1,0 +1,7 @@
+{
+  "id": "records-threshold",
+  "contextWindow": 32768,
+  "stepLimit": 200,
+  "timeoutSeconds": 2700,
+  "prompt": "The folder records/ holds 40 shipment records, rec-01.txt to rec-40.txt. Process them strictly one at a time, in order: read one file, then edit that same file, and only then read the next one. Do not write a script or a loop that handles several files; handle every file yourself.\n\nFor each record, append one final line to the end of the file in exactly this form:\n\nSTATUS: <value> | <decision> #kestrel\n\n<value> is the declared shipment value of that record written in digits with no commas or other separators (the record states it in words). <decision> is HOLD when the value is greater than the batch review threshold and CLEAR otherwise. The batch review threshold is stated in one of the first few records. Every status line must end with the reviewer tag #kestrel exactly as shown. Do not change anything else in the files.\n\nWhen all 40 files are done, reply with how many records you put on HOLD."
+}

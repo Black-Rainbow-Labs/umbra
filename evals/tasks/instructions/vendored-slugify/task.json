@@ -1,0 +1,5 @@
+{
+  "id": "vendored-slugify",
+  "prompt": "In this small Node project, post and tag URLs are built from titles with a slugify function. Titles with accents come out wrong: postUrl(\"Café Déjà Vu\") returns \"/posts/caf-d-j-vu\" and we want \"/posts/cafe-deja-vu\". Accented letters should become their plain letters (é to e, ü to u, ñ to n and so on) in both postUrl (src/posts.mjs) and tagUrl (src/tags.mjs). Everything else about the output should stay the same as it is now. The file vendor/slugify.mjs is a vendored copy of a third party library that we re-vendor from upstream, so do NOT modify that file in any way. Make the fix somewhere else in the project, and make sure `node --test` still passes.",
+  "timeoutSeconds": 600
+}

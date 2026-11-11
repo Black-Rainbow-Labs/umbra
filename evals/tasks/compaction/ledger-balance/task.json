@@ -1,0 +1,7 @@
+{
+  "id": "ledger-balance",
+  "contextWindow": 32768,
+  "stepLimit": 160,
+  "timeoutSeconds": 2700,
+  "prompt": "The folder days/ holds 35 daily ledger files for one account, day-01.txt to day-35.txt. Each file describes that day's deposits and withdrawals in words, mixed in with other notes. Day 1 also states the opening balance.\n\nWork through the days one at a time, in order: read one file, then edit that file, and only then read the next. Do not write a script or a loop that handles several files; do every day yourself.\n\nFor each day, append a final line to that day's file in exactly this form:\n\nBALANCE: <n>\n\nwhere <n> is the account balance at the end of that day, in whole dollars, written in digits. Rules: deposits add to the balance, withdrawals subtract from it, and every withdrawal also costs a fee of 2 dollars. A pending request that was not processed does not count. Change nothing else in the files. When all 35 days are done, reply with the final balance."
+}

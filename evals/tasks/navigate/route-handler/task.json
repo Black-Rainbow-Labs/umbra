@@ -1,0 +1,6 @@
+{
+  "id": "route-handler",
+  "prompt": "This is a small router based service (src/app.mjs, routes in src/routes, handlers in src/handlers). The endpoint GET /api/v1/invoices/:id/summary returns a `total` field in cents. The finance dashboard needs `total` in dollars instead, for example 12999 cents becomes 129.99. Change that one endpoint so `total` is the amount in dollars. The other fields of its response stay as they are. Other endpoints, including the invoice summary csv, the v2 invoice summary and the summary endpoints of other resources, must keep returning cents exactly as before.",
+  "timeoutSeconds": 600,
+  "seed": 2614
+}

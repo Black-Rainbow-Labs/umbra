@@ -1,0 +1,11 @@
+{
+  "id": "session-flags",
+  "excludeFromDefault": true,
+  "timeoutSeconds": 180,
+  "phases": [
+    { "label": "start", "prompt": "Remember this word for later: falcon. Do not write it to any file. Create a.txt containing the text one, then stop." },
+    { "label": "resume", "mode": "resume", "from": 0, "prompt": "Create b.txt containing the word I asked you to remember, then stop." },
+    { "label": "fork", "mode": "fork", "from": 1, "prompt": "Forget the earlier word. The word is now osprey. Create c.txt containing the current word, then stop." },
+    { "label": "resume-original", "mode": "resume", "from": 1, "prompt": "Create d.txt containing the word I asked you to remember, then stop." }
+  ]
+}

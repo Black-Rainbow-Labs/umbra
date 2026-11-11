@@ -1,0 +1,5 @@
+{
+  "id": "config-loader",
+  "prompt": "The config loader in src/ is giving us wrong settings. With a file containing \"[cache]\\nenabled = false\" I expect loadConfig(...).cache.enabled to be false, but it comes back true. Separately, one load seems to leak into the next: after loadConfig(\"[server]\\nport = 9000\") a later loadConfig(\"\") returns port 9000 instead of the default 8080. `npm test` runs the tests in test/ and shows both failures. Please find the causes and fix them so each call to loadConfig starts from the defaults and gives the right values in general. Callers sometimes change the object that loadConfig returns, and that must not affect later calls either. Make sure the tests pass.",
+  "timeoutSeconds": 600
+}

@@ -1,0 +1,6 @@
+{
+  "id": "crlf-retry-backoff",
+  "prompt": "retry.mjs is a long module (it was written on Windows). Change the function backoffDelayMs so that the delay never goes above 30000 milliseconds, and so that a negative attempt number is treated as 0. For example backoffDelayMs(3) is still 2000, backoffDelayMs(8) is 30000, and backoffDelayMs(-2) is 250. Do not change any other function. Keep the file's existing line endings on every line, including the lines you add.",
+  "timeoutSeconds": 600,
+  "seed": 2614
+}

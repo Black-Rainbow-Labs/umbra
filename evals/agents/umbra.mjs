@@ -1,0 +1,64 @@
+// Adapter for Umbra: writes the isolated home, builds the command line, and reads the trajectory.
+
+import fs from "node:fs";
+import path from "node:path";
+import { readJson } from "../src/utils/files.mjs";
+
+export const name = "umbra";
+const PROVIDER = "evalproxy";
+export const UMBRA_BIN = process.env.UMBRA_BIN || "umbra";
+const FORMAT_ERROR_PATTERNS = [/Error parsing tool call arguments/, /Missing 'command' argument/, /Unknown tool '/];
+
+/**
+ * Writes `<home>/.umbra/config.toml` with a provider that points at the measuring proxy.
+ * The built in `local` provider points at port 8080, so the base URL is set explicitly.
+ * @param input - the AdapterInput
+ */
+function writeHomeConfig(input) {
+  const dir = path.join(input.homeDir, ".umbra");
+  fs.mkdirSync(dir, { recursive: true });
+  const toml = [`model = "${PROVIDER}/${input.model}"`, "", `[providers.${PROVIDER}]`, `kind = "openai"`, `base_url = "${input.proxyBaseUrl}/v1"`, ""].join("\n");
+  fs.writeFileSync(path.join(dir, "config.toml"), toml);
+}
+
+/**
+ * Builds the command, arguments and environment for one Umbra phase.
+ * @param input - the AdapterInput
+ */
+export function buildLaunch(input) {
+  writeHomeConfig(input);
+  const trajectoryPath = path.join(input.phaseDir, "trajectory.json");
+  const args = ["-m", `${PROVIDER}/${input.model}`, "--yolo", "--quiet", "--no-fullscreen", "--no-status-bar", "--exit-immediately", "--no-mcp", "--no-skills", "--no-instructions", "--step-limit", String(input.stepLimit), "--cwd", input.workspaceDir, "-o", trajectoryPath];
+  if (input.resume) args.push("--resume", input.resume.sessionRef);
+  if (input.resume?.mode === "fork") args.push("--fork");
+  args.push("-t", input.prompt);
+  const env = { ...process.env, UMBRA_HOME_OVERRIDE: input.homeDir, UMBRA_BANNER: "0", UMBRA_STATUS_BAR: "0", UMBRA_FULLSCREEN: "0" };
+  return { command: UMBRA_BIN, args, env, cwd: input.workspaceDir, artifacts: { trajectoryPath } };
+}
+
+/**
+ * Reads the trajectory a phase wrote: session id, exit status, malformed tool calls,
+ * compactions, and whether the file parses.
+ * @param launch - the object buildLaunch returned
+ */
+export function readArtifacts(launch) {
+  const file = launch.artifacts.trajectoryPath;
+  if (!fs.existsSync(file)) return { sessionRef: null, sessionValid: false, sessionDetail: "no trajectory written", malformedToolCalls: 0, agentExitStatus: null, toolCalls: 0, compactions: 0 };
+  let trajectory;
+  try { trajectory = readJson(file); } catch (error) {
+    return { sessionRef: null, sessionValid: false, sessionDetail: `trajectory does not parse: ${error.message}`, malformedToolCalls: 0, agentExitStatus: null, toolCalls: 0, compactions: 0 };
+  }
+  const messages = trajectory.messages || [];
+  const userTexts = messages.filter((m) => m.role === "user").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
+  return {
+    sessionRef: trajectory.info?.session?.id || null,
+    sessionValid: Array.isArray(trajectory.messages),
+    sessionDetail: "",
+    malformedToolCalls: userTexts.filter((text) => FORMAT_ERROR_PATTERNS.some((re) => re.test(text))).length,
+    agentExitStatus: trajectory.info?.exit_status || null,
+    toolCalls: messages.filter((m) => m.role === "tool").length,
+    compactions: (trajectory.info?.compactions || []).length,
+    messageCount: messages.length,
+    agentVersion: trajectory.info?.umbra_version || null,
+  };
+}

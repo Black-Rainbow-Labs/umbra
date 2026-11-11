@@ -1,0 +1,2 @@
+# Task fixtures are compared byte for byte, so git must not convert line endings anywhere in evals/.
+* -text

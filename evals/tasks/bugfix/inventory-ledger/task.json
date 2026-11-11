@@ -1,0 +1,5 @@
+{
+  "id": "inventory-ledger",
+  "prompt": "We found two problems in the inventory ledger (src/ledger.mjs). First, when a warehouse ships the last units of an item it throws: I received 5 of AB-12, then shipped 5, and got \"insufficient stock for AB-12: 5 on hand, 5 requested\". Shipping exactly what is on hand should work and leave a balance of 0. Second, ledger.balance(\"ab-12\") returns 0 after ledger.receive(\"AB-12\", 4), even though SKUs are supposed to be case insensitive and ignore surrounding spaces everywhere else in the ledger. Please fix both. `npm test` runs the tests in test/ (one of them fails right now); make sure they pass.",
+  "timeoutSeconds": 600
+}

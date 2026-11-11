@@ -1,0 +1,6 @@
+{
+  "id": "unicode-locale-entry",
+  "prompt": "locales.json holds the translations for ten languages (en, fr, de, es, ja, zh, ko, ar, he, ru), with the same keys in each. In the \"ja\" block, change the value of the key \"settings.language.title\" from \"言語\" to \"言語と地域 🌏\" (the Japanese text followed by a space and the globe emoji). Change only that one value. Every other character in the file, in every language, must stay exactly as it is, and the file must stay readable text, so do not rewrite the file through a tool that re-encodes or re-formats it.",
+  "timeoutSeconds": 600,
+  "seed": 2614
+}

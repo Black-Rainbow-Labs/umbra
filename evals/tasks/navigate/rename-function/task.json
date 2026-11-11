@@ -1,0 +1,6 @@
+{
+  "id": "rename-function",
+  "prompt": "This repository has a function called calcDiscount in src/pricing/discount.mjs. Rename it to computeDiscount and update every place that imports or calls it, including the re-export in src/pricing/index.mjs, the aliased import, the namespace style call and the tests under test/. Be careful: calcDiscountRate and calcDiscountedTotal are different functions and keep their names. Leave comments, string literals and the markdown docs as they are, even where they mention calcDiscount. When you are done, `node main.mjs` must print the same output as before and `node --test` (run from the repository root) must pass.",
+  "timeoutSeconds": 600,
+  "seed": 2614
+}

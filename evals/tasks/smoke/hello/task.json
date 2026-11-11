@@ -1,0 +1,6 @@
+{
+  "id": "hello",
+  "prompt": "Create a file hello.txt containing the word hello, then stop.",
+  "timeoutSeconds": 180,
+  "excludeFromDefault": true
+}

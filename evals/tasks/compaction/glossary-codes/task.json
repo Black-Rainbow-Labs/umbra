@@ -1,0 +1,7 @@
+{
+  "id": "glossary-codes",
+  "contextWindow": 32768,
+  "stepLimit": 160,
+  "timeoutSeconds": 2700,
+  "prompt": "The folder docs/ holds a glossary, 00-glossary.md, and 36 documents, 01.md to 36.md. The documents refer to internal codes written as [[CODE]], for example [[AB1]], and the glossary says what each code means.\n\nRead the glossary first. Then go through the documents one at a time, in order: read one document, edit it, and only then read the next. Do not write a script or a loop that edits several documents; handle every document yourself.\n\nIn each document, replace every [[CODE]] reference with the meaning of that code from the glossary, wrapped in single asterisks. For example, if the glossary says \"AB1: the front desk\", then [[AB1]] becomes *the front desk*. Change nothing else in the documents, and do not change the glossary. When all 36 documents are done, reply with the number of references you replaced."
+}
