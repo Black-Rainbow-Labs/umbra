@@ -1,6 +1,6 @@
 [package]
 name = "umbra"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 rust-version = "1.85"
 description = "A small coding agent for the terminal and for editors that speak the Agent Client Protocol, modeled after mini-swe-agent"
