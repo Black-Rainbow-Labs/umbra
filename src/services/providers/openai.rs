@@ -166,6 +166,9 @@ impl Provider for OpenAiProvider {
     /// llama.cpp or NInfer server on this machine reports `n_ctx` at `/props`, and vLLM,
     /// llama.cpp and OpenRouter list a size for each model at `/models`.
     fn context_window(&mut self) -> Option<u64> {
+        if let Some(window) = self.config.context_window.filter(|w| *w > 0) {
+            return Some(window);
+        }
         if let Some(window) = known_context_window(&self.model) {
             return Some(window);
         }

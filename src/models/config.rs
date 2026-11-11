@@ -223,6 +223,8 @@ pub struct ProviderConfig {
     /// Qwen style chat template keeps the reasoning of earlier turns. Defaults to on for a server
     /// on this machine and off for any other server.
     pub preserve_thinking: Option<bool>,
+    /// The model's context window in tokens, used instead of asking the server.
+    pub context_window: Option<u64>,
 }
 
 /// Which other harnesses' files Umbra reads. All are on by default.
@@ -377,6 +379,9 @@ pub struct CompactionConfig {
     pub keep_recent_ratio: f64,
     /// Command outputs shorter than this many characters are never masked.
     pub mask_min_chars: usize,
+    /// Work to a window of at most this many tokens, even when the model's is larger. A long
+    /// session is then compacted before each request grows slow to process. 0 means no cap.
+    pub max_context_tokens: u64,
 }
 
 impl Default for CompactionConfig {
@@ -394,6 +399,7 @@ impl Default for CompactionConfig {
             min_reclaim_max: 20_000,
             keep_recent_ratio: 0.1,
             mask_min_chars: 400,
+            max_context_tokens: 0,
         }
     }
 }

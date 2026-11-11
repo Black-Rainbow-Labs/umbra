@@ -48,14 +48,17 @@ pub fn budget_for(config: &CompactionConfig, window: u64) -> Budget {
     }
 }
 
-/// Picks the window: the config's value, then what the provider reports, then the default.
+/// Picks the window compaction works to: the config's value, then what the provider reports,
+/// then the default, and no more than `max_context_tokens` when that is set, so a model with a
+/// very large window can be worked at a smaller, faster size.
 /// @param config - the compaction settings
 /// @param provider - the model provider, asked only when the config sets no window
 pub fn resolve_window(config: &CompactionConfig, provider: &mut dyn Provider) -> u64 {
-    if config.context_window > 0 {
-        return config.context_window;
+    let window = if config.context_window > 0 { config.context_window } else { provider.context_window().filter(|w| *w > 0).unwrap_or(DEFAULT_CONTEXT_WINDOW) };
+    match config.max_context_tokens {
+        0 => window,
+        cap => window.min(cap),
     }
-    provider.context_window().filter(|w| *w > 0).unwrap_or(DEFAULT_CONTEXT_WINDOW)
 }
 
 /// Estimates the tokens one message adds to a request. For Anthropic the raw content blocks
@@ -67,7 +70,7 @@ pub fn estimate_message_tokens(message: &Message) -> u64 {
     }
     let body = match message.extra.get(RAW_CONTENT_KEY) {
         Some(Value::Array(blocks)) if !blocks.is_empty() => estimate_text_tokens(&Value::Array(blocks.clone()).to_string()),
-        _ => estimate_text_tokens(&message.content) + message.tool_calls.iter().map(|c| estimate_text_tokens(&c.name) + estimate_text_tokens(&c.arguments.to_string())).sum::<u64>(),
+        _ => estimate_text_tokens(&message.content) + message.reasoning().map_or(0, |(_, text)| estimate_text_tokens(text)) + message.tool_calls.iter().map(|c| estimate_text_tokens(&c.name) + estimate_text_tokens(&c.arguments.to_string())).sum::<u64>(),
     };
     body + images_tokens(message) + MESSAGE_OVERHEAD_TOKENS
 }

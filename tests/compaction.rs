@@ -173,3 +173,33 @@ fn an_overflow_error_compacts_and_retries() {
     assert_eq!(trajectory["info"]["model_stats"]["api_calls"], 3, "the summary call and the retry are part of the third step");
     assert_eq!(requests.len(), 5, "two steps, the refused request, the summary request and the retry");
 }
+
+#[test]
+fn a_failed_summary_is_not_tried_again_on_the_next_steps() {
+    let scratch = Scratch::new("compact-summary-failed");
+    let config = scratch.write("compact.toml", "[compaction]\ncontext_window = 10700\nkeep_recent_ratio = 0.15\n");
+    let long_reply = json!({ "content": "b".repeat(4000), "tool_calls": [{ "name": "bash", "arguments": { "command": "echo ok" } }] });
+    let short_reply = json!({ "content": "c", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo ok" } }] });
+    let mut replies: Vec<Value> = (0..8).map(|_| long_reply.clone()).collect();
+    replies.push(json!(""));
+    replies.extend([short_reply.clone(), short_reply, submit()]);
+    let (output, requests) = run(&scratch, json!(replies), &["-c", &slash(&config)]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let asks = requests.iter().filter(|r| messages(r).last().and_then(|m| m["content"].as_str()).is_some_and(|c| c.contains("about to be compacted"))).count();
+    assert_eq!(asks, 1, "the summary that failed is not asked for again before the context grows");
+}
+
+#[test]
+fn max_context_tokens_caps_the_working_window() {
+    let scratch = Scratch::new("compact-cap");
+    let config = scratch.write("compact.toml", "[compaction]\ncontext_window = 1000000\nmax_context_tokens = 10700\nkeep_recent_ratio = 0.15\n");
+    let long_reply = json!({ "content": "b".repeat(4000), "tool_calls": [{ "name": "bash", "arguments": { "command": "echo ok" } }] });
+    let mut replies: Vec<Value> = (0..8).map(|_| long_reply.clone()).collect();
+    replies.push(json!("SUMMARY-TEXT: capped."));
+    replies.push(submit());
+    let (output, _) = run(&scratch, json!(replies), &["-c", &slash(&config)]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let records = read_trajectory(&scratch.path("run.traj.json"))["info"]["compactions"].as_array().unwrap().clone();
+    assert_eq!(records.len(), 1, "the cap makes a 1,000,000 window compact like a 10,700 one: {records:?}");
+    assert_eq!(records[0]["window"], 10700);
+}

@@ -179,6 +179,10 @@ struct CompactionState {
     records: Vec<CompactionRecord>,
     /// True once the person was told compaction cannot shrink the history, so it is said once.
     stuck_warned: bool,
+    /// The request estimate when a threshold summary last failed. No threshold summary is tried
+    /// again until the estimate has grown 10% past it, so a failing summary call is not repeated
+    /// before every model call.
+    summary_failed_at: Option<u64>,
 }
 
 impl Agent {
@@ -879,7 +883,13 @@ impl Agent {
             self.summary_not_worth_it(removable, window);
             return;
         }
-        self.compact_by_summary(CompactionReason::Threshold, "");
+        let estimate = self.request_estimate();
+        if self.compaction.summary_failed_at.is_some_and(|failed| estimate < failed + failed / 10) {
+            return;
+        }
+        if !self.compact_by_summary(CompactionReason::Threshold, "") {
+            self.compaction.summary_failed_at = Some(estimate);
+        }
     }
 
     /// The tokens compaction can never remove: the system prompt, the first message and the tool
@@ -962,6 +972,7 @@ impl Agent {
         self.compaction.reported = None;
         let after = self.request_estimate();
         self.parts.session.summary = summary_from_compaction(&outcome.summary);
+        self.compaction.summary_failed_at = None;
         self.notice(Tone::Info, "compaction", &format!("compacted: summarized {} {} · {} → {} tokens of {}", outcome.removed.len(), if outcome.removed.len() == 1 { "message" } else { "messages" }, short_tokens(before), short_tokens(after), short_tokens(window)));
         self.compaction.stuck_warned = false;
         self.compaction.records.push(summary_record(reason, self.stats.api_calls, (before, after, window), &outcome));
