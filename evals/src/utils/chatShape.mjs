@@ -21,7 +21,7 @@ export function applySampling(body, sampling) {
   body.temperature = sampling.temperature;
   body.top_p = sampling.top_p;
   body.top_k = sampling.top_k;
-  body.chat_template_kwargs = { ...(body.chat_template_kwargs || {}), enable_thinking: sampling.enableThinking };
+  if (sampling.enableThinking !== null && sampling.enableThinking !== undefined) body.chat_template_kwargs = { ...(body.chat_template_kwargs || {}), enable_thinking: sampling.enableThinking };
   if (body.stream === true) body.stream_options = { ...(body.stream_options || {}), include_usage: true };
   return body;
 }
