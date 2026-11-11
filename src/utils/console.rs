@@ -462,8 +462,15 @@ pub fn take_queued_lines() -> Vec<String> {
 /// pending answers at once, and either way it is handled here.
 /// @param prompt - the text shown before the cursor
 pub fn prompt_line(prompt: &str) -> Input {
+    // The agent time does not count while Umbra waits for the person. A question asked in the
+    // middle of a turn, such as the confirm prompt, starts the clock again once it is answered.
+    let working = crate::services::work_clock::is_running();
+    crate::services::work_clock::stop();
     show_prompt(prompt);
     let input = wait_for_line();
+    if working && matches!(input, Input::Line(_)) {
+        crate::services::work_clock::start();
+    }
     if screen::is_active() {
         // Nothing echoed the typed line, so it is added to the transcript after its prompt.
         if let Input::Line(line) = &input {
@@ -472,7 +479,8 @@ pub fn prompt_line(prompt: &str) -> Input {
                 if !line.trim().is_empty() && crate::services::command_service::parse_builtin(line).is_none() {
                     screen::push_block(crate::ui::block::Block::UserPrompt { marker: "❯".into(), text: line.clone() });
                 }
-            } else {
+            } else if !line.trim().is_empty() {
+                // An empty answer, such as Enter at the confirm prompt, adds nothing.
                 screen::push_text(&format!("{}{line}", paint("1;33", tail)));
             }
         }

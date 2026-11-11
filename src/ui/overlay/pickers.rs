@@ -124,6 +124,6 @@ pub fn start_picker(sessions: Vec<SessionIndexEntry>) -> Box<dyn Overlay> {
 pub fn session_item(session: &SessionIndexEntry) -> PickItem {
     let model = session.model.rsplit('/').next().unwrap_or("").to_string();
     let detail = format!("{} · {model} · {} {}", crate::services::session_service::time_ago(session.updated_at), session.api_calls, if session.api_calls == 1 { "call" } else { "calls" });
-    let summary = (!session.summary.is_empty()).then(|| session.summary.clone()).or_else(|| Some(String::new()));
+    let summary = (!session.summary.trim().is_empty()).then(|| session.summary.clone());
     PickItem { label: crate::services::session_title_service::display_title(session), detail, summary, value: session.id.clone(), ..Default::default() }
 }

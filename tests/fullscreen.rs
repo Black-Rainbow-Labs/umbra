@@ -650,3 +650,20 @@ fn a_panic_leaves_the_alternate_screen_and_turns_mouse_reporting_off() {
     assert!(output.contains("\x1b[?1006l\x1b[?1002l\x1b[?1000l"), "mouse reporting is turned off");
     assert!(after.contains("a test panic"), "the panic message is printed on the main screen: {after:?}");
 }
+
+#[test]
+fn the_agent_time_stops_at_the_confirm_prompt_and_an_empty_answer_adds_no_line() {
+    let setup = Setup::new("fs-confirm-clock");
+    let model = setup.model("script.json", json!([{ "content": "Listing.", "sleep_ms": 1200, "tool_calls": [bash("echo listed")] }, "done"]));
+    let mut screen = setup.start(&["-m", &model, "--mode", "confirm", "--no-mcp"], &[]);
+    screen.wait_for("❯");
+    screen.type_line("list");
+    let frame = screen.wait_for("Run? [Enter]");
+    let at_prompt = agent_time(&frame);
+    std::thread::sleep(Duration::from_millis(2200));
+    let frame = screen.frame();
+    assert_eq!(agent_time(&frame), at_prompt, "the clock waits with the person:\n{}", frame.text());
+    screen.press("Enter");
+    let frame = screen.wait_for("● done");
+    assert!(frame.row_of("Run? [Enter]").is_none(), "the empty answer left no line:\n{}", frame.text());
+}

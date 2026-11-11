@@ -149,9 +149,11 @@ impl Overlay for Picker {
         let visible = self.visible();
         self.selected = self.selected.min(visible.len().saturating_sub(1));
         let filter = if self.filter.is_empty() { String::new() } else { format!(" · filter: {}", self.filter) };
-        let title = format!(" {}{filter}", self.title);
-        let pad = width.saturating_sub(title.chars().count() + self.hint.chars().count() + 1);
-        let mut rows = vec![Row::text(ansi::fit(&format!("{}{}{}", paint(ctx, "1", &title), " ".repeat(pad.max(1)), paint(ctx, "90", &self.hint)), width))];
+        // A long title, such as a model path, is cut so the keys stay on the row.
+        let hint = if width > self.hint.chars().count() + 20 { self.hint.as_str() } else { "" };
+        let title = crate::ui::block::cut_to(&format!(" {}{filter}", self.title), width.saturating_sub(hint.chars().count() + 2));
+        let pad = width.saturating_sub(title.chars().count() + hint.chars().count() + 1);
+        let mut rows = vec![Row::text(ansi::fit(&format!("{}{}{}", paint(ctx, "1", &title), " ".repeat(pad.max(1)), paint(ctx, "90", hint)), width))];
         let per_item = if self.items.iter().any(|i| i.summary.is_some()) { 2 } else { 1 };
         let extra = usize::from(self.entering.is_some()) + usize::from(self.error.is_some());
         let room = (height.saturating_sub(1 + extra) / per_item).max(1);
