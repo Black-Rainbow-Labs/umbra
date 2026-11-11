@@ -40,6 +40,7 @@ use crate::models::model_response::ModelResponse;
 use crate::models::session::{SessionIndexEntry, SessionInfo};
 use crate::models::trajectory::{ModelStats, Trajectory, TrajectoryInfo};
 use crate::repositories::session_repository::save_index;
+use crate::repositories::journal_repository::{journal_path, JournalWriter};
 use crate::repositories::trajectory_repository::save_trajectory;
 use crate::utils::console;
 use crate::utils::interrupt;
@@ -162,6 +163,8 @@ pub struct Agent {
     titled: bool,
     /// Asks the model to check its work when it replies right after changing files.
     finish_check: FinishCheck,
+    /// Appends each step to the session journal next to the trajectory.
+    journal: JournalWriter,
 }
 
 /// What the agent tracks for compaction.
@@ -193,7 +196,8 @@ impl Agent {
         let deferred = !mcp_tools.is_empty() && should_defer(mcp.defer_tools, mcp_tokens, window, mcp.defer_ratio);
         let compaction = CompactionState { window: Some(window), ..Default::default() };
         let finish_check = FinishCheck::new(parts.config.finish_check && parts.config.finish == Finish::Reply && parts.config.environment.kind == "local");
-        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check };
+        let journal = JournalWriter::new(journal_path(&parts.trajectory_path));
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal };
         agent.rebuild_tools();
         agent
     }
@@ -427,6 +431,7 @@ impl Agent {
         }
         self.finish_title_job(true);
         self.save();
+        self.save_trajectory_file();
         self.close();
         Ok(RunResult { exit_status: self.exit.0.clone(), submission: self.exit.1.clone(), trajectory_path: self.parts.trajectory_path.clone(), stats: self.stats.clone(), session_id: self.parts.session.id.clone(), next: self.next.clone() })
     }
@@ -549,6 +554,7 @@ impl Agent {
         self.messages.push(Message::exit(&end.status, &end.submission));
         self.exit = (end.status.clone(), end.submission.clone());
         self.save();
+        self.save_trajectory_file();
     }
 
     /// Prints how a turn ended at the terminal, with the session's steps and cost.
@@ -752,6 +758,7 @@ impl Agent {
     /// ask, so the run ends.
     fn interrupted(&mut self) -> Result<Step> {
         self.save();
+        self.save_trajectory_file();
         self.show_status(Phase::Waiting);
         if !self.parts.interaction.interactive {
             return Ok(Step::Exit(INTERRUPTED_STATUS.into(), String::new()));
@@ -1225,9 +1232,35 @@ impl Agent {
         vars
     }
 
-    /// Writes the trajectory and the session's index entry. A failure to write is reported but
-    /// does not stop the run.
-    fn save(&self) {
+    /// Saves the step: appends what changed to the session journal and writes the session's
+    /// index entry. The trajectory JSON is written by `save_trajectory_file` when a turn ends.
+    /// A failure to write is reported but does not stop the run.
+    fn save(&mut self) {
+        let info = self.trajectory_info();
+        if let Err(error) = self.journal.write(&info, &self.messages) {
+            eprintln!("umbra: could not save the session journal: {error:#}");
+        }
+        let session = info.session;
+        let trajectory_path = absolute_path(&self.parts.trajectory_path).to_string_lossy().replace('\\', "/");
+        let journal = absolute_path(&journal_path(&self.parts.trajectory_path)).to_string_lossy().replace('\\', "/");
+        let entry = SessionIndexEntry { id: session.id, trajectory: trajectory_path, journal, cwd: session.cwd, model: session.model, task: session.task, started_at: session.started_at, updated_at: now_seconds(), exit_status: info.exit_status, api_calls: self.stats.api_calls, cost: self.stats.instance_cost, messages: self.messages.len(), title: session.title, summary: session.summary, mcp_off: session.mcp_off, work_seconds: session.work_seconds };
+        if let Err(error) = save_index(&entry) {
+            eprintln!("umbra: could not save the session index: {error:#}");
+        }
+    }
+
+    /// Writes the whole trajectory JSON, in the format other tools read. Called when a turn
+    /// ends, when the run ends and after Ctrl+C; between those the journal has every step.
+    fn save_trajectory_file(&self) {
+        let trajectory = Trajectory { info: self.trajectory_info(), messages: self.messages.clone(), trajectory_format: "mini-swe-agent-1.1".into() };
+        if let Err(error) = save_trajectory(&self.parts.trajectory_path, &trajectory) {
+            eprintln!("umbra: could not save the trajectory: {error:#}");
+        }
+    }
+
+    /// The trajectory's info block as it is now: totals, config, how the session ended, the
+    /// compactions and the session record.
+    fn trajectory_info(&self) -> TrajectoryInfo {
         let last = self.messages.iter().rev().find(|m| m.role == Role::Exit);
         let exit_status = last.and_then(|m| m.extra["exit_status"].as_str()).unwrap_or("").to_string();
         let submission = last.map(|m| m.content.clone()).unwrap_or_default();
@@ -1236,16 +1269,7 @@ impl Agent {
         if self.parts.interaction.interactive {
             session.work_seconds = work_clock::elapsed().as_secs_f64();
         }
-        let info = TrajectoryInfo { model_stats: self.stats.clone(), config: self.parts.config_record.clone(), umbra_version: env!("CARGO_PKG_VERSION").into(), exit_status: exit_status.clone(), submission, compactions: self.compaction.records.clone(), session: session.clone() };
-        let trajectory = Trajectory { info, messages: self.messages.clone(), trajectory_format: "mini-swe-agent-1.1".into() };
-        if let Err(error) = save_trajectory(&self.parts.trajectory_path, &trajectory) {
-            eprintln!("umbra: could not save the trajectory: {error:#}");
-        }
-        let trajectory_path = absolute_path(&self.parts.trajectory_path).to_string_lossy().replace('\\', "/");
-        let entry = SessionIndexEntry { id: session.id, trajectory: trajectory_path, cwd: session.cwd, model: session.model, task: session.task, started_at: session.started_at, updated_at: now_seconds(), exit_status, api_calls: self.stats.api_calls, cost: self.stats.instance_cost, messages: self.messages.len(), title: session.title, summary: session.summary, mcp_off: session.mcp_off, work_seconds: session.work_seconds };
-        if let Err(error) = save_index(&entry) {
-            eprintln!("umbra: could not save the session index: {error:#}");
-        }
+        TrajectoryInfo { model_stats: self.stats.clone(), config: self.parts.config_record.clone(), umbra_version: env!("CARGO_PKG_VERSION").into(), exit_status, submission, compactions: self.compaction.records.clone(), session }
     }
 }
 

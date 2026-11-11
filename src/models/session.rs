@@ -51,6 +51,8 @@ pub struct SessionIndexEntry {
     pub id: String,
     /// The trajectory file.
     pub trajectory: String,
+    /// The session journal next to it, appended after every step. Resuming reads it first.
+    pub journal: String,
     pub cwd: String,
     pub model: String,
     pub task: String,
