@@ -1010,6 +1010,8 @@ impl Agent {
         self.stats.instance_cost += response.cost;
         self.stats.input_tokens += response.usage.input_tokens + response.usage.cache_read_tokens + response.usage.cache_write_tokens;
         self.stats.output_tokens += response.usage.output_tokens;
+        self.stats.cache_read_tokens += response.usage.cache_read_tokens;
+        self.stats.reasoning_tokens += response.usage.reasoning_tokens;
     }
 
     /// Reads the actions out of a reply in the run's action format, or finds that it is a reply
@@ -1246,6 +1248,9 @@ fn assistant_message(response: &ModelResponse, actions: &[Action]) -> Message {
     let mut extra = json!({ "actions": actions, "response": raw, "cost": response.cost, "usage": response.usage, "finish_reason": response.finish_reason, "timestamp": now_seconds() });
     if !blocks.is_null() {
         extra[RAW_CONTENT_KEY] = blocks;
+    }
+    if !response.timing.is_null() {
+        extra["timing"] = response.timing.clone();
     }
     message.with_extra(extra)
 }
