@@ -22,6 +22,7 @@ use super::compaction_service::{apply_mask, budget_for, estimate_history_tokens,
 use super::edit_tool_service::{edit_spec, edit_tool, is_edit, run_edit};
 use super::environment::{submission_from, Environment};
 use super::finish_check_service::{FinishCheck, FINISH_CHECK_TEXT};
+use super::output_spill_service::{outputs_dir, spill_long_output};
 use super::image_service::images_in_text;
 use super::interaction_service::{show_assistant, show_event, show_observation, show_reply_text, show_turn_end, show_user_text, Comment, Decision, HumanInput, Interaction, Tone, TurnSummary};
 use super::session_service::ResumedSession;
@@ -1183,7 +1184,7 @@ impl Agent {
         let vars = self.template_vars("");
         for (index, action) in actions.iter().enumerate() {
             let observation = match outputs.get(index) {
-                Some(observation) => observation.clone(),
+                Some(observation) => spill_long_output(observation.clone(), &outputs_dir(&self.parts.trajectory_path), self.messages.len() as u32),
                 None => {
                     let reason = reason.unwrap_or("action was not executed");
                     self.parts.events.action_not_run(index, action, reason);
@@ -1195,7 +1196,11 @@ impl Agent {
                 Some(id) => Message::tool(id, content),
                 None => Message::user(content),
             };
-            self.messages.push(message.with_images(observation.images.clone()).with_extra(json!({ "raw_output": observation.output, "returncode": observation.returncode, "exception_info": observation.exception_info, "timestamp": now_seconds(), "started_at": observation.started_at, "duration_ms": observation.duration_ms })));
+            let mut extra = json!({ "raw_output": observation.output, "returncode": observation.returncode, "exception_info": observation.exception_info, "timestamp": now_seconds(), "started_at": observation.started_at, "duration_ms": observation.duration_ms });
+            if let Some(file) = &observation.output_file {
+                extra["output_file"] = json!(file);
+            }
+            self.messages.push(message.with_images(observation.images.clone()).with_extra(extra));
         }
         Ok(())
     }

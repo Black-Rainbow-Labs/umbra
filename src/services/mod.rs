@@ -14,6 +14,7 @@ pub mod image_service;
 pub mod inspect_service;
 pub mod interaction_service;
 pub mod mcp;
+pub mod output_spill_service;
 pub mod prompt_service;
 pub mod providers;
 pub mod run_service;
