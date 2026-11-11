@@ -55,3 +55,4 @@ by more than its noise band.
 
 | Id | Commit | Hypothesis | Target metric | Before | After | Result | Run ids |
 |---|---|---|---|---|---|---|---|
+| E1 | c89a679 | Sending the streamed reasoning back keeps the server's prompt cache valid from one request to the next | Cache hit rate, uncached prompt tokens per passed task, time to first content | 10.3%, 137,820, 4,153 ms (0.6.2, task-2614) | 95.7%, 14,608, 319 ms (pi: 82.3%, 78,944, 1,084 ms) | Kept. All three targets met. Pass rate 82.5% against pi's 80.3% (inside pi's 6.6% noise band), compaction pass rate 96.3% against 44.4%, wall seconds per task 61.4 against 116.9. Not yet better than pi: hard tier pass rate (60.0% against 66.7%), reasoning tokens (+8.4%), nonzero exits (6 against 1), session branch and cut-resume (need E11), session store bytes per step. E2 token totals checked against the proxy here: input and output totals match exactly in all 126 cells | `e1-c89a679`, `pi-1.3.0-ref` |
