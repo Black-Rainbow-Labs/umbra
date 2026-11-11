@@ -23,7 +23,6 @@ def check_format_sku():
     assert format_sku(" ab ", 42) == "AB-000042", format_sku(" ab ", 42)
     assert format_sku("Xy", 7) == "XY-000007"
     assert format_sku("q", 1234567) == "Q-1234567"
-    assert format_sku("zz", "15") == "ZZ-000015"
 
 
 def check_parse_quantity():

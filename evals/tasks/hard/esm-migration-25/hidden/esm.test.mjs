@@ -35,11 +35,12 @@ function walk(dir, base = dir) {
 const SRC = [
   "constants", "strings", "numbers", "arrays", "objects", "dates", "validators", "logger", "ids", "cache", "config", "paths",
   "fileStore", "events", "tree", "walker", "plugins/upper", "plugins/reverse", "pluginLoader", "slug", "csv", "retry", "memo", "stats", "index",
+  "semver", "limits", "registry", "legacy", "format", "ring/a", "ring/b", "ring/c", "plugins/title",
 ];
 
 test("every module exists with the .mjs extension and no .js source is left", () => {
   for (const name of SRC) assert.ok(fs.existsSync(path.join(WS, "src", `${name}.mjs`)), `src/${name}.mjs is missing`);
-  for (const file of ["bin/cli.mjs", "run-tests.mjs", "test/harness.mjs"]) assert.ok(fs.existsSync(path.join(WS, file)), `${file} is missing`);
+  for (const file of ["bin/cli.mjs", "run-tests.mjs", "test/harness.mjs", "test/extra.test.mjs", "test/plugins.test.mjs"]) assert.ok(fs.existsSync(path.join(WS, file)), `${file} is missing`);
   const leftovers = walk(WS).filter((file) => file.endsWith(".js"));
   assert.deepStrictEqual(leftovers, []);
 });
@@ -197,11 +198,17 @@ test("plugins are default exports and pluginLoader loads them asynchronously", a
   assert.strictEqual(rev.default("abc"), "cba");
   const loader = await load("src/pluginLoader.mjs");
   assert.deepStrictEqual(names(loader), ["listPlugins", "loadPlugin"]);
-  assert.deepStrictEqual(loader.listPlugins(), ["reverse", "upper"]);
+  assert.deepStrictEqual(loader.listPlugins(), ["reverse", "title", "upper"]);
   const pending = loader.loadPlugin("upper");
   assert.ok(pending instanceof Promise);
   assert.strictEqual((await pending)("xyz"), "XYZ");
-  await assert.rejects(loader.loadPlugin("missing"));
+  const title = await load("src/plugins/title.mjs");
+  assert.deepStrictEqual(names(title), ["default"]);
+  assert.strictEqual(title.default("hello big world"), "Hello Big World");
+  assert.strictEqual((await loader.loadPlugin("title"))("a b"), "A B");
+  await assert.rejects(loader.loadPlugin("missing"), { name: "Error", message: "unknown plugin: missing" });
+  await assert.rejects(loader.loadPlugin("../paths"), { message: "unknown plugin: ../paths" });
+  await assert.rejects(loader.loadPlugin("upper/../reverse"), { message: "unknown plugin: upper/../reverse" });
 });
 
 test("slug, csv, retry, memo and stats", async () => {
@@ -247,25 +254,130 @@ test("bin/cli.mjs runs when started directly and stays quiet when imported", asy
   const bad = spawnSync("node", [cli, "nope"], { cwd: WS, encoding: "utf8", timeout: 30000 });
   assert.deepStrictEqual([bad.status, bad.stdout, bad.stderr], [2, "", "unknown command: nope\n"]);
   const quiet = spawnSync("node", ["--input-type=module", "-e", `const m = await import(${JSON.stringify(pathToFileURL(cli).href)}); console.log(Object.keys(m).join(","));`], { cwd: WS, encoding: "utf8", timeout: 30000 });
-  assert.strictEqual(quiet.stdout, "main\n");
+  assert.strictEqual(quiet.stdout, "main,mainAsync\n");
   const mod = await load("bin/cli.mjs");
   assert.deepStrictEqual(mod.main(["sum", "2", "2"]), { code: 0, out: "4" });
+  assert.deepStrictEqual(mod.main(["plugins"]), { code: 2, out: "unknown command: plugins" });
 });
 
 test("node run-tests.mjs runs the converted tests and they pass", () => {
   const run = spawnSync("node", ["run-tests.mjs"], { cwd: WS, encoding: "utf8", timeout: 45000 });
   assert.strictEqual(run.status, 0, `${run.stdout}${run.stderr}`);
-  assert.match(run.stdout, /passed 12, failed 0/);
-  assert.strictEqual((run.stdout.match(/^ok - /gm) || []).length, 12);
+  const summary = /^passed (\d+), failed 0$/m.exec(run.stdout);
+  assert.ok(summary, "summary line is missing");
+  assert.ok(Number(summary[1]) >= 24, `only ${summary[1]} tests ran`);
+  assert.strictEqual((run.stdout.match(/^ok - /gm) || []).length, Number(summary[1]));
+  assert.strictEqual(/^not ok/m.test(run.stdout), false);
 });
 
-test("the converted test files exist, use the harness and keep all 12 tests", () => {
-  const files = ["strings.test.mjs", "arrays.test.mjs", "misc.test.mjs"];
+test("the converted test files exist, use the harness and keep all 21 tests", () => {
+  const files = ["strings.test.mjs", "arrays.test.mjs", "misc.test.mjs", "extra.test.mjs"];
   let total = 0;
   for (const file of files) {
     const text = fs.readFileSync(path.join(WS, "test", file), "utf8");
     assert.match(text, /harness\.mjs/);
     total += (text.match(/^test\(/gm) || []).length;
   }
-  assert.strictEqual(total, 12);
+  assert.strictEqual(total, 21);
+});
+
+test("the new test/plugins.test.mjs has at least 3 tests, uses the harness and imports the new code", () => {
+  const text = fs.readFileSync(path.join(WS, "test", "plugins.test.mjs"), "utf8");
+  assert.match(text, /harness\.mjs/);
+  assert.ok((text.match(/^test\(/gm) || []).length >= 3);
+  assert.match(text, /pluginLoader\.mjs/);
+  assert.match(text, /mainAsync/);
+});
+
+test("semver is a default export with parse and satisfies as named exports", async () => {
+  const v = await load("src/semver.mjs");
+  assert.deepStrictEqual(names(v), ["default", "parse", "satisfies"]);
+  assert.strictEqual(typeof v.default, "function");
+  assert.deepStrictEqual([v.default("1.2.3", "1.10.0"), v.default("2.0.0", "2.0.0"), v.default("3.0.1", "3.0.0")], [-1, 0, 1]);
+  assert.deepStrictEqual(v.parse("2.0.11"), { major: 2, minor: 0, patch: 11 });
+  assert.strictEqual(v.satisfies("1.4.0", "1.3.9"), true);
+  assert.strictEqual(v.satisfies("1.3.0", "1.3.1"), false);
+  assert.throws(() => v.parse("1.2"), /bad version: 1\.2/);
+});
+
+test("limits reads data/limits.json without changing it", async () => {
+  const before = fs.readFileSync(path.join(WS, "data", "limits.json"), "utf8");
+  assert.strictEqual(before, '{\n  "maxRows": 100,\n  "maxCols": 20,\n  "timeoutMs": 3000\n}\n');
+  const l = await load("src/limits.mjs");
+  assert.deepStrictEqual(names(l), ["getLimit", "limitNames"]);
+  assert.deepStrictEqual([l.getLimit("maxCols"), l.getLimit("timeoutMs")], [20, 3000]);
+  assert.deepStrictEqual(l.limitNames(), ["maxCols", "maxRows", "timeoutMs"]);
+  assert.throws(() => l.getLimit("nope"), (error) => error instanceof RangeError && error.message === "no limit: nope");
+});
+
+test("registry creates its bus lazily and reset starts a new one", async () => {
+  const r = await load("src/registry.mjs");
+  assert.deepStrictEqual(names(r), ["fire", "register", "reset"]);
+  assert.strictEqual(r.fire("none"), 0);
+  const seen = [];
+  r.register("e", (x) => seen.push(x));
+  r.register("e", (x) => seen.push(x * 10));
+  assert.strictEqual(r.fire("e", 2), 2);
+  r.reset();
+  assert.strictEqual(r.fire("e", 3), 0);
+  assert.deepStrictEqual(seen, [2, 20]);
+});
+
+test("legacy keeps its octal constant and its counter now that modules are strict", async () => {
+  const l = await load("src/legacy.mjs");
+  assert.deepStrictEqual(names(l), ["FILE_MODE", "nextTicket"]);
+  assert.strictEqual(l.FILE_MODE, 493);
+  assert.deepStrictEqual([l.nextTicket(), l.nextTicket(), l.nextTicket()], [1, 2, 3]);
+  assert.strictEqual("ticketCount" in globalThis, false);
+});
+
+test("format has named exports only", async () => {
+  const f = await load("src/format.mjs");
+  assert.deepStrictEqual(names(f), ["money", "percent"]);
+  assert.deepStrictEqual([f.money(5), f.money(1205), f.money(100000)], ["$0.05", "$12.05", "$1000.00"]);
+  assert.deepStrictEqual([f.percent(1, 3), f.percent(2, 3), f.percent(5, 0)], ["33%", "67%", "0%"]);
+});
+
+test("the three ring modules import each other and work whichever one loads first", () => {
+  const code = `
+    const root = new URL(process.argv[2]);
+    const order = process.argv[1].split("");
+    const loaded = {};
+    for (const name of order) loaded[name] = await import(new URL("src/ring/" + name + ".mjs", root).href);
+    console.log(JSON.stringify([loaded.a.a(2), loaded.b.b(0), loaded.c.c(1), Object.keys(loaded.a), Object.keys(loaded.b), Object.keys(loaded.c)]));
+  `;
+  for (const order of ["abc", "bca", "cab", "acb"]) {
+    const run = spawnSync("node", ["--input-type=module", "-e", code, order, pathToFileURL(WS + path.sep).href], { encoding: "utf8", timeout: 30000 });
+    assert.strictEqual(run.status, 0, run.stderr);
+    assert.strictEqual(run.stdout.trim(), JSON.stringify(["abcabcabc", "bc", "cabc", ["a"], ["b"], ["c"]]), order);
+  }
+});
+
+test("bin/cli.mjs mainAsync handles the plugin commands", async () => {
+  const mod = await load("bin/cli.mjs");
+  assert.deepStrictEqual(await mod.mainAsync(["plugins"]), { code: 0, out: "reverse\ntitle\nupper" });
+  assert.deepStrictEqual(await mod.mainAsync(["apply", "upper", "hello", "world"]), { code: 0, out: "HELLO WORLD" });
+  assert.deepStrictEqual(await mod.mainAsync(["apply", "title", "hello", "big", "world"]), { code: 0, out: "Hello Big World" });
+  assert.deepStrictEqual(await mod.mainAsync(["apply", "reverse", "abc"]), { code: 0, out: "cba" });
+  assert.deepStrictEqual(await mod.mainAsync(["apply", "nope", "x"]), { code: 2, out: "unknown plugin: nope" });
+  assert.deepStrictEqual(await mod.mainAsync(["apply", "../paths", "x"]), { code: 2, out: "unknown plugin: ../paths" });
+  assert.deepStrictEqual(await mod.mainAsync(["apply", "upper"]), { code: 2, out: "usage: apply <plugin> <text>" });
+  assert.deepStrictEqual(await mod.mainAsync(["apply"]), { code: 2, out: "usage: apply <plugin> <text>" });
+  assert.deepStrictEqual(await mod.mainAsync(["sum", "1", "2"]), { code: 0, out: "3" });
+  assert.deepStrictEqual(await mod.mainAsync(["bogus"]), { code: 2, out: "unknown command: bogus" });
+});
+
+test("bin/cli.mjs runs the plugin commands from the command line", () => {
+  const cli = path.join(WS, "bin", "cli.mjs");
+  const run = (...args) => spawnSync("node", [cli, ...args], { cwd: WS, encoding: "utf8", timeout: 30000 });
+  const list = run("plugins");
+  assert.deepStrictEqual([list.status, list.stdout], [0, "reverse\ntitle\nupper\n"]);
+  const apply = run("apply", "title", "hello", "big", "world");
+  assert.deepStrictEqual([apply.status, apply.stdout], [0, "Hello Big World\n"]);
+  const missing = run("apply", "nope", "x");
+  assert.deepStrictEqual([missing.status, missing.stdout, missing.stderr], [2, "", "unknown plugin: nope\n"]);
+  const usage = run("apply", "upper");
+  assert.deepStrictEqual([usage.status, usage.stderr], [2, "usage: apply <plugin> <text>\n"]);
+  const sum = run("sum", "4", "5");
+  assert.deepStrictEqual([sum.status, sum.stdout], [0, "9\n"]);
 });

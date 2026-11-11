@@ -1,11 +1,14 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+const LOCAL_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+
 /**
  * Parses an ISO 8601 timestamp string (with Z or an offset such as +02:00) into a Date.
+ * Text without a Z or an offset is read as UTC, so the result does not depend on the process time zone.
  * @param value - the timestamp text
  */
 export function parseTimestamp(value) {
-  const date = new Date(value);
+  const date = new Date(LOCAL_DATE_TIME.test(value) ? `${value}Z` : value);
   if (Number.isNaN(date.getTime())) throw new Error(`invalid timestamp: ${value}`);
   return date;
 }

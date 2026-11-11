@@ -10,6 +10,7 @@ sys.path.insert(0, WORKSPACE)
 
 from api import store  # noqa: E402
 from api.router import handle  # noqa: E402
+from api import reports  # noqa: E402
 
 LISTS = {"/users": "USERS", "/projects": "PROJECTS", "/tasks": "TASKS", "/comments": "COMMENTS", "/tags": "TAGS"}
 INT_FILTERS = {"owner_id", "project_id", "task_id"}
@@ -31,12 +32,12 @@ def expected(path, params=None):
     for item in getattr(store, LISTS[path]):
         ok = True
         for name, value in params.items():
-            if name in ("limit", "cursor"):
+            if name in ("limit", "cursor", "order"):
                 continue
             ok = ok and (item[name] == int(value) if name in INT_FILTERS else item[name] == value)
         if ok:
             result.append(dict(item))
-    return sorted(result, key=key_of)
+    return sorted(result, key=key_of, reverse=params.get("order") == "desc")
 
 
 def get(path, **params):
@@ -220,6 +221,112 @@ class PaginationTest(unittest.TestCase):
         self.assertEqual(handle("GET", "/tags")[0], 200)
         item = get("/users", limit=1)[1]["items"][0]
         self.assertEqual(set(item), {"id", "name", "role", "created_at"})
+
+    def test_order_desc_walks_every_resource_in_reverse(self):
+        for path in LISTS:
+            full = expected(path, {"order": "desc"})
+            self.assertEqual(full, list(reversed(expected(path))), path)
+            for limit in (6, 20):
+                items, pages = walk(path, limit, order="desc")
+                self.assertEqual(items, full, (path, limit))
+                self.assertEqual(pages, -(-len(full) // limit), (path, limit))
+
+    def test_order_asc_is_the_default(self):
+        for path in LISTS:
+            self.assertEqual(get(path, order="asc"), get(path), path)
+        cursor = get("/tasks", limit=5)[1]["next_cursor"]
+        status, body = get("/tasks", limit=5, cursor=cursor, order="asc")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["items"], expected("/tasks")[5:10])
+        cursor = get("/tasks", limit=5, order="asc")[1]["next_cursor"]
+        self.assertEqual(get("/tasks", limit=5, cursor=cursor)[1]["items"], expected("/tasks")[5:10])
+
+    def test_invalid_order_is_rejected_on_every_resource(self):
+        for path in LISTS:
+            for bad in ["", "DESC", "Asc", "up", "descending", "asc ", " desc", "0", "asc,desc"]:
+                status, body = get(path, order=bad)
+                self.assertEqual(status, 400, (path, bad))
+                self.assertEqual(body["error"]["code"], "invalid_order", (path, bad))
+                self.assertEqual(set(body), {"error"})
+
+    def test_checks_run_in_the_order_limit_then_order_then_cursor(self):
+        status, body = get("/users", limit="x", order="up", cursor="!!!")
+        self.assertEqual((status, body["error"]["code"]), (400, "invalid_limit"))
+        status, body = get("/users", order="up", cursor="!!!")
+        self.assertEqual((status, body["error"]["code"]), (400, "invalid_order"))
+        status, body = get("/users", order="desc", cursor="!!!")
+        self.assertEqual((status, body["error"]["code"]), (400, "invalid_cursor"))
+
+    def test_cursor_only_works_with_the_order_it_was_issued_for(self):
+        asc = get("/tasks", limit=5)[1]["next_cursor"]
+        desc = get("/tasks", limit=5, order="desc")[1]["next_cursor"]
+        self.assertEqual(get("/tasks", limit=5, cursor=desc, order="desc")[0], 200)
+        self.assertEqual(get("/tasks", limit=5, cursor=asc, order="desc")[1]["error"]["code"], "invalid_cursor")
+        self.assertEqual(get("/tasks", limit=5, cursor=desc)[1]["error"]["code"], "invalid_cursor")
+        self.assertEqual(get("/tasks", limit=5, cursor=desc, order="asc")[1]["error"]["code"], "invalid_cursor")
+
+    def test_desc_with_filters_and_empty_results(self):
+        items, pages = walk("/tasks", 2, status="open", project_id=101, order="desc")
+        self.assertEqual(items, expected("/tasks", {"status": "open", "project_id": "101", "order": "desc"}))
+        self.assertGreater(pages, 1)
+        status, body = get("/tasks", status="nothing", order="desc")
+        self.assertEqual((status, body), (200, {"items": [], "next_cursor": None}))
+        status, body = get("/users", limit=25, order="desc")
+        self.assertEqual((len(body["items"]), body["next_cursor"]), (25, None))
+
+    def test_desc_cursor_survives_inserts_and_deletes_between_pages(self):
+        status, first = get("/comments", limit=7, order="desc")
+        last = first["items"][-1]
+        store.COMMENTS.append({"id": 9100, "task_id": 1001, "body": "new", "created_at": "2024-12-01T00:00:00Z"})
+        store.COMMENTS.append({"id": 0, "task_id": 1001, "body": "tie low", "created_at": last["created_at"]})
+        store.COMMENTS.append({"id": last["id"] + 7000, "task_id": 1001, "body": "tie high", "created_at": last["created_at"]})
+        store.COMMENTS[:] = [c for c in store.COMMENTS if c["id"] != last["id"]]
+        status, second = get("/comments", limit=7, cursor=first["next_cursor"], order="desc")
+        self.assertEqual(status, 200)
+        after = [c for c in expected("/comments", {"order": "desc"}) if key_of(c) < key_of(last)]
+        self.assertEqual(second["items"], after[:7])
+        rest, cursor = [], second["next_cursor"]
+        while cursor is not None:
+            status, page = get("/comments", limit=7, cursor=cursor, order="desc")
+            self.assertEqual(status, 200)
+            rest.extend(page["items"])
+            cursor = page["next_cursor"]
+        everything = second["items"] + rest
+        self.assertEqual(everything, after)
+        ids = [c["id"] for c in everything]
+        self.assertIn(0, ids)
+        self.assertNotIn(last["id"] + 7000, ids)
+        self.assertNotIn(9100, ids)
+
+    def test_reports_still_cover_every_record(self):
+        self.assertEqual(reports.task_counts(), {"open": 15, "done": 15, "blocked": 15})
+        self.assertEqual(reports.task_counts(101), {"open": 3, "done": 2, "blocked": 3})
+        self.assertEqual(reports.comment_total(), 130)
+        self.assertEqual(reports.comment_total(101), 23)
+        self.assertEqual(reports.admin_names(), ["user01", "user06", "user11", "user16", "user21"])
+        names = reports.project_names_by_owner()
+        self.assertEqual(sum(len(v) for v in names.values()), 30)
+        self.assertEqual(names[2], ["project02", "project09", "project16", "project23", "project30"])
+
+    def test_reports_follow_the_live_store_beyond_one_hundred_records(self):
+        for i in range(250):
+            store.TASKS.append({"id": 20000 + i, "project_id": 101, "status": "open", "title": f"extra{i}", "created_at": f"2024-03-{1 + i % 28:02d}T10:00:00Z"})
+        for i in range(260):
+            store.COMMENTS.append({"id": 30000 + i, "task_id": 20000 + i % 3, "body": f"extra{i}", "created_at": f"2024-03-{1 + i % 28:02d}T11:00:00Z"})
+        for i in range(120):
+            store.USERS.append({"id": 400 + i, "name": f"extra{i:03d}", "role": "admin", "created_at": "2024-03-01T00:00:00Z"})
+        self.assertEqual(reports.task_counts(), {"open": 265, "done": 15, "blocked": 15})
+        self.assertEqual(reports.task_counts(101), {"open": 253, "done": 2, "blocked": 3})
+        self.assertEqual(reports.comment_total(), 390)
+        self.assertEqual(reports.comment_total(101), 23 + 260)
+        self.assertEqual(len(reports.admin_names()), 125)
+        self.assertEqual(reports.admin_names(), sorted(reports.admin_names()))
+
+    def test_reports_do_not_change_what_the_handlers_return(self):
+        before = get("/tasks", limit=3)
+        reports.task_counts()
+        self.assertEqual(get("/tasks", limit=3), before)
+        self.assertEqual(len(get("/tasks")[1]["items"]), 20)
 
     def test_pagination_logic_lives_in_one_module(self):
         sources = {}

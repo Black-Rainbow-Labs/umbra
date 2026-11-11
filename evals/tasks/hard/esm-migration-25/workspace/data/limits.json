@@ -1,0 +1,5 @@
+{
+  "maxRows": 100,
+  "maxCols": 20,
+  "timeoutMs": 3000
+}

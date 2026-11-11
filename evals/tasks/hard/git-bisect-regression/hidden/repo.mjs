@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const BAD_SUBJECT = "Extract computeTax and share the rounding helper";
+export const BAD_SUBJECT_DUE = "Add a weekend option to dueDate";
 export const FIX_MESSAGE = "Fix tax rounding regression";
 
 /**
@@ -41,7 +42,7 @@ function git(dir, args, when = "2024-01-01T12:00:00Z") {
 }
 
 /**
- * Creates the repository in dir (which must exist) with one commit per history step, one day apart, on branch main.
+ * Creates the repository in dir (which must exist) with one commit per history step, one day apart from 2024-02-01, on branch main.
  * @param dir - the folder to build the repository in
  */
 export function buildRepo(dir) {
@@ -58,8 +59,7 @@ export function buildRepo(dir) {
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, file.text);
     }
-    const day = String(1 + index).padStart(2, "0");
-    const when = `2024-${index < 28 ? "02" : "03"}-${index < 28 ? day : String(index - 27).padStart(2, "0")}T12:00:00Z`;
+    const when = new Date(Date.UTC(2024, 1, 1 + index, 12)).toISOString().replace(".000Z", "Z");
     git(dir, ["add", "-A"], when);
     git(dir, ["commit", "-m", commit.message], when);
   });

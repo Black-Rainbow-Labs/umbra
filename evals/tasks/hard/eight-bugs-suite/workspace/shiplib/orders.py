@@ -7,7 +7,8 @@ from .inventory import OutOfStock
 def place_order(text, inventory):
     """Reserve stock for every line of an order and return [(sku, line_total_cents), ...] in order.
 
-    When any line asks for more than is in stock, OutOfStock is raised and nothing is reserved.
+    Lines for the same SKU are added together when checking stock, and each line is still priced on its own.
+    When the lines ask for more than is in stock, OutOfStock is raised and nothing is reserved.
     """
     lines = parser.parse_order_lines(text)
     for sku, quantity, _ in lines:

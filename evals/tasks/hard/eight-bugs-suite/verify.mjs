@@ -1,4 +1,4 @@
-// Verifier: eleven checks. Eight hidden test classes (one per bug), a class of behavior that must not
+// Verifier: nineteen checks. Fourteen hidden test classes (one per bug), two for the invoice function, a class of behavior that must not
 // change, the visible tests left unedited, and the visible test suite passing.
 
 import fs from "node:fs";
@@ -14,6 +14,14 @@ const BUG_CLASSES = [
   ["Bug6AuditList", "audit list is not shared"],
   ["Bug7ReportOrder", "report sorts by number then name"],
   ["Bug8Wrapping", "wrapped lines fit the width"],
+  ["Bug9ShippingWeightSteps", "a started 250 g step is charged"],
+  ["Bug10ShippingZoneRounding", "zone cost rounds half up"],
+  ["Bug11EmailNormalization", "dots and tags dropped only for gmail.com"],
+  ["Bug12DuplicateSkuStock", "repeated SKU lines are checked together"],
+  ["Bug13Truncate", "truncate result is exactly the width"],
+  ["Bug14BusinessDaysBetween", "business days between two dates"],
+  ["Part2InvoiceTotals", "invoice totals"],
+  ["Part2InvoiceEdges", "invoice edge cases"],
   ["BehaviorThatMustNotChange", "other behavior unchanged"],
 ];
 
@@ -86,7 +94,7 @@ export async function verify(workspaceDir, runInfo) {
     }
     results.push({ label: "visible tests are unedited", ok: testsUnchanged(workspaceDir, runInfo.taskDir) });
     const visible = runPython(["-m", "unittest", "discover", "-s", "tests", "-t", "."], workspaceDir);
-    results.push({ label: "visible tests pass", ok: visible.status === 0 && /Ran 36 tests/.test(visible.stderr || "") });
+    results.push({ label: "visible tests pass", ok: visible.status === 0 && /Ran 56 tests/.test(visible.stderr || "") });
     const failed = results.filter((r) => !r.ok).map((r) => r.label);
     const score = (results.length - failed.length) / results.length;
     return { pass: failed.length === 0, score, detail: failed.length ? `failed checks: ${failed.join("; ")}` : `all ${results.length} checks passed` };

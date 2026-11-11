@@ -7,3 +7,13 @@ export function withAuth(config, token) {
   if (token) config.headers.authorization = `Bearer ${token}`;
   return config;
 }
+
+/**
+ * Adds request headers to the config. When a header is already set, the new value wins.
+ * @param config - the request settings
+ * @param headers - an object of header names and values
+ */
+export function withHeaders(config, headers) {
+  Object.assign(config.headers, headers);
+  return config;
+}

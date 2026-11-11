@@ -1,7 +1,7 @@
 import datetime
 import unittest
 
-from shiplib.dates import add_business_days, is_business_day, parse_date
+from shiplib.dates import add_business_days, business_days_between, is_business_day, parse_date
 
 
 class DatesTests(unittest.TestCase):
@@ -21,6 +21,16 @@ class DatesTests(unittest.TestCase):
 
     def test_friday_plus_one_is_monday(self):
         self.assertEqual(add_business_days(datetime.date(2024, 3, 1), 1), datetime.date(2024, 3, 4))
+
+    def test_business_days_between_midweek(self):
+        self.assertEqual(business_days_between(datetime.date(2024, 3, 5), datetime.date(2024, 3, 8)), 3)
+
+    def test_business_days_between_counts_a_weekend_end(self):
+        self.assertEqual(business_days_between(datetime.date(2024, 3, 1), datetime.date(2024, 3, 2)), 0)
+        self.assertEqual(business_days_between(datetime.date(2024, 3, 2), datetime.date(2024, 3, 4)), 1)
+
+    def test_business_days_between_is_zero_when_end_is_not_after_start(self):
+        self.assertEqual(business_days_between(datetime.date(2024, 3, 5), datetime.date(2024, 3, 5)), 0)
 
 
 if __name__ == "__main__":

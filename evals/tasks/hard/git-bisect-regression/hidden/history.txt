@@ -729,3 +729,358 @@ test("a line with zero or negative quantity is worth nothing", () => {
 ## 0.1.0
 
 - Money helpers, tax per line, percentage discounts, invoice summary text.
+=== Add invoice numbering
+--- src/numbering.mjs
+export function nextInvoiceNumber(last) {
+  const n = last ? Number(last.slice(4)) + 1 : 1;
+  return `INV-${String(n).padStart(4, "0")}`;
+}
+=== Test invoice numbering
+--- test/numbering.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { nextInvoiceNumber } from "../src/numbering.mjs";
+
+test("the first invoice number is INV-0001", () => {
+  assert.equal(nextInvoiceNumber(undefined), "INV-0001");
+});
+
+test("the next number follows the last one", () => {
+  assert.equal(nextInvoiceNumber("INV-0041"), "INV-0042");
+  assert.equal(nextInvoiceNumber("INV-9999"), "INV-10000");
+});
+=== Add late fees
+--- src/latefee.mjs
+import { roundCents } from "./money.mjs";
+
+/** Fee in cents for an overdue amount. bpsPerDay is the daily rate in basis points. A fraction of a cent is never charged. */
+export function lateFee(cents, daysLate, bpsPerDay) {
+  if (daysLate <= 0) return 0;
+  return roundCents((cents * bpsPerDay * daysLate) / 10000);
+}
+=== Test late fees
+--- test/latefee.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { lateFee } from "../src/latefee.mjs";
+
+test("lateFee charges the daily rate for each day", () => {
+  assert.equal(lateFee(10000, 3, 50), 150);
+});
+
+test("lateFee never charges a fraction of a cent", () => {
+  assert.equal(lateFee(999, 2, 25), 4);
+});
+
+test("lateFee is zero when the invoice is not late", () => {
+  assert.equal(lateFee(500, 0, 50), 0);
+  assert.equal(lateFee(500, -2, 50), 0);
+});
+=== Add split payments
+--- src/split.mjs
+import { roundCents } from "./money.mjs";
+
+/** Splits a total in cents into parts. The parts add up to the total and the first parts get the extra cents. */
+export function splitCents(total, parts) {
+  const base = roundCents(total / parts);
+  const remainder = total - base * parts;
+  return Array.from({ length: parts }, (_, index) => base + (index < remainder ? 1 : 0));
+}
+=== Test split payments
+--- test/split.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { splitCents } from "../src/split.mjs";
+
+test("splitCents spreads the extra cents over the first parts", () => {
+  assert.deepEqual(splitCents(100, 3), [34, 33, 33]);
+  assert.deepEqual(splitCents(200, 3), [67, 67, 66]);
+  assert.deepEqual(splitCents(5, 2), [3, 2]);
+});
+
+test("splitCents of an even amount has equal parts", () => {
+  assert.deepEqual(splitCents(90, 3), [30, 30, 30]);
+});
+=== Add a leap year due date test
+--- test/dates.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { dueDate } from "../src/dates.mjs";
+
+test("dueDate adds days to the issue date", () => {
+  assert.equal(dueDate("2024-01-30", 30), "2024-02-29");
+  assert.equal(dueDate("2023-12-15", 20), "2024-01-04");
+});
+
+test("dueDate knows about the leap day", () => {
+  assert.equal(dueDate("2024-02-28", 2), "2024-03-01");
+});
+=== Add a weekend option to dueDate
+--- src/dates.mjs
+/** Returns the due date as YYYY-MM-DD, the given number of days after the issue date. */
+export function dueDate(issued, days, options = {}) {
+  const date = new Date(`${issued}T00:00:00Z`);
+  const skipWeekends = options.skipWeekends !== false;
+  let remaining = days;
+  while (remaining > 0) {
+    date.setUTCDate(date.getUTCDate() + 1);
+    const weekday = date.getUTCDay();
+    if (!skipWeekends || (weekday !== 0 && weekday !== 6)) remaining -= 1;
+  }
+  return date.toISOString().slice(0, 10);
+}
+=== Test the weekend option
+--- test/dates.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { dueDate } from "../src/dates.mjs";
+
+test("dueDate adds days to the issue date", () => {
+  assert.equal(dueDate("2024-01-30", 30), "2024-02-29");
+  assert.equal(dueDate("2023-12-15", 20), "2024-01-04");
+});
+
+test("dueDate knows about the leap day", () => {
+  assert.equal(dueDate("2024-02-28", 2), "2024-03-01");
+});
+
+test("dueDate can skip weekends", () => {
+  assert.equal(dueDate("2024-02-02", 5, { skipWeekends: true }), "2024-02-09");
+  assert.equal(dueDate("2024-03-02", 1, { skipWeekends: true }), "2024-03-04");
+});
+=== Add business day terms
+--- src/terms.mjs
+import { dueDate } from "./dates.mjs";
+
+export function businessDueDate(issued, days) {
+  return dueDate(issued, days, { skipWeekends: true });
+}
+=== Test business day terms
+--- test/terms.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { businessDueDate } from "../src/terms.mjs";
+
+test("businessDueDate counts Monday to Friday only", () => {
+  assert.equal(businessDueDate("2024-02-02", 5), "2024-02-09");
+  assert.equal(businessDueDate("2024-02-09", 1), "2024-02-12");
+});
+=== Document due dates and late fees
+--- README.md
+# invoicer
+
+A small library for pricing invoices in whole cents.
+
+## Usage
+
+Prices are integers in cents. Tax rates are in basis points, so 825 means 8.25 percent.
+Tax is calculated for each line and rounded to the cent.
+
+## Regions
+
+`rateFor(region)` returns the tax rate for CA, NY, TX and WA. Other regions have no tax.
+
+## Refunds
+
+`refundCents(cents, pct)` returns the part of an amount that is refunded. It never refunds a fraction of a cent.
+
+## Due dates
+
+`dueDate(issued, days)` counts calendar days. `dueDate(issued, days, { skipWeekends: true })` counts Monday to Friday only.
+
+## Late fees
+
+`lateFee(cents, daysLate, bpsPerDay)` charges a daily rate and never charges a fraction of a cent.
+=== Add invoice sorting
+--- src/sort.mjs
+/** Returns a copy of the invoices with the largest total first. Equal totals are ordered by invoice number. */
+export function sortByTotal(invoices) {
+  return [...invoices].sort((a, b) => b.total - a.total || a.number.localeCompare(b.number));
+}
+=== Test invoice sorting
+--- test/sort.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { sortByTotal } from "../src/sort.mjs";
+
+test("sortByTotal puts the largest total first", () => {
+  const sorted = sortByTotal([{ number: "INV-0002", total: 5 }, { number: "INV-0001", total: 9 }]);
+  assert.deepEqual(sorted.map((i) => i.number), ["INV-0001", "INV-0002"]);
+});
+
+test("sortByTotal orders equal totals by number and keeps the input", () => {
+  const input = [{ number: "INV-0003", total: 5 }, { number: "INV-0001", total: 5 }];
+  assert.deepEqual(sortByTotal(input).map((i) => i.number), ["INV-0001", "INV-0003"]);
+  assert.equal(input[0].number, "INV-0003");
+});
+=== Add CSV export
+--- src/csv.mjs
+/** Quotes a CSV field when it holds a comma, a quote or a line break. */
+export function csvField(value) {
+  const text = String(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+export function toCsv(rows, columns) {
+  const lines = [columns.join(",")];
+  for (const row of rows) lines.push(columns.map((column) => csvField(row[column] ?? "")).join(","));
+  return lines.join("\n") + "\n";
+}
+=== Test CSV export
+--- test/csv.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { toCsv } from "../src/csv.mjs";
+
+test("toCsv writes a header and one line per row", () => {
+  assert.equal(toCsv([{ a: 1, b: 2 }, { a: 3 }], ["a", "b"]), "a,b\n1,2\n3,\n");
+});
+
+test("toCsv quotes fields that need it", () => {
+  assert.equal(toCsv([{ a: 'x, "y"' }], ["a"]), 'a\n"x, ""y"""\n');
+});
+=== Move formatting into its own folder
+--- delete src/format.mjs
+--- src/format/index.mjs
+const SYMBOLS = { USD: "$", EUR: "€", GBP: "£" };
+
+export function formatMoney(cents, currency = "USD") {
+  const sign = cents < 0 ? "-" : "";
+  const abs = Math.abs(cents);
+  return `${sign}${SYMBOLS[currency] ?? "$"}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
+}
+--- src/invoice.mjs
+import { taxFor, rateFor } from "./tax/index.mjs";
+import { formatMoney } from "./format/index.mjs";
+
+function quantityOf(item) {
+  return Math.max(0, item.qty);
+}
+
+function priceOf(item) {
+  return item.unitCents;
+}
+
+export function lineTotal(item) {
+  return quantityOf(item) * priceOf(item);
+}
+
+export function subtotal(items) {
+  return items.reduce((sum, item) => sum + lineTotal(item), 0);
+}
+
+export function invoiceTotal(items, bps) {
+  return items.reduce((sum, item) => sum + lineTotal(item) + taxFor(lineTotal(item), bps), 0);
+}
+
+export function summary(items, bps, currency = "USD") {
+  const sub = subtotal(items);
+  const total = invoiceTotal(items, bps);
+  return [`Subtotal: ${formatMoney(sub, currency)}`, `Tax: ${formatMoney(total - sub, currency)}`, `Total: ${formatMoney(total, currency)}`].join("\n");
+}
+
+export function summaryForRegion(items, region, currency = "USD") {
+  return summary(items, rateFor(region), currency);
+}
+--- test/format.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { formatMoney } from "../src/format/index.mjs";
+
+test("formatMoney writes dollars and cents", () => {
+  assert.equal(formatMoney(1234), "$12.34");
+  assert.equal(formatMoney(5), "$0.05");
+});
+
+test("formatMoney writes negative amounts", () => {
+  assert.equal(formatMoney(-250), "-$2.50");
+});
+
+test("formatMoney writes a currency symbol", () => {
+  assert.equal(formatMoney(1234, "EUR"), "€12.34");
+});
+=== Add customers
+--- src/customers.mjs
+export function customerLabel(customer) {
+  return `${customer.name} <${customer.email}>`;
+}
+
+export function byName(customers) {
+  return [...customers].sort((a, b) => a.name.localeCompare(b.name));
+}
+=== Test customers
+--- test/customers.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { customerLabel, byName } from "../src/customers.mjs";
+
+test("customerLabel shows the name and the email", () => {
+  assert.equal(customerLabel({ name: "Ann", email: "ann@example.com" }), "Ann <ann@example.com>");
+});
+
+test("byName sorts without changing the input", () => {
+  const input = [{ name: "Zed" }, { name: "Amy" }];
+  assert.deepEqual(byName(input).map((c) => c.name), ["Amy", "Zed"]);
+  assert.equal(input[0].name, "Zed");
+});
+=== Add invoice rows for the CSV export
+--- src/csv.mjs
+import { lineTotal } from "./invoice.mjs";
+import { taxFor } from "./tax/index.mjs";
+
+/** Quotes a CSV field when it holds a comma, a quote or a line break. */
+export function csvField(value) {
+  const text = String(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+export function toCsv(rows, columns) {
+  const lines = [columns.join(",")];
+  for (const row of rows) lines.push(columns.map((column) => csvField(row[column] ?? "")).join(","));
+  return lines.join("\n") + "\n";
+}
+
+/** One row for each invoice line with its number, its total and its tax in cents. */
+export function invoiceRows(items, bps) {
+  return items.map((item, index) => ({ line: index + 1, total: lineTotal(item), tax: taxFor(lineTotal(item), bps) }));
+}
+=== Test invoice rows
+--- test/rows.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { invoiceRows, toCsv } from "../src/csv.mjs";
+
+test("invoiceRows lists each line with its total and tax", () => {
+  const rows = invoiceRows([{ qty: 2, unitCents: 1000 }, { qty: 1, unitCents: 500 }], 1000);
+  assert.deepEqual(rows, [{ line: 1, total: 2000, tax: 200 }, { line: 2, total: 500, tax: 50 }]);
+});
+
+test("invoiceRows can be written as CSV", () => {
+  const rows = invoiceRows([{ qty: 1, unitCents: 1000 }], 1000);
+  assert.equal(toCsv(rows, ["line", "total", "tax"]), "line,total,tax\n1,1000,100\n");
+});
+=== Bump the version to 0.3.0
+--- package.json
+{
+  "name": "invoicer",
+  "version": "0.3.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}
+=== Update the changelog for 0.3.0
+--- CHANGELOG.md
+# Changelog
+
+## 0.3.0
+
+- Invoice numbers, late fees, split payments, weekend aware due dates, sorting, CSV export, customers.
+
+## 0.2.0
+
+- Currencies in summaries, tax regions, a due date helper, refunds, zero quantity lines.
+
+## 0.1.0
+
+- Money helpers, tax per line, percentage discounts, invoice summary text.

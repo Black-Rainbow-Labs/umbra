@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const workspace = process.env.WORKSPACE_DIR;
 const lib = await import(pathToFileURL(path.join(workspace, "src", "index.mjs")).href);
@@ -201,4 +202,145 @@ test("cli: existing usage and header errors are unchanged", () => {
 test("defaults: DEFAULT_CURRENCY is what blank rows get without --currency", () => {
   const file = writeCsv("sku,name,qty,price\nA-1,Bolt,1,2\n");
   assert.deepEqual(JSON.parse(run([file, "--format", "json"]).stdout).map((i) => i.currency), [DEFAULT_CURRENCY]);
+});
+
+const MIXED = [
+  { sku: "A-1", name: "Bolt", qty: 3, price: 19.99, currency: "USD" },
+  { sku: "B-2", name: "Nut", qty: 2, price: 150, currency: "JPY" },
+  { sku: "C-3", name: "Cap", qty: 4, price: 2.5, currency: "EUR" },
+  { sku: "D-4", name: "Pin", qty: 1, price: 0.1, currency: "USD" },
+  { sku: "E-5", name: "Gear", qty: 1, price: 7 },
+];
+const MIXED_LINES = [
+  "A-1 | Bolt | 3 x 19.99 USD = 59.97 USD",
+  "B-2 | Nut | 2 x 150 JPY = 300 JPY",
+  "C-3 | Cap | 4 x 2.50 EUR = 10.00 EUR",
+  "D-4 | Pin | 1 x 0.10 USD = 0.10 USD",
+  "E-5 | Gear | 1 x 7.00 USD = 7.00 USD",
+];
+
+test("convert: RATES_TO_USD and convert are exported", () => {
+  assert.deepEqual(lib.RATES_TO_USD, { USD: 1, EUR: 1.08, GBP: 1.27, JPY: 0.0067, CAD: 0.74 });
+  assert.equal(typeof lib.convert, "function");
+  assert.equal(typeof lib.renderSummary, "function");
+});
+
+test("convert: converts through USD and rounds to the decimals of the target", () => {
+  const { convert } = lib;
+  assert.equal(convert(100, "EUR", "USD"), 108);
+  assert.equal(convert(100, "USD", "JPY"), 14925);
+  assert.equal(convert(5000, "JPY", "EUR"), 31.02);
+  assert.equal(convert(19.99, "GBP", "CAD"), 34.31);
+  assert.equal(convert(1, "JPY", "USD"), 0.01);
+  assert.equal(convert(10, "EUR", "JPY"), 1612);
+  assert.equal(convert(7, "CAD", "GBP"), 4.08);
+  assert.equal(convert(59.97, "USD", "EUR"), 55.53);
+  assert.equal(convert(12.34, "EUR", "GBP"), 10.49);
+  assert.equal(convert(0.1, "USD", "JPY"), 15);
+});
+
+test("convert: same currency, zero and codes that need trimming or uppercasing", () => {
+  const { convert } = lib;
+  assert.equal(convert(2.5, "cad", "CAD"), 2.5);
+  assert.equal(convert(1234.56, "USD", "USD"), 1234.56);
+  assert.equal(convert(0, "EUR", "JPY"), 0);
+  assert.equal(convert(10, " eur ", " usd "), 10.8);
+});
+
+test("convert: an unsupported code throws an Error with the exact message", () => {
+  const { convert } = lib;
+  assert.throws(() => convert(1, "xyz", "USD"), (error) => error instanceof Error && error.message === "unsupported currency: XYZ");
+  assert.throws(() => convert(1, "USD", "abc"), (error) => error.message === "unsupported currency: ABC");
+  assert.throws(() => convert(1, "xyz", "abc"), (error) => error.message === "unsupported currency: XYZ");
+});
+
+test("report: totalIn adds one grand total line after the currency totals", () => {
+  const usd = renderReport(MIXED, { totalIn: "usd" });
+  assert.equal(usd, ["Inventory report", ...MIXED_LINES, "", "Total (EUR): 10.00", "Total (JPY): 300", "Total (USD): 67.07", "Total in USD: 79.88", "Items: 5", ""].join("\n"));
+  const jpy = renderReport(MIXED, { totalIn: " JPY" });
+  assert.equal(jpy, ["Inventory report", ...MIXED_LINES, "", "Total (EUR): 10.00", "Total (JPY): 300", "Total (USD): 67.07", "Total in JPY: 11922", "Items: 5", ""].join("\n"));
+  assert.equal(renderReport(MIXED), renderReport(MIXED, {}));
+  assert.ok(!renderReport(MIXED).includes("Total in"));
+});
+
+test("report: totalIn with no items adds nothing and an unsupported totalIn throws", () => {
+  assert.equal(renderReport([], { totalIn: "USD" }), "Inventory report\n\nItems: 0\n");
+  assert.throws(() => renderReport(MIXED, { totalIn: "xyz" }), (error) => error.message === "unsupported currency: XYZ");
+});
+
+test("summary: renderSummary lists totals by currency in alphabetical order and the item count", () => {
+  const expected = '{\n  "totals": {\n    "EUR": 10,\n    "JPY": 300,\n    "USD": 67.07\n  },\n  "items": 5\n}\n';
+  assert.equal(lib.renderSummary(MIXED), expected);
+  assert.equal(lib.renderSummary([]), '{\n  "totals": {},\n  "items": 0\n}\n');
+});
+
+test("summary: totalIn adds the converted grand total as the last key", () => {
+  const out = JSON.parse(lib.renderSummary(MIXED, { totalIn: "gbp" }));
+  assert.deepEqual(out, { totals: { EUR: 10, JPY: 300, USD: 67.07 }, items: 5, totalIn: { currency: "GBP", amount: 62.89 } });
+  assert.deepEqual(Object.keys(out), ["totals", "items", "totalIn"]);
+  assert.deepEqual(JSON.parse(lib.renderSummary(MIXED, { totalIn: "JPY" })).totalIn, { currency: "JPY", amount: 11922 });
+  assert.deepEqual(JSON.parse(lib.renderSummary([], { totalIn: "JPY" })), { totals: {}, items: 0 });
+  assert.throws(() => lib.renderSummary(MIXED, { totalIn: "xyz" }), (error) => error.message === "unsupported currency: XYZ");
+});
+
+test("cli: --total-in adds the grand total line to the report in both spellings", () => {
+  const file = writeCsv("sku,name,qty,price,currency\nA-1,Bolt,2,150,\nB-2,Nut,1,3,eur\n");
+  for (const args of [["--currency", "jpy", "--total-in=usd"], ["--total-in", "USD", "--currency=JPY"]]) {
+    const result = run([file, ...args]);
+    assert.equal(result.code, 0);
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout, "Inventory report\nA-1 | Bolt | 2 x 150 JPY = 300 JPY\nB-2 | Nut | 1 x 3.00 EUR = 3.00 EUR\n\nTotal (EUR): 3.00\nTotal (JPY): 300\nTotal in USD: 5.25\nItems: 2\n");
+  }
+});
+
+test("cli: --format summary prints the JSON summary and works with --total-in", () => {
+  const file = writeCsv("sku,name,qty,price,currency\nA-1,Bolt,2,150,\nB-2,Nut,1,3,eur\n");
+  const plain = run([file, "--format", "summary", "--currency", "CAD"]);
+  assert.equal(plain.code, 0);
+  assert.deepEqual(JSON.parse(plain.stdout), { totals: { CAD: 300, EUR: 3 }, items: 2 });
+  const withTotal = run(["--format=summary", file, "--currency", "CAD", "--total-in", "eur"]);
+  assert.equal(withTotal.code, 0);
+  assert.deepEqual(JSON.parse(withTotal.stdout), { totals: { CAD: 300, EUR: 3 }, items: 2, totalIn: { currency: "EUR", amount: 208.56 } });
+});
+
+test("cli: --total-in is ignored by the csv and json formats", () => {
+  const file = writeCsv("sku,name,qty,price,currency\nA-1,Bolt,2,1.5,eur\n");
+  assert.equal(run([file, "--format", "csv", "--total-in", "USD"]).stdout, "sku,name,qty,price,currency\nA-1,Bolt,2,1.50,EUR\n");
+  assert.equal(run([file, "--format", "json", "--total-in", "USD"]).code, 0);
+});
+
+test("cli: --total-in errors, checked after --currency", () => {
+  const file = writeCsv("sku,name,qty,price\nA-1,Bolt,1,2\n");
+  const bad = run([file, "--total-in", "xyz"]);
+  assert.deepEqual([bad.code, bad.stdout, bad.stderr], [2, "", "unsupported currency: XYZ\n"]);
+  const missing = run([file, "--total-in"]);
+  assert.deepEqual([missing.code, missing.stdout, missing.stderr], [2, "", "missing value for --total-in\n"]);
+  assert.equal(run([file, "--currency", "bad", "--total-in", "xyz"]).stderr, "unsupported currency: BAD\n");
+});
+
+test("cli: the usage text lists every option and an unknown format is still rejected", () => {
+  assert.equal(run([]).stderr, "usage: inventory <file> [--format csv|json|report|summary] [--currency CODE] [--total-in CODE]\n");
+  const file = writeCsv("sku,name,qty,price\nA-1,Bolt,1,2\n");
+  assert.equal(run([file, "--format", "xml"]).stderr, "unknown format: xml\n");
+  assert.equal(run([file, "--bogus"]).stderr, "unknown option: --bogus\n");
+});
+
+test("cli: validation errors are reported before any summary is written", () => {
+  const file = writeCsv("sku,name,qty,price,currency\nA-1,Bolt,1,2.5,jpy\n");
+  const result = run([file, "--format", "summary", "--total-in", "USD"]);
+  assert.deepEqual([result.code, result.stdout, result.stderr], [1, "", "line 2: price must be a whole number for JPY\n"]);
+});
+
+test("workspace tests: the updated suite passes and has at least 14 tests about the new behavior", () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const run = spawnSync("node", ["--test", "--test-reporter=tap"], { cwd: workspace, env, encoding: "utf8", timeout: 45000 });
+  const output = `${run.stdout || ""}${run.stderr || ""}`;
+  const tests = /^# tests (\d+)/m.exec(output);
+  const fail = /^# fail (\d+)/m.exec(output);
+  assert.ok(tests && fail, `the workspace tests did not run: ${output.slice(-300)}`);
+  assert.equal(Number(fail[1]), 0, "a workspace test fails");
+  assert.ok(Number(tests[1]) >= 14, `only ${tests[1]} tests`);
+  const text = fs.readdirSync(path.join(workspace, "test")).map((name) => fs.readFileSync(path.join(workspace, "test", name), "utf8")).join("\n");
+  assert.ok((text.match(/currency/gi) || []).length >= 10, "the tests do not cover currency");
 });

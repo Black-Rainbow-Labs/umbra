@@ -169,12 +169,15 @@ that list is empty for 3 reps.
 
 ## Known differences left as shipped
 
-- Umbra's bash tool times out a command after 30 seconds by default. pi's bash tool has no
-  default timeout. Both are left at their defaults; the eval measures the harnesses as shipped.
+- Umbra's bash tool times out a command after 120 seconds by default, and the model can ask for up
+  to 600 seconds on one command (task-2617, E9). Before that the limit was 30 seconds. pi's bash
+  tool has no default timeout. Both are left at their defaults; the eval measures the harnesses as
+  shipped.
 - pi asks for `max_tokens` 16000 (from `maxTokens` in `models.json`, the value in the user's own
   pi config). Umbra sends no `max_tokens`. The proxy does not change either.
-- pi's thinking level and Umbra's lack of a thinking setting do not matter here, because the proxy
-  sets `enable_thinking` on every request.
+- pi's thinking level and Umbra's `thinking` provider setting do not matter here, because the proxy
+  sets `enable_thinking` on every request. `EVAL_THINKING_OVERRIDE=0` turns that off for the
+  thinking policy runs, which are reported apart from the main comparison.
 
 ## The tasks
 
