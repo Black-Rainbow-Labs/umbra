@@ -142,7 +142,7 @@ fn a_reply_is_rendered_from_markdown_and_no_done_or_resume_line_is_printed() {
     let (output, code) = screen.finish(Duration::from_secs(10));
     assert_eq!(code, Some(0), "{output}");
     let main_screen = output.rsplit("\x1b[?1049l").next().unwrap();
-    assert!(main_screen.contains("trajectory ") && !main_screen.contains("--resume"), "the exit text is the trajectory line only: {main_screen:?}");
+    assert!(main_screen.contains("trajectory ") && !main_screen.contains("--resume") && !main_screen.contains('│'), "the exit text is the trajectory line only: {main_screen:?}");
     assert!(output.contains("\x1b[?1002l\x1b[?1000l"), "leaving turns mouse reporting off");
 }
 
@@ -634,4 +634,18 @@ fn durations_are_saved_and_an_old_trajectory_without_them_still_resumes() {
     assert!(frame.row_of("❯ go").is_some(), "{}", frame.text());
     screen.type_line("again");
     screen.wait_for("● resumed fine");
+}
+
+#[test]
+fn a_panic_leaves_the_alternate_screen_and_turns_mouse_reporting_off() {
+    let setup = Setup::new("fs-panic");
+    let model = setup.model("script.json", json!(["never"]));
+    let mut screen = setup.start(&["-m", &model, "-y", "--no-mcp"], &[("UMBRA_TEST_PANIC", "boom")]);
+    screen.wait_for("❯");
+    screen.type_line("boom");
+    let (output, code) = screen.finish(Duration::from_secs(10));
+    assert_ne!(code, Some(0), "{output}");
+    let after = output.rsplit("\x1b[?1049l").next().unwrap();
+    assert!(output.contains("\x1b[?1006l\x1b[?1002l\x1b[?1000l"), "mouse reporting is turned off");
+    assert!(after.contains("a test panic"), "the panic message is printed on the main screen: {after:?}");
 }

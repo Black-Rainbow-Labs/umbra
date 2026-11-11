@@ -328,8 +328,14 @@ fn run_session(args: &RunArgs, run: SessionRun, context: &RunContext, resumed: O
 fn finish_run(result: &RunResult, quiet: bool) -> i32 {
     // Back on the main screen first, so the trajectory line stays in the shell.
     screen::leave();
-    report(result, quiet);
-    finish_status(Phase::Finished);
+    if crate::utils::console::used_fullscreen() {
+        // The bar was drawn by the view; it must not be drawn again under the trajectory line.
+        finish_status(Phase::Finished);
+        report(result, quiet);
+    } else {
+        report(result, quiet);
+        finish_status(Phase::Finished);
+    }
     match result.exit_status.as_str() {
         status if is_success(status) => 0,
         INTERRUPTED_STATUS => 130,
@@ -715,6 +721,11 @@ fn first_task(args: &RunArgs, resumed: Option<&ResumedSession>, keep_open: bool,
             Input::Line(_) | Input::Interrupted if keep_open => continue,
             _ => bail!("no task given. Pass it as an argument or with -t"),
         };
+        // A test hook: this exact line makes the run panic, to check the panic path leaves the
+        // terminal usable.
+        if std::env::var("UMBRA_TEST_PANIC").is_ok_and(|v| v == typed) {
+            panic!("a test panic");
+        }
         match handle_line(&typed, context) {
             LineAction::SendToModel(task) => return Ok(FirstTask::Task { typed, task }),
             LineAction::Builtin(BuiltinCommand::Resume(Some(id))) => return Ok(FirstTask::Resume(id)),

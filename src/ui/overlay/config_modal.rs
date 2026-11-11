@@ -786,6 +786,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_row_of_the_box_is_as_wide_as_the_box() {
+        let mut modal = ConfigModal::open();
+        let ctx = LayoutCtx { color: true, now: std::time::Instant::now(), spinner: '⠋' };
+        for (width, height) in [(70, 18), (160, 50)] {
+            for row in modal.rows(width, height, &ctx) {
+                assert_eq!(visible_width(&row.text), width, "{:?}", ansi::plain(&row.text));
+            }
+        }
+    }
+
+    #[test]
+    fn a_cut_of_a_header_row_keeps_its_width() {
+        let info = crate::utils::banner::BannerInfo { version: "1".into(), model: "m".into(), folder: "f".into(), mode: "yolo".into(), skills: 1, mcp: vec![("", "off".into())], model_menu: true };
+        for row in crate::utils::banner::render_banner_step(&info, 200, true, 5) {
+            let base = ansi::fit(&row, 200);
+            assert_eq!(visible_width(&base), 200);
+            for left in [19, 20, 40] {
+                assert_eq!(visible_width(&ansi::slice(&base, 0, left)), left, "{:?}", ansi::plain(&base));
+                assert_eq!(visible_width(&ansi::slice(&base, left + 100, 200)), 200 - left - 100, "{:?}", ansi::plain(&base));
+            }
+        }
+    }
+
+    #[test]
     fn edits_are_laid_over_the_config_and_a_removed_key_is_gone() {
         let config = UmbraConfig::default();
         let mut edits = BTreeMap::new();

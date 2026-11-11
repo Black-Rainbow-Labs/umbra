@@ -78,7 +78,7 @@ macro_rules! s {
 
 const MODELS_AND_PROVIDERS: &[SettingSpec] = &[
     s!("model", Models, "Default model", "The provider/model used when none is chosen on the command line.", Model, Call),
-    s!("models", Models, "Named models", "Extra provider/model strings an editor offers in its model picker.", List, Call),
+    s!("models", Models, "Model list", "Extra provider/model strings offered in the model pickers.", List, Call),
     s!("models.*.provider", Models, "Provider", "The provider this named model uses.", Choice(KINDS), Call),
     s!("models.*.model", Models, "Model", "The model id sent to the provider.", Model, Call),
     s!("models.*.label", Models, "Label", "The name shown in pickers.", Text, Call),

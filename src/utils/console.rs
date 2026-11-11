@@ -192,6 +192,11 @@ pub fn start_fullscreen(wanted: bool, mouse: bool) -> bool {
     opened
 }
 
+/// True once the fullscreen view was opened in this run.
+pub fn used_fullscreen() -> bool {
+    USED_FULLSCREEN.load(Ordering::SeqCst)
+}
+
 /// Returns true when the status bar is on.
 pub fn status_bar_on() -> bool {
     FOOTER.lock().unwrap_or_else(|e| e.into_inner()).on
