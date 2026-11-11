@@ -34,6 +34,15 @@ number may be a digit string, so that assert was removed (the check is otherwise
 pi's cells for that task were run again. The other failed checks on that task were confirmed to
 follow from the prompt.
 
+## Session scenario fix
+
+interrupt-continue killed the agent 20 seconds into its first phase. Both agents now finish all ten
+files in 18 to 27 seconds, so the kill often came after the work was done and the cell failed with
+"first phase was not interrupted" (pi 1 of 3 passed, E1 0 of 3). The trigger is now
+`killWhenFiles: { dir: "out", count: 4 }`: the runner interrupts the agent when the fourth output
+file appears. The verifier is unchanged. The old cells for both agents are in
+`eval-runs/interrupt-continue-killafter20/`, and the task was run again for pi and E1.
+
 ## How a change is kept
 
 From the TDD's hill climb protocol: one change per commit, built with

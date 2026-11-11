@@ -7,6 +7,7 @@
  * @property {"new"|"resume"|"fork"} [mode] - start a new session, resume one, or fork one (default "new" for the first phase, "resume" after)
  * @property {number} [from] - index of the phase whose session is resumed or forked (default: the previous phase)
  * @property {number} [killAfterSeconds] - the runner kills the agent this many seconds into the phase
+ * @property {{dir: string, count: number}} [killWhenFiles] - the runner kills the agent once that workspace folder holds count files
  * @property {number} [contextWindow] - context window reported to the agent in this phase (overrides the task value)
  * @property {string} [label] - a short name for the phase, used in result.json
  */

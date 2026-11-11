@@ -219,7 +219,9 @@ records) and `taskDir`. In selftest it also has `selftest: true` and synthetic p
 A phased task replaces `prompt` with `phases`: a list of `{ label, prompt, mode, from,
 killAfterSeconds, contextWindow }`, where `mode` is `new`, `resume` or `fork`, `from` is the index
 of the phase whose session is resumed or forked, `killAfterSeconds` makes the runner kill the
-agent during that phase, and `contextWindow` overrides the task's window for that phase. Also:
+agent during that phase, `killWhenFiles: { dir, count }` kills it as soon as that workspace folder
+holds `count` files (a trigger tied to progress, so a faster model is still interrupted partway),
+and `contextWindow` overrides the task's window for that phase. Also:
 `mode: "branch"` with `at` continues the session of phase `from` from just before the user
 message that phase `at` sent (Umbra `--resume <id> --at <n> --fork`); `cutSessionBytes` cuts that
 many bytes off the end of the session file before the phase resumes it; `measureStoreWrites` and
