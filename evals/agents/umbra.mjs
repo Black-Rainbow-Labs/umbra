@@ -10,6 +10,15 @@ export const UMBRA_BIN = process.env.UMBRA_BIN || "umbra";
 const FORMAT_ERROR_PATTERNS = [/Error parsing tool call arguments/, /Missing 'command' argument/, /Unknown tool '/];
 
 /**
+ * Returns the top level config lines an experiment arm sets, from `UMBRA_EVAL_CONFIG` (TOML
+ * lines separated by `;`, for example `edit_tool = true; finish_check = false`). The run records
+ * them in run.json, so a run says which arm it measured.
+ */
+export function armSettings() {
+  return (process.env.UMBRA_EVAL_CONFIG || "").split(";").map((line) => line.trim()).filter(Boolean);
+}
+
+/**
  * Writes `<home>/.umbra/config.toml` with a provider that points at the measuring proxy.
  * The built in `local` provider points at port 8080, so the base URL is set explicitly.
  * @param input - the AdapterInput
@@ -17,7 +26,7 @@ const FORMAT_ERROR_PATTERNS = [/Error parsing tool call arguments/, /Missing 'co
 function writeHomeConfig(input) {
   const dir = path.join(input.homeDir, ".umbra");
   fs.mkdirSync(dir, { recursive: true });
-  const toml = [`model = "${PROVIDER}/${input.model}"`, "", `[providers.${PROVIDER}]`, `kind = "openai"`, `base_url = "${input.proxyBaseUrl}/v1"`, ""].join("\n");
+  const toml = [`model = "${PROVIDER}/${input.model}"`, ...armSettings(), "", `[providers.${PROVIDER}]`, `kind = "openai"`, `base_url = "${input.proxyBaseUrl}/v1"`, ""].join("\n");
   fs.writeFileSync(path.join(dir, "config.toml"), toml);
 }
 

@@ -35,13 +35,13 @@ function agentVersions() {
 }
 
 /**
- * Describes the Umbra build under test: the binary, and the git commit of the checkout these
- * evals live in, with a flag when its Rust sources have uncommitted changes.
+ * Describes the Umbra build under test: the binary, the git commit of the checkout these evals
+ * live in with a flag when its Rust sources have uncommitted changes, and the arm settings.
  */
 function umbraBuild() {
   const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
   const git = (args) => (spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", windowsHide: true }).stdout || "").trim();
-  return { bin: umbraAdapter.UMBRA_BIN, commit: git(["rev-parse", "--short", "HEAD"]), dirty: git(["status", "--porcelain", "--", "src", "Cargo.toml", "Cargo.lock"]) !== "" };
+  return { bin: umbraAdapter.UMBRA_BIN, commit: git(["rev-parse", "--short", "HEAD"]), dirty: git(["status", "--porcelain", "--", "src", "Cargo.toml", "Cargo.lock"]) !== "", settings: umbraAdapter.armSettings() };
 }
 
 /**
