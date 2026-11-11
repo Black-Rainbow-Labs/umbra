@@ -81,6 +81,8 @@ pub struct View {
     /// The position in `history` Up and Down are at, and the line being typed before that.
     pub history_pos: Option<(usize, Vec<char>)>,
     pub color: bool,
+    /// The newer version the update prompt was opened for, so it opens once per session.
+    pub update_offered: Option<String>,
     /// Where things were in the last frame, for mouse clicks and focus.
     pub frame: FrameInfo,
     mouse: MouseState,
@@ -123,6 +125,9 @@ impl View {
         }
         if !matches!(key, Key::WheelUp | Key::WheelDown) {
             self.selection = None;
+        }
+        if self.overlay.as_ref().is_some_and(|o| o.passes_typing()) && matches!(key, Key::Text(_) | Key::Paste(_) | Key::Backspace) {
+            self.overlay = None;
         }
         if self.overlay.is_some() {
             return self.overlay_key(&key);
@@ -219,14 +224,18 @@ impl View {
     pub fn activate(&mut self, target: Target) -> Vec<Effect> {
         match target {
             Target::Group(id) => {
+                let before = self.target_place(target);
                 if let Some(group) = self.transcript.group_mut(id) {
                     group.expanded = !group.expanded;
                 }
+                self.keep_place(target, before);
             }
             Target::Run(id, index) => {
+                let before = self.target_place(target);
                 if let Some(run) = self.transcript.group_mut(id).and_then(|g| g.runs.get_mut(index)) {
                     run.expanded = !run.expanded;
                 }
+                self.keep_place(target, before);
             }
             Target::McpErrors => self.mcp_errors_open = !self.mcp_errors_open,
             Target::Usage => self.usage_open = !self.usage_open,
@@ -247,6 +256,49 @@ impl View {
             }
         }
         Vec::new()
+    }
+
+    /// Where a target's row is: the rows from it to the bottom of the transcript, counting its own
+    /// row, and the transcript's total rows. None when no row has the target.
+    /// @param target - the element
+    fn target_place(&mut self, target: Target) -> Option<(usize, usize)> {
+        let width = self.size.0.max(10);
+        let ctx = self.ctx();
+        let mut position = None;
+        let mut total = 0;
+        for index in 0..self.transcript.len() {
+            let rows = self.transcript.rows_at(index, width, &ctx);
+            if position.is_none() {
+                position = rows.iter().position(|r| r.target == Some(target)).map(|at| total + at);
+            }
+            total += rows.len();
+        }
+        position.map(|p| (total - p, total))
+    }
+
+    /// After an expand or a collapse, scrolls so the toggled header stays on the screen row it was
+    /// on. A collapse while scrolled up takes the removed rows off the scroll, so the view never
+    /// points past the top of the shorter transcript and the screen is never left empty
+    /// (task-2625). An expand at the bottom keeps following the bottom unless the header would
+    /// leave the top of the screen, and then the header becomes the top row.
+    /// @param target - the toggled element
+    /// @param before - its place before the toggle
+    fn keep_place(&mut self, target: Target, before: Option<(usize, usize)>) {
+        let (Some((_, total_before)), Some((offset_after, total_after))) = (before, self.target_place(target)) else { return };
+        let room = self.frame.room.max(1);
+        if self.scroll > 0 || total_after < total_before {
+            self.scroll = (self.scroll + total_after).saturating_sub(total_before);
+        } else if offset_after > room {
+            self.scroll = offset_after - room;
+        }
+        self.scroll = self.scroll.min(total_after.saturating_sub(room));
+    }
+
+    /// Scrolls so a target's row is on screen.
+    /// @param target - the element
+    #[cfg(test)]
+    pub fn scroll_to_target(&mut self, target: Target) {
+        super::frame::scroll_to(self, target);
     }
 
     /// The commands the popup shows for the input, when it is open: the input starts with `/`,
@@ -535,6 +587,18 @@ impl View {
         self.finish_selection()
     }
 
+    /// Opens the update prompt when a check found a newer release, the agent is idle, nothing else
+    /// is open, and the person is not typing. It opens once per session.
+    pub fn offer_update(&mut self) {
+        let Some(version) = crate::services::update_service::available() else { return };
+        let idle = !crate::services::work_clock::is_running() && !self.prompt.is_empty() && self.prompt_takes_commands();
+        if !idle || self.overlay.is_some() || !self.input.is_empty() || self.update_offered.as_deref() == Some(version.as_str()) {
+            return;
+        }
+        self.update_offered = Some(version.clone());
+        self.overlay = Some(Box::new(super::overlay::update_prompt::UpdatePrompt::new(&version)));
+    }
+
     /// True when anything on screen changes with time, so the ticker keeps drawing.
     /// @param now - the time
     pub fn animating(&self, now: Instant) -> bool {
@@ -600,5 +664,76 @@ mod tests {
         view.apply_key(Key::Down);
         view.apply_key(Key::Down);
         assert_eq!(view.input.iter().collect::<String>(), "draft");
+    }
+
+    /// A view with a few lines of text, then one finished command whose output is `lines` rows,
+    /// then a few more lines, drawn once at 40 by 20.
+    fn view_with_long_output(lines: usize) -> (View, u64) {
+        use super::super::block::{CommandRun, RunKind, RunState};
+        let mut view = View::new(false);
+        view.size = (40, 20);
+        view.prompt = "❯ ".into();
+        for i in 0..30 {
+            view.push_block(Block::Text(format!("before {i}")));
+        }
+        let output: String = (0..lines).map(|i| format!("output line {i}\n")).collect();
+        let run = CommandRun { kind: RunKind::Shell { command: "cat big".into() }, state: RunState::Done, output, exit_code: Some(0), error: None, duration: Some(Duration::from_secs(1)), expanded: false };
+        let (id, _) = view.transcript.add_run(run);
+        view.push_block(Block::Text("after".into()));
+        super::super::frame::render_frame(&mut view, 40, 20);
+        (view, id)
+    }
+
+    /// The screen rows of the transcript part of a frame, as plain text.
+    fn transcript_rows(view: &mut View) -> Vec<String> {
+        let frame = super::super::frame::render_frame(view, 40, 20);
+        let rows: Vec<String> = frame.split("\r\n").map(crate::utils::ansi::plain).collect();
+        rows[..view.frame.room].to_vec()
+    }
+
+    #[test]
+    fn collapsing_a_long_output_while_scrolled_into_it_keeps_the_screen_full() {
+        let (mut view, id) = view_with_long_output(200);
+        view.activate(Target::Group(id));
+        view.activate(Target::Run(id, 0));
+        super::super::frame::render_frame(&mut view, 40, 20);
+        view.scroll_by(150);
+        super::super::frame::render_frame(&mut view, 40, 20);
+        view.scroll_to_target(Target::Group(id));
+        view.activate(Target::Group(id));
+        let rows = transcript_rows(&mut view);
+        assert!(rows.iter().all(|r| !r.trim().is_empty() || r.is_empty()), "{rows:?}");
+        let filled = rows.iter().filter(|r| !r.trim().is_empty()).count();
+        assert!(filled >= rows.len() - 1, "only {filled} of {} rows drawn: {rows:?}", rows.len());
+    }
+
+    #[test]
+    fn a_collapse_keeps_the_header_on_its_row() {
+        let (mut view, id) = view_with_long_output(200);
+        view.activate(Target::Group(id));
+        view.activate(Target::Run(id, 0));
+        super::super::frame::render_frame(&mut view, 40, 20);
+        view.scroll_by(150);
+        view.scroll_to_target(Target::Run(id, 0));
+        transcript_rows(&mut view);
+        let row_of = |view: &View| view.frame.hits.iter().find(|h| h.target == Target::Run(id, 0)).map(|h| h.row);
+        let before = row_of(&view).expect("the run header is on screen");
+        view.activate(Target::Run(id, 0));
+        transcript_rows(&mut view);
+        assert_eq!(row_of(&view), Some(before));
+    }
+
+    #[test]
+    fn the_status_bar_is_the_last_row_and_the_input_is_above_it() {
+        let mut view = View::new(false);
+        view.size = (60, 12);
+        view.prompt = "❯ ".into();
+        view.status = Some(StatusInfo { model: "test-model".into(), ..Default::default() });
+        view.push_block(Block::Text("hello".into()));
+        view.insert("typed text");
+        let frame = super::super::frame::render_frame(&mut view, 60, 12);
+        let rows: Vec<String> = frame.split("\r\n").map(crate::utils::ansi::plain).collect();
+        assert!(rows[rows.len() - 1].contains("test-model"), "{rows:?}");
+        assert!(rows[rows.len() - 2].starts_with("❯ typed text"), "{rows:?}");
     }
 }

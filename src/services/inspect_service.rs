@@ -66,7 +66,7 @@ pub fn list_mcp(args: &McpArgs) -> Result<()> {
     let (config, cwd) = prepare_config(&args.inspect.common)?;
     let context = load_run_context(&config, &discovery_context(&config, &cwd));
     if !args.connect {
-        return print_mcp_definitions(&context.mcp_servers, args.inspect.json);
+        return print_mcp_definitions(&context.mcp_servers, &config.mcp, args.inspect.json);
     }
     let manager = McpManager::connect_all(&context.mcp_servers, &config.mcp, &umbra_home().join("logs").join("mcp"));
     let tools = manager.tools();
@@ -89,18 +89,21 @@ pub fn list_mcp(args: &McpArgs) -> Result<()> {
     Ok(())
 }
 
-/// Prints the MCP definitions without starting them. Environment values are never printed.
+/// Prints the MCP definitions without starting them, each with whether the config lets it start.
+/// Environment values are never printed.
 /// @param servers - the definitions
+/// @param settings - the MCP settings, for `on` and `off`
 /// @param as_json - print JSON
-fn print_mcp_definitions(servers: &[crate::models::context::McpServerDefinition], as_json: bool) -> Result<()> {
+fn print_mcp_definitions(servers: &[crate::models::context::McpServerDefinition], settings: &crate::models::config::McpConfig, as_json: bool) -> Result<()> {
+    let state = |name: &str| if settings.enabled && crate::services::mcp::is_selected(name, settings) { "on" } else { "off" };
     if as_json {
-        let list: Vec<_> = servers.iter().map(|s| json!({ "name": s.name, "transport": describe_transport(&s.transport), "source": s.source, "scope": s.scope, "origin": s.origin })).collect();
+        let list: Vec<_> = servers.iter().map(|s| json!({ "name": s.name, "enabled": state(&s.name) == "on", "transport": describe_transport(&s.transport), "source": s.source, "scope": s.scope, "origin": s.origin })).collect();
         println!("{}", serde_json::to_string_pretty(&list)?);
         return Ok(());
     }
-    println!("{} MCP servers (first one found wins for each name)\n", servers.len());
+    println!("{} MCP servers (first one found wins for each name). `umbra mcp enable <name>` and `umbra mcp disable <name>` change which start.\n", servers.len());
     for server in servers {
-        println!("{:<20} {:<15} {:<8?} {}\n    {}", server.name, server.source, server.scope, server.origin.display(), describe_transport(&server.transport));
+        println!("{:<20} {:<4} {:<15} {:<8?} {}\n    {}", server.name, state(&server.name), server.source, server.scope, server.origin.display(), describe_transport(&server.transport));
     }
     Ok(())
 }

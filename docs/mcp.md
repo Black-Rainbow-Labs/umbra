@@ -44,21 +44,39 @@ The `mcp` row of the header reads `starting 2 of 5` while any server starts, the
 
 ### The MCP panel
 
-`/mcp`, or a click on the `mcp` row of the header, opens a panel with one row for each server: a
-toggle, the name, the state, the number of tools, and for a failed server the first line of the
-error.
+`/mcp`, or a click on the `mcp` row of the header, opens a panel with a switch between **this
+session** and **all sessions**, then one row for each server: a checkbox, the name, the state, the
+number of tools, and for a failed server the first line of the error.
+
+```
+ MCP servers                       Space toggles · s switches scope · r restarts · Esc closes
+   applies to  (•) this session   ( ) all sessions
+ › [x] chordical        running    42 tools
+   [ ] blender          off
+```
 
 | Key | What it does |
 |---|---|
 | Up, Down | Move between servers |
-| Space, or a click | Turn the server on or off for this session |
+| `s`, Left, Right, or a click on the `applies to` row | Switch between this session and all sessions |
+| Space, or a click | Tick or clear the selected server's checkbox |
 | `r` | Start a failed server again |
 | Enter | On a failed server, show the full error and the path of its log file |
 | Esc | Close the panel |
 
-A server turned off is closed, and its tools are not sent with the next model call. The servers
-turned off are saved with the session, so `umbra resume` turns them off again. The config file is
-not changed. When the model calls a tool of a server that is not ready, the result says why: `(it is
+**This session**: the checkbox shows whether the server runs in this session. Clearing it closes
+the server, and its tools are not sent with the next model call. The servers turned off are saved
+with the session, so `umbra resume` turns them off again. The config file is not changed.
+
+**All sessions**: the checkbox shows whether the config files let the server start. Changing it
+writes `~/.umbra/config.toml` and turns the server on or off in this session too. Off adds the name
+to `mcp.disabled` and takes it out of `mcp.only`. On takes the name out of `mcp.disabled` and, when
+`mcp.only` is not empty, adds it to `mcp.only`. When the project's `.umbra/config.toml` still turns
+the server off, the row says `off in the project file`.
+
+The same change from the command line: `umbra mcp disable <name>` and `umbra mcp enable <name>`
+(`--project` for the project file), and `umbra session mcp off <name>` for a running session only.
+`umbra mcp` lists the servers with `on` or `off` for each. When the model calls a tool of a server that is not ready, the result says why: `(it is
 still starting)`, `(it failed to start: <first line of the error>)` or `(it is turned off for this
 session)`.
 

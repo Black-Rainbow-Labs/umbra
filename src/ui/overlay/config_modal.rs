@@ -42,10 +42,11 @@ enum Field {
     Setting { path: String, spec: &'static SettingSpec },
     /// A heading, such as a provider's name.
     Heading(String),
-    /// A line to read, such as an MCP server and its file.
-    Info(String),
     /// A button.
     Button { label: String, action: Button },
+    /// An MCP server found in another tool's config, with a checkbox for every session and the
+    /// file it came from.
+    Server { name: String, origin: String },
 }
 
 /// What a button does.
@@ -159,10 +160,10 @@ impl ConfigModal {
             Section::Discovery => self.expanded_fields(Section::Discovery, "sources"),
             Section::Templates => self.expanded_fields(Section::Templates, "templates"),
             Section::Mcp => {
-                let mut rows = plain_fields(Section::Mcp);
-                rows.push(Field::Heading("Servers found".into()));
+                let mut rows: Vec<Field> = plain_fields(Section::Mcp).into_iter().filter(|f| !matches!(f, Field::Setting { path, .. } if path == "mcp.only" || path == "mcp.disabled")).collect();
+                rows.push(Field::Heading("Servers · Space turns one on or off for every session · Ctrl+S saves".into()));
                 for (name, origin) in live::mcp_origins() {
-                    rows.push(Field::Info(format!("{name:<16} {origin}")));
+                    rows.push(Field::Server { name, origin });
                 }
                 rows
             }
@@ -221,6 +222,28 @@ impl ConfigModal {
         rows
     }
 
+    /// A list setting's value with the unsaved changes, such as `mcp.only`.
+    /// @param path - the setting path
+    fn list_value(&self, path: &str) -> Vec<String> {
+        self.value(path).and_then(|v| v.as_array().map(|a| a.iter().filter_map(|i| i.as_str().map(String::from)).collect())).unwrap_or_default()
+    }
+
+    /// Whether an MCP server starts in every new session, with the unsaved changes.
+    /// @param name - the server
+    fn server_on(&self, name: &str) -> bool {
+        let settings = crate::models::config::McpConfig { only: self.list_value("mcp.only"), disabled: self.list_value("mcp.disabled"), ..Default::default() };
+        crate::services::mcp::is_selected(name, &settings)
+    }
+
+    /// Flips an MCP server's checkbox: stages new `mcp.only` and `mcp.disabled` lists.
+    /// @param name - the server
+    fn toggle_server(&mut self, name: &str) {
+        let on = !self.server_on(name);
+        let (only, disabled) = crate::services::mcp_settings_service::server_lists(&self.list_value("mcp.only"), &self.list_value("mcp.disabled"), name, on);
+        self.edits.insert("mcp.only".into(), Some(Value::from(only)));
+        self.edits.insert("mcp.disabled".into(), Some(Value::from(disabled)));
+    }
+
     /// Where a value comes from, as a short tag.
     /// @param path - the setting path
     fn origin_tag(&self, path: &str) -> &'static str {
@@ -274,7 +297,8 @@ impl ConfigModal {
                 }
             },
             Field::Button { action, .. } => self.press(action),
-            Field::Heading(_) | Field::Info(_) => {}
+            Field::Server { name, .. } => self.toggle_server(&name),
+            Field::Heading(_) => {}
         }
     }
 
@@ -400,13 +424,33 @@ impl ConfigModal {
                 self.saved_later.push(path.clone());
             }
         }
+        let effects = server_effects(&self.config, &updated);
         self.edits.clear();
         self.config = updated.clone();
         live::set_config(updated.clone());
         live::request(UiRequest::ApplyConfig(Box::new(updated)));
         self.message = Some((format!("Saved to {}.", file.display()), false));
-        Outcome::Keep
+        if effects.is_empty() { Outcome::Keep } else { Outcome::Effects(effects) }
     }
+}
+
+/// The work that turns MCP servers on or off in the running session after a save changed whether
+/// they start in every session.
+/// @param before - the config before the save
+/// @param after - the config after it
+fn server_effects(before: &UmbraConfig, after: &UmbraConfig) -> Vec<super::Effect> {
+    let mut effects: Vec<super::Effect> = Vec::new();
+    for (name, _) in live::mcp_origins() {
+        let on = crate::services::mcp::is_selected(&name, &after.mcp);
+        if crate::services::mcp::is_selected(&name, &before.mcp) != on {
+            effects.push(Box::new(move || {
+                if let Some(manager) = live::mcp() {
+                    manager.set_enabled(&name, on);
+                }
+            }));
+        }
+    }
+    effects
 }
 
 /// Lays changes over a config: each path is set in the config's JSON form and the result is read
@@ -536,7 +580,7 @@ impl ConfigModal {
             let moved = if down { (next + 1 < fields.len()).then(|| next + 1) } else { next.checked_sub(1) };
             let Some(index) = moved else { break };
             next = index;
-            if matches!(fields[next], Field::Setting { .. } | Field::Button { .. }) {
+            if matches!(fields[next], Field::Setting { .. } | Field::Button { .. } | Field::Server { .. }) {
                 self.field = next;
                 break;
             }
@@ -545,7 +589,7 @@ impl ConfigModal {
 
     /// Selects the first field that can be edited.
     fn first_field(&mut self) {
-        self.field = self.fields().iter().position(|f| matches!(f, Field::Setting { .. } | Field::Button { .. })).unwrap_or(0);
+        self.field = self.fields().iter().position(|f| matches!(f, Field::Setting { .. } | Field::Button { .. } | Field::Server { .. })).unwrap_or(0);
     }
 }
 
@@ -700,8 +744,12 @@ impl ConfigModal {
         let marker = if selected { "›" } else { " " };
         let text = match field {
             Field::Heading(text) => return paint(ctx, "1", &format!(" {text}")),
-            Field::Info(text) => return paint(ctx, "90", &format!("   {}", cut_to(text, width.saturating_sub(4)))),
             Field::Button { label, .. } => format!(" {marker} [{label}]"),
+            Field::Server { name, origin } => {
+                let checkbox = if self.server_on(name) { "[x]" } else { "[ ]" };
+                let left = format!(" {marker} {checkbox} {:<18} ", cut_to(name, 18));
+                format!("{left}{}", paint(ctx, "90", &cut_to(origin, width.saturating_sub(visible_width(&left) + 1))))
+            }
             Field::Setting { path, spec } => {
                 let value = display_value(spec, self.value(path).as_ref());
                 let shown = match spec.kind {
@@ -821,5 +869,23 @@ mod tests {
         let mut wrong = BTreeMap::new();
         wrong.insert("step_limit".to_string(), Some(Value::String("abc".into())));
         assert!(apply_edits(&config, &wrong).is_err());
+    }
+
+    #[test]
+    fn the_mcp_section_has_a_checkbox_per_server_in_place_of_the_lists() {
+        live::set_mcp_origins(vec![("blender".into(), "~/.claude.json".into()), ("github".into(), "~/.claude.json".into())]);
+        let mut modal = ConfigModal { config: UmbraConfig::default(), user_file: PathBuf::new(), project_file: PathBuf::new(), scope: Scope::User, section: Section::ALL.iter().position(|s| *s == Section::Mcp).unwrap(), in_fields: true, field: 0, edits: BTreeMap::new(), saved_later: Vec::new(), editor: None, chooser: None, message: None, closing: false, test: Arc::new(Mutex::new(TestRun::default())) };
+        let fields = modal.fields();
+        assert!(!fields.iter().any(|f| matches!(f, Field::Setting { path, .. } if path == "mcp.only" || path == "mcp.disabled")));
+        let blender = fields.iter().position(|f| matches!(f, Field::Server { name, .. } if name == "blender")).expect("a blender row");
+        assert!(modal.server_on("blender"));
+        modal.field = blender;
+        modal.activate();
+        assert!(!modal.server_on("blender"));
+        assert!(modal.server_on("github"));
+        assert_eq!(modal.edits.get("mcp.disabled"), Some(&Some(Value::from(vec!["blender"]))));
+        modal.activate();
+        assert!(modal.server_on("blender"));
+        assert_eq!(modal.edits.get("mcp.disabled"), Some(&Some(Value::from(Vec::<String>::new()))));
     }
 }

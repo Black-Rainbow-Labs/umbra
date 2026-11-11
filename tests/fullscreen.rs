@@ -134,7 +134,7 @@ fn a_reply_is_rendered_from_markdown_and_no_done_or_resume_line_is_printed() {
     screen.type_line("fix it");
     let frame = screen.wait_for("● The parser drops the last token.");
     assert!(frame.row_of("❯ fix it").is_some(), "{}", frame.text());
-    let status = &frame.rows[frame.rows.len() - 2];
+    let status = frame.status();
     assert!(has(&frame, r"\d+:\d\d"), "the status bar has the agent time: {status}");
     for gone in ["✔ Done", "--resume", "waiting for you", "left before compaction", "step "] {
         assert!(!frame.text().contains(gone), "{gone}:\n{}", frame.text());
@@ -229,6 +229,28 @@ fn a_server_turned_off_in_the_panel_has_no_tools_in_the_next_request() {
 }
 
 #[test]
+fn a_server_turned_off_for_all_sessions_is_written_to_the_user_config() {
+    let setup = Setup::new("fs-mcp-all");
+    let config = setup.mcp_config("ok", 20);
+    let model = setup.model("script.json", json!(["one"]));
+    let mut screen = setup.start(&["-m", &model, "-y", "-c", &config], &[]);
+    screen.wait_for("mcp     1 running");
+    screen.type_line("/mcp");
+    screen.wait_for("(•) this session");
+    screen.press("Right");
+    screen.wait_for("(•) all sessions");
+    screen.press("Space");
+    let frame = screen.wait_for("mcp     0 running · 1 off");
+    assert!(frame.text().contains("[ ] fake"), "{}", frame.text());
+    let user = std::fs::read_to_string(setup.scratch.path("home/.umbra/config.toml")).unwrap();
+    assert!(user.contains("disabled = [\"fake\"]"), "{user}");
+    screen.press("Space");
+    screen.wait_for("mcp     1 running");
+    let user = std::fs::read_to_string(setup.scratch.path("home/.umbra/config.toml")).unwrap();
+    assert!(user.contains("disabled = []"), "{user}");
+}
+
+#[test]
 fn the_agent_time_counts_only_while_the_agent_works() {
     let setup = Setup::new("fs-clock");
     let model = setup.model("script.json", json!([{ "content": "first", "sleep_ms": 1300 }, { "content": "second", "sleep_ms": 1300 }]));
@@ -315,7 +337,7 @@ fn with_the_mouse_off_no_mouse_mode_is_sent_and_the_keyboard_still_expands_a_gro
 /// The agent time in the status bar, in seconds.
 /// @param frame - the frame
 fn agent_time(frame: &Frame) -> u64 {
-    let status = &frame.rows[frame.rows.len() - 2];
+    let status = frame.status();
     let found = regex::Regex::new(r"(\d+):(\d\d)").unwrap().captures_iter(status).last().unwrap_or_else(|| panic!("no time in {status}"));
     found[1].parse::<u64>().unwrap() * 60 + found[2].parse::<u64>().unwrap()
 }

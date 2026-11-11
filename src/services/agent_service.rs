@@ -65,6 +65,8 @@ pub enum NextSession {
     Clear,
     /// The saved session with this id.
     Resume(String),
+    /// A newer Umbra was installed: start it and resume this session.
+    Restart,
 }
 
 /// How a run starts: a new task, or a saved session with the next task.
@@ -152,6 +154,8 @@ pub struct Agent {
     next: Option<NextSession>,
     /// Set by `/quit` typed while the agent works: the run ends before the next step.
     quit_requested: bool,
+    /// Set by `/update` typed while the agent works: the update runs when the turn ends.
+    update_after_turn: bool,
     /// The MCP servers whose failure was already printed in the inline view.
     announced_failures: BTreeSet<String>,
     /// The background request for the session's title, after the first turn.
@@ -188,7 +192,7 @@ impl Agent {
         let mcp = &parts.config.mcp;
         let deferred = !mcp_tools.is_empty() && should_defer(mcp.defer_tools, mcp_tokens, window, mcp.defer_ratio);
         let compaction = CompactionState { window: Some(window), ..Default::default() };
-        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, announced_failures: BTreeSet::new(), title_job: None, titled: false };
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false };
         agent.rebuild_tools();
         agent
     }
@@ -245,6 +249,7 @@ impl Agent {
     /// Applies what the fullscreen view asked for since the last step: another model, another
     /// mode, or the end of the session.
     fn apply_ui_requests(&mut self) {
+        self.apply_control_requests();
         if !self.parts.interaction.interactive {
             return;
         }
@@ -256,6 +261,46 @@ impl Agent {
                 UiRequest::ApplyConfig(config) => self.apply_config(*config),
             }
         }
+    }
+
+    /// Applies the commands `umbra session` sent to this session through its control folder, then
+    /// writes the session's state again so `umbra session status` sees the result.
+    fn apply_control_requests(&mut self) {
+        use super::control_service::ControlRequest;
+        let requests = super::control_service::take_requests();
+        if requests.is_empty() {
+            return;
+        }
+        for request in requests {
+            match request {
+                ControlRequest::Model { name } => self.switch_model(&name),
+                ControlRequest::Mode { mode } => self.running_command(BuiltinCommand::Mode(Some(mode))),
+                ControlRequest::Mcp { name, on } => {
+                    self.parts.mcp.set_enabled(&name, on);
+                    self.notice(Tone::Info, "mcp", &format!("MCP server {name} {} for this session", if on { "on" } else { "off" }));
+                }
+                ControlRequest::Compact { focus } => {
+                    self.compact_by_summary(CompactionReason::Manual, &focus);
+                }
+                ControlRequest::Quit => self.quit_requested = true,
+            }
+        }
+        self.publish_state();
+    }
+
+    /// Writes what the session uses now to its control folder, for `umbra session status`.
+    fn publish_state(&self) {
+        let mcp = self.parts.mcp.snapshot().into_iter().map(|(name, state)| {
+            let word = match state {
+                super::mcp::ServerState::Off => "off",
+                super::mcp::ServerState::Starting { .. } => "starting",
+                super::mcp::ServerState::Ready { .. } => "running",
+                super::mcp::ServerState::Failed { .. } => "failed",
+            };
+            (name, word.to_string())
+        }).collect();
+        let state = super::control_service::SessionState { id: self.parts.session.id.clone(), cwd: self.parts.session.cwd.clone(), model: self.parts.config.model.clone(), mode: crate::ui::overlay::pickers::mode_name(self.parts.interaction.mode).to_string(), mcp, ..Default::default() };
+        super::control_service::write_state(state);
     }
 
     /// Applies settings saved in the configuration modal. Settings that take effect in the open
@@ -280,6 +325,10 @@ impl Agent {
         let provider_changed = next.model != old.model || serde_json::to_value(&next.providers).ok() != serde_json::to_value(&old.providers).ok() || next.models != old.models;
         self.parts.interaction.mode = next.mode;
         console::set_verbose(next.verbose);
+        if next.syntax_highlight != old.syntax_highlight {
+            crate::ui::highlight::set_enabled(next.syntax_highlight);
+            crate::utils::screen::with_transcript(|t| t.forget_layouts());
+        }
         let model = next.model.clone();
         self.parts.config = next;
         self.compaction.window = None;
@@ -387,6 +436,8 @@ impl Agent {
             }
         }
         self.save();
+        super::control_service::open(&self.parts.session.id);
+        self.publish_state();
         self.show_status(Phase::Starting);
         // Read the terminal from the start, so a line typed while the first steps run is queued
         // for the next model call rather than left waiting until the run ends.
@@ -542,6 +593,7 @@ impl Agent {
     /// Stops the environment and the MCP servers.
     pub fn close(&mut self) {
         work_clock::stop();
+        super::control_service::close();
         self.parts.environment.close();
         self.parts.mcp.close();
     }
@@ -574,6 +626,9 @@ impl Agent {
     /// the same conversation. `/compact` compacts and asks again. Returns true when there is one.
     fn follow_up(&mut self) -> bool {
         self.show_status(Phase::Waiting);
+        if std::mem::take(&mut self.update_after_turn) && self.run_update() {
+            return false;
+        }
         while let Some(line) = self.parts.interaction.follow_up_task() {
             self.apply_ui_requests();
             let task = match handle_line(&line, &self.parts.context) {
@@ -608,9 +663,34 @@ impl Agent {
                 return Some(true);
             }
             BuiltinCommand::Quit => return Some(true),
+            BuiltinCommand::Update => {
+                if self.run_update() {
+                    return Some(true);
+                }
+            }
             other => self.running_command(other),
         }
         Some(false)
+    }
+
+    /// Installs the newest release with the session saved first. Returns true when it was
+    /// installed and the run should end so the new binary starts and resumes this session. A
+    /// failure is shown and the session carries on with the old binary.
+    fn run_update(&mut self) -> bool {
+        self.save();
+        self.notice(Tone::Info, "update", "installing the newest Umbra release");
+        let result = super::update_service::install(None, &mut |line| show_event(Tone::Info, "·", line));
+        match result {
+            Ok(version) => {
+                self.notice(Tone::Info, "update", &format!("installed {version}; restarting into this session"));
+                self.next = Some(NextSession::Restart);
+                true
+            }
+            Err(error) => {
+                self.notice(Tone::Failure, "update", &format!("the update was not installed: {error:#}"));
+                false
+            }
+        }
     }
 
     /// Runs a built in command that works the same while the agent is idle or working: the mode
@@ -628,6 +708,10 @@ impl Agent {
             },
             BuiltinCommand::Model(Some(name)) => self.switch_model(&name),
             BuiltinCommand::Help => self.notice(Tone::Info, "help", &super::command_service::help_text()),
+            BuiltinCommand::Update => {
+                self.update_after_turn = true;
+                self.notice(Tone::Info, "update", "Umbra updates and restarts when this turn ends");
+            }
             BuiltinCommand::Clear | BuiltinCommand::Resume(_) => self.notice(Tone::Warning, "command", "wait for the agent to finish, or press Ctrl+C, before starting another session"),
             other => self.notice(Tone::Info, "command", &format!("{} opens in the fullscreen view", command_name(&other))),
         }
@@ -643,6 +727,7 @@ impl Agent {
             work_clock::start();
         }
         self.apply_ui_requests();
+        self.publish_state();
         self.finish_title_job(false);
         if self.quit_requested {
             return Ok(Step::Exit("UserQuit".into(), String::new()));
@@ -1292,6 +1377,7 @@ fn command_name(command: &BuiltinCommand) -> &'static str {
         BuiltinCommand::Resume(_) => "/resume",
         BuiltinCommand::Skills => "/skills",
         BuiltinCommand::Help => "/help",
+        BuiltinCommand::Update => "/update",
         BuiltinCommand::Quit => "/quit",
     }
 }

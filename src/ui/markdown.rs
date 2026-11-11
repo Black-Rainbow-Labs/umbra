@@ -731,7 +731,8 @@ fn place_word(w: &mut Wrapper, text: &str, style: &Style) {
     }
 }
 
-/// Adds the rows of a finished code block: the language name, then each code line cut at the width.
+/// Adds the rows of a finished code block: the language name, then each code line cut at the width,
+/// with syntax colors when color is on and the highlighter knows the language.
 /// @param lay - the layout state
 fn finish_code(lay: &mut Layout) {
     let Some((buffer, lang)) = lay.code.take() else { return };
@@ -747,8 +748,35 @@ fn finish_code(lay: &mut Layout) {
         lines.pop();
     }
     let inner = avail(lay).saturating_sub(2).max(2);
-    for line in lines {
-        emit_code_line(lay, line, inner, &border);
+    let colored = if color && super::highlight::enabled() { super::highlight::highlight(&lines.join("\n"), &lang) } else { None };
+    match colored {
+        Some(colored) => {
+            for spans in colored {
+                emit_colored_code_line(lay, &spans, inner, &border);
+            }
+        }
+        None => {
+            for line in lines {
+                emit_code_line(lay, line, inner, &border);
+            }
+        }
+    }
+}
+
+/// Adds one syntax colored code line as one row, or several rows when it is longer than the width.
+/// @param lay - the layout state
+/// @param spans - the line's colored pieces
+/// @param inner - the columns inside the border
+/// @param border - the painted border text
+fn emit_colored_code_line(lay: &mut Layout, spans: &[super::highlight::Span], inner: usize, border: &str) {
+    let mark = dim_text("↪", lay.color);
+    for (index, chunk) in super::highlight::wrap(spans, inner, inner.saturating_sub(1)).into_iter().enumerate() {
+        let body = super::highlight::paint(&chunk);
+        if index == 0 {
+            emit_line(lay, &format!("{border}{body}"), false, Deco::Code(2));
+        } else {
+            emit_line(lay, &format!("{border}{mark}{body}"), true, Deco::Code(3));
+        }
     }
 }
 
@@ -939,6 +967,23 @@ fn emit_records(lay: &mut Layout, table: &TableState, cols: usize) {
 mod tests {
     use super::*;
     use crate::utils::screen::visible_width;
+
+    #[test]
+    fn a_known_fence_is_colored_and_the_setting_turns_it_off() {
+        let source = "```rust\nfn main() { let x = 42; } // done\n```";
+        let colored: String = render(source, 60, true).into_iter().map(|r| r.text).collect();
+        assert!(colored.contains("\x1b[35mfn\x1b[0m"), "{colored:?}");
+        assert!(colored.contains("\x1b[33m42\x1b[0m"), "{colored:?}");
+        assert!(colored.contains("\x1b[90;3m// done\x1b[0m"), "{colored:?}");
+        let unknown: String = render("```nothing\nfn main()\n```", 60, true).into_iter().map(|r| r.text).collect();
+        assert!(!unknown.contains("\x1b[35m"), "{unknown:?}");
+        super::super::highlight::set_enabled(false);
+        let plain: String = render(source, 60, true).into_iter().map(|r| r.text).collect();
+        super::super::highlight::set_enabled(true);
+        assert!(!plain.contains("\x1b[35mfn"), "{plain:?}");
+        let narrow = render(source, 20, true);
+        assert!(narrow.iter().all(|r| visible_width(&r.text) <= 20), "{narrow:?}");
+    }
 
     /// The fixed markdown samples, one for each construct.
     fn samples() -> Vec<(&'static str, &'static str)> {

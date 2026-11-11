@@ -49,7 +49,7 @@ pub fn view_command(view: &mut View, line: &str) -> Option<(KeyOutcome, Vec<Effe
             super::live::request(super::live::UiRequest::Quit);
             notice(view, Tone::Info, "the session ends after the current step");
         }
-        BuiltinCommand::Clear | BuiltinCommand::Resume(_) | BuiltinCommand::Compact(_) | BuiltinCommand::Quit => return None,
+        BuiltinCommand::Clear | BuiltinCommand::Resume(_) | BuiltinCommand::Compact(_) | BuiltinCommand::Quit | BuiltinCommand::Update => return None,
     }
     Some((KeyOutcome::None, Vec::new()))
 }

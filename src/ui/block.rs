@@ -388,7 +388,8 @@ pub fn cut_to(text: &str, room: usize) -> String {
     out
 }
 
-/// The details of an expanded run: the whole command, the output, the exit code and the time.
+/// The details of an expanded run: the whole command (with shell syntax colors), the output, the
+/// exit code and the time.
 /// @param run - the run
 /// @param width - the screen width
 /// @param ctx - the frame
@@ -400,8 +401,13 @@ fn run_details(run: &CommandRun, width: usize, ctx: &LayoutCtx) -> Vec<Row> {
         RunKind::Shell { command } => format!("$ {}", command.trim()),
         RunKind::Mcp { server, tool, args } => format!("→ {server}.{tool} {args}"),
     };
+    let shell = matches!(run.kind, RunKind::Shell { .. }) && ctx.color && super::highlight::enabled();
     for (line, cont) in word_wrap(&super::markdown::sanitize(&command), room) {
-        rows.push(Row { text: format!("{}{}", " ".repeat(INDENT), paint(ctx, "35", &line)), cont, gutter: INDENT, ..Default::default() });
+        let text = match super::highlight::highlight(&line, "bash").filter(|_| shell) {
+            Some(lines) => super::highlight::paint(&lines[0]),
+            None => paint(ctx, "35", &line),
+        };
+        rows.push(Row { text: format!("{}{}", " ".repeat(INDENT), text), cont, gutter: INDENT, ..Default::default() });
     }
     let output = clean_output(run.output.trim_end());
     let mut output_rows: Vec<Row> = output.lines().flat_map(|line| hard_wrap(line, room)).collect();

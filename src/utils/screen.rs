@@ -406,13 +406,13 @@ mod tests {
     }
 
     #[test]
-    fn a_short_transcript_starts_at_the_top_and_the_input_is_at_the_bottom() {
+    fn a_short_transcript_starts_at_the_top_and_the_status_bar_is_at_the_bottom() {
         let mut view = view_with(2);
         view.insert("hello");
         let rows = plain(&render_frame(&mut view, 40, 6));
         assert_eq!(rows[..4], ["line 1", "line 2", "", ""]);
-        assert!(rows[4].contains("0%") && rows[4].contains("0:00"), "{rows:?}");
-        assert_eq!(rows[5], "❯ hello");
+        assert_eq!(rows[4], "❯ hello");
+        assert!(rows[5].contains("0%") && rows[5].contains("0:00"), "the status bar is the last row: {rows:?}");
     }
 
     #[test]
@@ -441,7 +441,8 @@ mod tests {
         assert!(view.input.is_empty());
         assert_eq!(view.apply_key(Key::CtrlD).0, KeyOutcome::Eof);
         view.apply_key(Key::Paste("a\nb".into()));
-        assert_eq!(plain(&render_frame(&mut view, 40, 6)).last().unwrap(), "❯ a↵b");
+        let rows = plain(&render_frame(&mut view, 40, 6));
+        assert_eq!(rows[rows.len() - 2], "❯ a↵b");
     }
 
     #[test]

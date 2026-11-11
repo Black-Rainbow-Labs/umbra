@@ -36,7 +36,7 @@ $ umbra -m anthropic/claude-haiku-5-5 "add a --verbose flag to the CLI and test 
   [where files are found](docs/discovery.md), [MCP](docs/mcp.md), [models](docs/providers.md),
   [editors and ACP](docs/acp.md), [releases](docs/releasing.md),
   [design document](tasks/umbra-harness-tdd.md), [ACP and distribution design](tasks/umbra-acp-distribution-tdd.md), [compaction design](tasks/umbra-compaction-tdd.md),
-  [images, resume and Ctrl+C design](tasks/umbra-images-resume-interrupt-tdd.md),
+  [images, resume and Ctrl+C design](tasks/umbra-images-resume-interrupt-tdd.md), [fixes part 5 design](tasks/umbra-fixes-part-5-tdd.md),
   [structured terminal UI design](tasks/umbra-improvements-v2-tdd.md)
 
 ## Install
@@ -266,8 +266,12 @@ with the `trajectory <path>` line printed under it. `--no-fullscreen`, `fullscre
 and `TERM=dumb` always get.
 
 The screen has four parts, from top to bottom: the transcript, a popup or a picker when one is
-open, the status bar, and an input line that is always there, so a message can be typed while the
-agent works.
+open, an input line that is always there, so a message can be typed while the agent works, and the
+status bar on the last row.
+
+Code in a reply's fenced code blocks is colored by its language (`syntax_highlight = false` turns
+that off). When Umbra finds a newer release, a prompt above the input line offers to install it and
+restart into the same session; see `updates.check` in [configuration](docs/configuration.md).
 
 **The header** is the first block of the transcript and scrolls with it. It shows the umbra logo,
 the version, and these rows:
@@ -305,6 +309,7 @@ with a one line notice.
 | `/compact [focus]` | Summarizes the history now. |
 | `/resume` | Opens the session picker. |
 | `/skills` | Opens a picker of skills. Enter puts `/<skill> ` in the input line. |
+| `/update` | Installs the newest release and restarts into this session. Typed while the agent works, it runs when the turn ends. |
 | `/help` | Lists the commands and the keys. |
 | `/quit` | Ends the session. |
 
@@ -537,8 +542,13 @@ search or a browser.
 | `umbra instructions` | Lists the instruction files in prompt order, with sizes. |
 | `umbra skills` | Lists the skills and where each came from. |
 | `umbra commands` | Lists the slash commands. |
-| `umbra mcp [--connect]` | Lists MCP servers; with `--connect` starts them and lists their tools. |
+| `umbra mcp [--connect]` | Lists MCP servers with `on` or `off` for each; with `--connect` starts them and lists their tools. |
+| `umbra mcp enable <name>`, `umbra mcp disable <name>` | Lets a server start in every session, or stops it. `--project` changes the project's config file. |
 | `umbra config` | Prints the merged configuration. |
+| `umbra config list\|get\|set\|unset\|path` | Reads and changes one setting. See [configuration](docs/configuration.md#editing-settings-from-the-command-line). |
+| `umbra models` | Lists the default model, the named models and the known models. |
+| `umbra session status\|model\|mode\|mcp\|compact\|quit` | Controls a running session. A command the agent runs reaches its own session; from another terminal, name it with `--session <id>` (`umbra session list` lists them). |
+| `umbra update [--check]` | Checks for a newer release and installs it. |
 | `umbra sessions [--all]` | Lists saved sessions, newest first. |
 | `umbra resume [id] [--all]` | Opens a picker of saved sessions, or resumes the session with that id or the start of its id. `--all` lists every folder's sessions. |
 | `umbra acp` | Runs as an ACP agent on stdin and stdout, for an editor. Takes `-m`, `--yolo`, `--mode`, `-l` and `--step-limit`. |

@@ -25,10 +25,18 @@ pub enum Command {
     Instructions(InspectArgs),
     /// List the custom slash commands Umbra found.
     Commands(InspectArgs),
-    /// List MCP servers. With --connect, start them and list their tools.
+    /// List MCP servers, or turn one on or off for every session. With --connect, start them and
+    /// list their tools.
     Mcp(McpArgs),
-    /// Print the merged config.
-    Config(InspectArgs),
+    /// Print the merged config, or read and change one setting.
+    Config(ConfigArgs),
+    /// List the models: the default, the named models and the known models.
+    Models(InspectArgs),
+    /// Control a running session: its model, mode and MCP servers. Inside a session, the commands
+    /// the agent runs reach that session; elsewhere, name it with --session.
+    Session(SessionArgs),
+    /// Check for a newer release of Umbra and install it.
+    Update(UpdateArgs),
     /// Print the system prompt and first user message a task would get, without running it.
     Prompt(PromptArgs),
     /// List saved sessions, newest first, for --resume.
@@ -208,11 +216,159 @@ pub struct InspectArgs {
 /// Options for `umbra mcp`.
 #[derive(Debug, Clone, Args, Default)]
 pub struct McpArgs {
+    #[command(subcommand)]
+    pub action: Option<McpAction>,
     #[command(flatten)]
     pub inspect: InspectArgs,
     /// Start each server and list its tools.
     #[arg(long)]
     pub connect: bool,
+}
+
+/// `umbra mcp enable` and `umbra mcp disable`.
+#[derive(Debug, Clone, Subcommand)]
+pub enum McpAction {
+    /// Let a server start in every session (changes mcp.only and mcp.disabled).
+    Enable(McpToggleArgs),
+    /// Stop a server from starting in any session (changes mcp.only and mcp.disabled).
+    Disable(McpToggleArgs),
+}
+
+/// The server `umbra mcp enable` or `disable` changes.
+#[derive(Debug, Clone, Args, Default)]
+pub struct McpToggleArgs {
+    /// The server's name, as `umbra mcp` lists it.
+    pub name: String,
+    /// Change the project's .umbra/config.toml instead of ~/.umbra/config.toml.
+    #[arg(long)]
+    pub project: bool,
+    /// The working folder whose project file --project changes.
+    #[arg(long)]
+    pub cwd: Option<PathBuf>,
+}
+
+/// Options for `umbra config`.
+#[derive(Debug, Clone, Args, Default)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub action: Option<ConfigAction>,
+    #[command(flatten)]
+    pub inspect: InspectArgs,
+}
+
+/// The `umbra config` subcommands.
+#[derive(Debug, Clone, Subcommand)]
+pub enum ConfigAction {
+    /// List every setting with its value, the file it comes from and what it does.
+    List(ConfigListArgs),
+    /// Print one setting's value, such as `compaction.trigger_ratio`.
+    Get(ConfigKeyArgs),
+    /// Set one setting in a config file. Comments in the file are kept.
+    Set(ConfigSetArgs),
+    /// Remove one setting from a config file, so the default or another file applies.
+    Unset(ConfigKeyArgs),
+    /// Print the path of the config file `set` and `unset` change.
+    Path(ConfigFileArgs),
+}
+
+/// Options for `umbra config list`.
+#[derive(Debug, Clone, Args, Default)]
+pub struct ConfigListArgs {
+    /// Print JSON instead of a table.
+    #[arg(long)]
+    pub json: bool,
+    /// Only the settings whose path starts with this, such as `mcp`.
+    pub prefix: Option<String>,
+    #[command(flatten)]
+    pub file: ConfigFileArgs,
+}
+
+/// Which config file a `umbra config` subcommand uses.
+#[derive(Debug, Clone, Args, Default)]
+pub struct ConfigFileArgs {
+    /// Use the project's .umbra/config.toml instead of ~/.umbra/config.toml.
+    #[arg(long)]
+    pub project: bool,
+    /// The working folder. Defaults to the current folder.
+    #[arg(long)]
+    pub cwd: Option<PathBuf>,
+}
+
+/// A setting path, for `umbra config get` and `unset`.
+#[derive(Debug, Clone, Args, Default)]
+pub struct ConfigKeyArgs {
+    /// The setting's dotted path, such as `mcp.defer_tools` or `providers.local.base_url`.
+    pub key: String,
+    #[command(flatten)]
+    pub file: ConfigFileArgs,
+}
+
+/// A setting path and its new value, for `umbra config set`.
+#[derive(Debug, Clone, Args, Default)]
+pub struct ConfigSetArgs {
+    /// The setting's dotted path.
+    pub key: String,
+    /// The value. Lists are comma separated, maps are `k=v, k=v`, percents may be written as 70.
+    pub value: String,
+    #[command(flatten)]
+    pub file: ConfigFileArgs,
+}
+
+/// Options for `umbra session`.
+#[derive(Debug, Clone, Args)]
+pub struct SessionArgs {
+    #[command(subcommand)]
+    pub action: SessionAction,
+    /// The session to control: its id or the start of it. Inside a session this is not needed.
+    #[arg(long, global = true)]
+    pub session: Option<String>,
+}
+
+/// The `umbra session` subcommands.
+#[derive(Debug, Clone, Subcommand)]
+pub enum SessionAction {
+    /// Print the session's id, model, mode and MCP servers.
+    Status {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the running sessions.
+    List,
+    /// Switch the session's model from its next model call.
+    Model {
+        /// A name from [models] or provider/model.
+        name: String,
+    },
+    /// Switch the session's mode: confirm, yolo or human.
+    Mode {
+        mode: String,
+    },
+    /// Turn an MCP server on or off in this session only.
+    Mcp {
+        /// on or off.
+        state: String,
+        /// The server's name.
+        name: String,
+    },
+    /// Summarize the session's history before its next model call.
+    Compact {
+        /// What the summary should keep.
+        focus: Vec<String>,
+    },
+    /// End the session after the current step.
+    Quit,
+}
+
+/// Options for `umbra update`.
+#[derive(Debug, Clone, Args, Default)]
+pub struct UpdateArgs {
+    /// Only check, and print whether a newer release exists.
+    #[arg(long)]
+    pub check: bool,
+    /// Install this version instead of the newest.
+    #[arg(long)]
+    pub version: Option<String>,
 }
 
 /// Options for `umbra resume`.

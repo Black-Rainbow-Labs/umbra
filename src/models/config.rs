@@ -72,6 +72,10 @@ pub struct UmbraConfig {
     /// Turn on mouse reporting in the fullscreen view, so clicks and drags reach Umbra. Off, the
     /// terminal selects text itself and everything is done with the keyboard.
     pub mouse: bool,
+    /// Color the code in fenced code blocks of replies by its language.
+    pub syntax_highlight: bool,
+    /// The check for a newer Umbra release.
+    pub updates: UpdatesConfig,
     pub sessions: SessionsConfig,
     pub usage: UsageConfig,
     /// Print every detail of the run: step headings with the cost, whole command outputs, full
@@ -114,6 +118,8 @@ impl Default for UmbraConfig {
             banner: true,
             fullscreen: true,
             mouse: true,
+            syntax_highlight: true,
+            updates: UpdatesConfig::default(),
             sessions: SessionsConfig::default(),
             usage: UsageConfig::default(),
             verbose: false,
@@ -427,6 +433,23 @@ impl Default for UsageConfig {
     /// Usage on.
     fn default() -> Self {
         UsageConfig { enabled: true }
+    }
+}
+
+/// The `[updates]` table: how often Umbra looks for a newer release.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdatesConfig {
+    /// Look for a newer release when an interactive session starts.
+    pub check: bool,
+    /// Hours between two checks.
+    pub interval_hours: u64,
+}
+
+impl Default for UpdatesConfig {
+    /// One check a day.
+    fn default() -> Self {
+        UpdatesConfig { check: true, interval_hours: 24 }
     }
 }
 

@@ -87,6 +87,12 @@ impl Transcript {
         }
     }
 
+    /// Drops every cached layout, so each block is laid out again at the next frame, for a change
+    /// that alters how blocks are drawn, such as turning syntax colors off.
+    pub fn forget_layouts(&mut self) {
+        self.entries.iter_mut().for_each(|e| e.cache = None);
+    }
+
     /// Removes every block.
     pub fn clear(&mut self) {
         self.entries.clear();

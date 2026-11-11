@@ -135,6 +135,9 @@ const BEHAVIOR_AND_DISPLAY: &[SettingSpec] = &[
     s!("status_bar", Display, "Status bar", "Draw the status bar under the output.", Toggle, Now),
     s!("verbose", Display, "Verbose", "Print every detail of the run.", Toggle, Now),
     s!("mouse", Display, "Mouse", "Mouse reporting in the fullscreen view. Off, the terminal selects text itself.", Toggle, Next),
+    s!("syntax_highlight", Display, "Syntax colors", "Color the code in fenced code blocks by its language.", Toggle, Now),
+    s!("updates.check", Display, "Check for updates", "Look for a newer Umbra release when a session starts.", Toggle, Next),
+    s!("updates.interval_hours", Display, "Update check interval", "Hours between two checks for a newer release.", Integer { min: 1, max: 8760 }, Next),
     s!("sessions.auto_title", Display, "Automatic titles", "Ask the model for a session title and summary after the first turn.", Toggle, Now),
     s!("usage.enabled", Display, "Usage bar", "Show the weekly usage bar for a Claude login.", Toggle, Now),
 ];

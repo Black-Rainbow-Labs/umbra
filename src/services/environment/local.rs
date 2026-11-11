@@ -39,7 +39,7 @@ impl LocalEnvironment {
     /// @param label - the command text, for the timeout message
     pub fn execute_args(&self, args: &[String], label: &str) -> Observation {
         let mut process = Command::new(&self.shell[0]);
-        process.args(args).current_dir(&self.cwd).envs(&self.config.env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        process.args(args).current_dir(&self.cwd).envs(&self.config.env).envs(crate::services::control_service::env_vars()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         own_process_group(&mut process);
         match process.spawn() {
             Ok(child) => wait_for_output(child, Duration::from_secs(self.config.timeout.max(1)), label),
@@ -57,9 +57,11 @@ impl Environment for LocalEnvironment {
         self.execute_args(&args, command)
     }
 
-    /// Values the prompt templates can use: the platform, the working folder and the timeout.
+    /// Values the prompt templates can use: the platform, the working folder, the timeout, and the
+    /// path of the running Umbra binary, which the agent can run to change Umbra itself.
     fn template_vars(&self) -> Value {
-        json!({ "cwd": self.cwd.to_string_lossy(), "timeout": self.config.timeout, "shell": self.shell.join(" "), "environment_kind": "local" })
+        let umbra_bin = std::env::current_exe().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+        json!({ "cwd": self.cwd.to_string_lossy(), "timeout": self.config.timeout, "shell": self.shell.join(" "), "environment_kind": "local", "umbra_bin": umbra_bin })
     }
 
     /// The settings recorded in the trajectory.

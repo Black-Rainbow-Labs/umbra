@@ -59,6 +59,7 @@ pub fn run_umbra(home: &Path, args: &[&str]) -> Output {
         .env("UMBRA_RETRY_BASE_MS", "10")
         .env("MSYS_NO_PATHCONV", "1")
         .env("NO_COLOR", "1")
+        .env("UMBRA_UPDATE_CHECK", "0")
         .env_remove("CODEX_HOME")
         .env_remove("UMBRA_MODEL")
         .stdin(std::process::Stdio::null())
@@ -97,7 +98,8 @@ pub fn umbra_command(home: &Path, args: &[&str]) -> Command {
         .env("NO_COLOR", "1")
         .env_remove("CODEX_HOME")
         .env_remove("UMBRA_MODEL")
-        .env_remove("UMBRA_FORCE_INTERACTIVE");
+        .env_remove("UMBRA_FORCE_INTERACTIVE")
+        .env("UMBRA_UPDATE_CHECK", "0");
     command
 }
 

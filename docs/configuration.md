@@ -31,6 +31,7 @@ status_bar = true                      # context bar, agent time, cost, model an
 banner = true                          # umbra banner with the logo, version, model and folder at start
 fullscreen = true                      # open on the alternate screen with a scrollable transcript
 mouse = true                           # mouse reporting in the fullscreen view: clicks, and a drag selects and copies
+syntax_highlight = true                # color the code in fenced code blocks of replies
 verbose = false                        # every detail: step costs, whole outputs, full errors
 whitelist_actions = ["ls", "cat ", "git (status|diff|log)"]   # run without asking
 output = ""                            # trajectory path; empty means ~/.umbra/trajectories/<time>.traj.json
@@ -157,6 +158,9 @@ detect_paths = true                    # attach image files named in a task or a
 | `confirm_exit` | true | When a turn ends in a terminal, wait for the next message instead of exiting. |
 | `fullscreen` | true | Open on the terminal's alternate screen, the way Claude Code's fullscreen mode does: the shell's earlier output is not in view or in the scrollback, the transcript scrolls with PageUp, PageDown and the mouse wheel, and the shell's screen comes back when Umbra exits. Only when stdin and stdout are terminals and the run is not `--quiet`. `--no-fullscreen` or `UMBRA_FULLSCREEN=0` prints inline instead. |
 | `mouse` | true | Turn on mouse reporting in the fullscreen view, so a click works on the header, the command groups and the status bar, and a drag selects text and copies it to the clipboard. `mouse = false`, `--no-mouse` or `UMBRA_MOUSE=0` turns it off anywhere: the terminal then selects text itself and everything is done with the keyboard. In a classic Windows console window (conhost, a visible console window) `mouse` is off by default and quick edit stays on, so a drag selects text with the console's own selection; `UMBRA_MOUSE=1` turns the mouse on there. Windows Terminal and other pseudoconsole terminals get the mouse. |
+| `syntax_highlight` | true | Color the code in fenced code blocks of replies by the fence's language, and the shell command of an expanded command run. Umbra reads Rust, Python, JavaScript and TypeScript, Go, C and C++, Java, Kotlin, C#, Swift, Ruby, PHP, shell, PowerShell, SQL, JSON, TOML, YAML, CSS, Lua, HTML and XML, and diff. A fence with no language or another language is drawn without colors. The colors are the 16 basic terminal colors, so they follow the terminal's theme. |
+| `updates.check` | true | Look for a newer Umbra release when an interactive session starts in the fullscreen view, at most once every `updates.interval_hours`. The answer is kept in `~/.umbra/update.json`. When a newer release exists, a prompt above the input line offers **Install and restart**, **Remind me tomorrow** and **Skip this version**. Install downloads the release archive for this machine, checks it against the release's `SHA256SUMS`, replaces the binary (or runs `brew upgrade` for a Homebrew install), and starts the new binary with `--resume` on the same session. `UMBRA_UPDATE_CHECK=0` turns the check off. `umbra update` checks and installs from any terminal. |
+| `updates.interval_hours` | 24 | Hours between two update checks. |
 | `sessions.auto_title` | true | After the first turn, in a terminal, Umbra sends one small request to the session's model for a title of at most 6 words and a one sentence summary, and saves both in the session list. Until then the title is the first line of the first prompt. A compaction summary replaces the summary. `sessions.auto_title = false` turns the request off. |
 | `usage.enabled` | true | Show the weekly usage bar in the status bar when the active provider uses a Claude login. Umbra polls `https://api.anthropic.com/api/oauth/usage` with the Claude Code login token at most every 180 seconds and waits longer after an HTTP 429. `usage.enabled = false` turns the polling and the bar off. |
 | `mcp.defer_tools` | `auto` | `auto` sends MCP tools by name only, with a `tool_search` tool that loads their definitions, when the definitions would take more than `mcp.defer_ratio` of the context window. `always` and `never` force it. Loaded tools are sent with every later request and loaded again on `--resume`. |
@@ -171,7 +175,7 @@ detect_paths = true                    # attach image files named in a task or a
 | `sources.<name>` | true | Read that tool's files. `--no-source <name>` turns one off for a run. |
 | `instructions.max_bytes` | 262144 | Stop adding instruction files after this many bytes. |
 | `skills.disabled` | empty | Skill names to leave out. |
-| `mcp.only`, `mcp.disabled` | empty | Which MCP servers to start. `--mcp a,b` and `--no-mcp` do the same for one run. |
+| `mcp.only`, `mcp.disabled` | empty | Which MCP servers to start. `--mcp a,b` and `--no-mcp` do the same for one run. The `/mcp` panel with "all sessions" selected, the checkboxes in the MCP section of `/config`, and `umbra mcp enable <name>` and `umbra mcp disable <name>` change both lists for you. |
 | `compaction.enabled` | true | Compact the history when it nears the context window. `--no-compact` turns it off for one run. |
 | `compaction.context_window` | 0 | The window in tokens. 0 asks the provider (llama.cpp's `/props`, a server's `/models`) or uses the built in table. `--context-window <tokens>` sets it for one run. |
 | `compaction.*` | see above | When to compact and how much to keep. See [compaction](architecture.md#compaction). |
@@ -182,6 +186,23 @@ detect_paths = true                    # attach image files named in a task or a
 
 `UMBRA_FORCE_INTERACTIVE=1` treats a piped stdin as a terminal, so a script or a test can type into
 Umbra's prompts.
+
+## Editing settings from the command line
+
+Every setting in this file can be read and changed with `umbra config`, which uses the same parser
+and the same file writer as the modal, so comments in the file are kept.
+
+| Command | What it does |
+|---|---|
+| `umbra config` | Prints the merged config |
+| `umbra config list [prefix]` | Every setting with its value, the file it comes from (`default`, `user`, `project`) and what it does. `--json` prints JSON. |
+| `umbra config get <key>` | One value, such as `umbra config get compaction.trigger_ratio` |
+| `umbra config set <key> <value>` | Sets a value in `~/.umbra/config.toml`. Lists are comma separated, maps are `k=v, k=v`, and a percent setting takes `70` for 70%. A value of the wrong kind is refused and the file is left as it was. |
+| `umbra config unset <key>` | Removes the key, so the default or another file applies |
+| `umbra config path` | The file `set` changes |
+
+`--project` makes `set`, `unset`, `path` and `list` use `<project>/.umbra/config.toml`, and `--cwd`
+names the folder. A change applies to the next session; `umbra session` changes a running one.
 
 ## Editing settings in the terminal
 
@@ -196,6 +217,11 @@ the fields of the selected section on the right. Every setting in this file is a
 | Ctrl+S | Save. Only the changed keys are written, and the comments and the key order in the file are kept. |
 | Ctrl+T | Switch between the user file `~/.umbra/config.toml` and the project file `<project>/.umbra/config.toml` |
 | Esc | Close. When there are unsaved changes, Umbra asks whether to save or discard them. |
+
+The MCP section lists every server found, each with a checkbox and the file it came from, in place
+of text fields for `mcp.only` and `mcp.disabled`. Space turns a server on or off for every session,
+Ctrl+S writes the lists to the chosen file, and the running session turns the changed servers on
+or off at once.
 
 Each provider has a Test button. It checks the credentials, checks that the server answers, and
 sends a "Say hello." completion. See [models](providers.md#testing-a-provider).

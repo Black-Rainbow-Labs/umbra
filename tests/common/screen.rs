@@ -49,8 +49,18 @@ impl Frame {
         self.cells.iter().map(|row| row.iter().filter(|c| c.reverse).map(|c| c.ch).collect::<String>()).filter(|s| !s.is_empty()).collect()
     }
 
-    /// The last row: the input line.
+    /// The input line: the row above the status bar, which is the last row (task-2625). Without a
+    /// status bar the input line is the last row.
     pub fn input(&self) -> &str {
+        let last = self.rows.last().map(String::as_str).unwrap_or("");
+        if self.rows.len() >= 2 && !last.starts_with('❯') && !last.starts_with('›') {
+            return &self.rows[self.rows.len() - 2];
+        }
+        last
+    }
+
+    /// The status bar: the last row.
+    pub fn status(&self) -> &str {
         self.rows.last().map(String::as_str).unwrap_or("")
     }
 }
@@ -224,7 +234,7 @@ impl Screen {
         self.send(format!("{text}\r").as_bytes());
     }
 
-    /// Presses a named key: Enter, Tab, BackTab, Esc, Up, Down, Space, Backspace, PageUp.
+    /// Presses a named key: Enter, Tab, BackTab, Esc, Up, Down, Right, Left, Space, Backspace, PageUp.
     /// @param name - the key
     pub fn press(&mut self, name: &str) {
         let bytes: &[u8] = match name {
@@ -234,6 +244,8 @@ impl Screen {
             "Esc" => b"\x1b",
             "Up" => b"\x1b[A",
             "Down" => b"\x1b[B",
+            "Right" => b"\x1b[C",
+            "Left" => b"\x1b[D",
             "Space" => b" ",
             "Backspace" => b"\x7f",
             "PageUp" => b"\x1b[5~",

@@ -18,12 +18,13 @@ pub struct Builtin {
 pub const BUILTINS: &[Builtin] = &[
     Builtin { name: "config", args: "", description: "Open the configuration" },
     Builtin { name: "model", args: "[name]", description: "Pick the model for this session, or switch to the named one" },
-    Builtin { name: "mcp", args: "", description: "List the MCP servers and turn them on or off for this session" },
+    Builtin { name: "mcp", args: "", description: "List the MCP servers and turn them on or off for this session or every session" },
     Builtin { name: "mode", args: "[confirm, yolo, human]", description: "Switch the mode, or pick one" },
     Builtin { name: "clear", args: "", description: "Start a new session with an empty history; the old one stays in the resume list" },
     Builtin { name: "compact", args: "[focus]", description: "Summarize the history now" },
     Builtin { name: "resume", args: "", description: "Pick a saved session to continue" },
     Builtin { name: "skills", args: "", description: "Pick a skill to run" },
+    Builtin { name: "update", args: "", description: "Install the newest Umbra release and restart into this session" },
     Builtin { name: "help", args: "", description: "List the commands and keys" },
     Builtin { name: "quit", args: "", description: "End the session" },
 ];
@@ -39,6 +40,7 @@ pub enum BuiltinCommand {
     Compact(String),
     Resume(Option<String>),
     Skills,
+    Update,
     Help,
     Quit,
 }
@@ -66,6 +68,7 @@ pub fn parse_builtin(line: &str) -> Option<BuiltinCommand> {
         "compact" => BuiltinCommand::Compact(argument.unwrap_or_default()),
         "resume" => BuiltinCommand::Resume(argument),
         "skills" => BuiltinCommand::Skills,
+        "update" => BuiltinCommand::Update,
         "help" => BuiltinCommand::Help,
         "quit" | "exit" => BuiltinCommand::Quit,
         _ => return None,

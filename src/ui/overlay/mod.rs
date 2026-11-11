@@ -6,6 +6,7 @@ pub mod config_modal;
 pub mod mcp_panel;
 pub mod pickers;
 pub mod picker;
+pub mod update_prompt;
 
 use super::block::{LayoutCtx, Row};
 use crate::utils::keys::Key;
@@ -60,6 +61,12 @@ pub trait Overlay: Send {
 
     /// True while it draws something that changes with time, such as a spinner.
     fn animating(&self) -> bool {
+        false
+    }
+
+    /// True when typed text closes it and goes to the input line, for a prompt that must never
+    /// take a message the person is typing.
+    fn passes_typing(&self) -> bool {
         false
     }
 }

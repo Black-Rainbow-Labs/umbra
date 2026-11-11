@@ -1,5 +1,5 @@
 //! Draws a whole frame of the fullscreen view and records where everything went: the transcript
-//! at the top, the panels and overlays above the status bar, the status bar, and the input line,
+//! at the top, the panels and overlays above the input line, the input line, and the status bar,
 //! with a centered overlay drawn over the transcript. The record (the hit map) is what turns a
 //! mouse click into a target and a drag into transcript positions.
 
@@ -277,6 +277,7 @@ fn draw_centered(view: &mut View, rows: &mut [String], width: usize, ctx: &Layou
 /// @param width - the screen width
 /// @param height - the screen height
 pub fn render_frame(view: &mut View, width: usize, height: usize) -> String {
+    view.offer_update();
     let ctx = view.ctx();
     let (input, cursor_row, cursor_col) = input_rows(view, width);
     let status = status_row(view, width, &ctx);
@@ -284,6 +285,7 @@ pub fn render_frame(view: &mut View, width: usize, height: usize) -> String {
     let fixed = input.len() + usize::from(status.is_some()) + panel.len();
     let note_row = view.scroll > 0;
     let room = height.saturating_sub(fixed + usize::from(note_row)).max(1);
+    clamp_scroll(view, width, room, &ctx);
     let visible = visible_rows(view, width, room, &ctx);
     let mut hits = Vec::new();
     let mut lines = Vec::new();
@@ -309,18 +311,34 @@ pub fn render_frame(view: &mut View, width: usize, height: usize) -> String {
         rows.push(wrap_ansi(&row.text, width).swap_remove(0));
     }
     let panel_end = rows.len();
+    // The input line comes before the status bar, so the status bar is the last row (task-2625).
+    let input_top = rows.len();
+    rows.extend(input);
     if let Some((line, targets)) = status {
         for (from, to, target) in targets {
             hits.push(Hit { row: rows.len(), from, to, target });
         }
         rows.push(wrap_ansi(&line, width).swap_remove(0));
     }
-    let input_top = rows.len();
-    rows.extend(input);
     rows.truncate(height);
     let overlay_open = view.overlay.is_some();
     view.frame = FrameInfo { room, lines, hits, overlay: (panel_top, panel_end) };
     compose(&rows, height, input_top + cursor_row, cursor_col, !overlay_open)
+}
+
+/// Keeps the view from scrolling past the top of the transcript. A collapse, a resize or the row
+/// cap can shorten the transcript under a view that is scrolled up, and without this the frame
+/// would show the few rows left at the top and an empty screen below them (task-2625).
+/// @param view - the view
+/// @param width - the screen width
+/// @param room - the rows the transcript gets in this frame
+/// @param ctx - the frame
+fn clamp_scroll(view: &mut View, width: usize, room: usize, ctx: &LayoutCtx) {
+    if view.scroll == 0 {
+        return;
+    }
+    let total = view.transcript.total_rows(width, ctx);
+    view.scroll = view.scroll.min(total.saturating_sub(room));
 }
 
 /// Joins the rows into the bytes of a frame: each row cleared before it is written, then the

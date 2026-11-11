@@ -120,8 +120,17 @@ topmost overlay, or to the focused element, or to the input line.
   `Off`, `Starting`, `Ready` or `Failed`. The agent reads the tools of the ready servers before each
   model call. A stdio transport kills its child process when it is dropped, so a failed or disabled
   server leaves no process.
+- **Layout and scrolling.** From the top: the transcript, the panel or popup rows, the input line,
+  and the status bar on the last row. `View::scroll` counts transcript rows below the view.
+  Expanding or collapsing a group keeps the toggled header on the screen row it was on, and every
+  frame clamps `scroll` to the transcript's height, so a transcript that got shorter (a collapse, a
+  wider screen, the row cap) never leaves the view past its top.
+- **Syntax colors.** `ui/highlight.rs` colors fenced code blocks and the shell command of an
+  expanded run. Each language is a table of comment markers, quotes, keywords, types and literals
+  read by one small lexer, with a state carried between lines for block comments, strings over
+  several lines and HTML tags.
 - **Commands.** `command_service` holds the built in commands (`/config`, `/model`, `/mcp`,
-  `/mode`, `/clear`, `/compact`, `/resume`, `/skills`, `/help`, `/quit`), the completion list of
+  `/mode`, `/clear`, `/compact`, `/resume`, `/skills`, `/update`, `/help`, `/quit`), the completion list of
   built in commands, custom commands and skills, and `handle_line`, which every prompt goes
   through, so a slash command works on the first prompt, on a follow up prompt and while the agent
   works. ACP uses the same list.
@@ -131,6 +140,41 @@ topmost overlay, or to the focused element, or to the input line.
   `session_title_service` makes the one small request that names a session.
 
 The inline view and the quiet mode do not use `src/ui`. They print through `interaction_service`.
+
+## Umbra's command line and the running session
+
+`cli_service` gives every setting and built in command a command line form, so the agent can change
+Umbra with a shell command. `umbra config get/set/unset/list` uses the settings schema, the parser
+and the `toml_edit` writer the configuration modal uses. `umbra mcp enable` and `disable` change
+`mcp.only` and `mcp.disabled` through `mcp_settings_service`, which the `/mcp` panel and the modal
+call too.
+
+`umbra session` reaches a running session through `control_service`. While a terminal session
+runs, it keeps `~/.umbra/control/<session id>/` with `state.json` (model, mode, MCP servers,
+process id) and `requests.jsonl`. Each command the agent runs gets `UMBRA_CONTROL_DIR`,
+`UMBRA_SESSION_ID` and `UMBRA_BIN` in its environment. `umbra session model x` appends a line to
+`requests.jsonl`; before every model call the agent renames the file, reads it and applies each
+line as the fullscreen view's own request would be applied. The folder is removed when the session
+ends, and a folder whose process is gone is removed by the next session. ACP sessions do not have a
+control folder, because one ACP process serves many sessions.
+
+The reply style system prompt names the running binary (`umbra_bin`) and lists these commands, so
+the agent uses them when asked to change a setting, a model or an MCP server.
+
+## Updates
+
+`update_service` checks `https://api.github.com/repos/Black-Rainbow-Labs/umbra/releases/latest` at
+most once every `updates.interval_hours`, on a background thread of an interactive fullscreen
+session, and keeps the answer in `~/.umbra/update.json`. A newer version opens the update prompt
+above the input line once the agent is idle. **Install and restart** sends `/update`. The agent
+saves the session, downloads `umbra-<target>.tar.gz` (or `.zip`) and `SHA256SUMS` from the release,
+checks the SHA-256, unpacks with the system `tar`, runs the new binary with `--version`, and
+renames it over the running one (on Windows the old binary is renamed to `umbra.exe.old` first and
+removed at the next start). A Homebrew install runs `brew upgrade` instead. The run then ends with
+`NextSession::Restart`, and `run_service::restart_into` leaves the fullscreen view and starts the
+new binary with `--resume <session id>` and this run's options: with `exec` on Unix, and as a child
+whose exit code is returned on Windows. A failure at any step leaves the old binary and the session
+as they were.
 
 ## The message list
 

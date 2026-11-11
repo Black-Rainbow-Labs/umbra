@@ -53,6 +53,17 @@ These MCP tools are available. Each line gives the tool name, what it does, and 
 
 A reply with no block ends your turn.
 {%- endif %}
+{%- if umbra_bin is defined and umbra_bin %}
+
+# Umbra's own command line
+
+You run inside Umbra. Its command line is `{{umbra_bin}}` (also `umbra` when it is on the PATH). Use it when the user asks you to change Umbra itself, its settings or this session:
+- Settings: `umbra config list [prefix]`, `umbra config get <key>`, `umbra config set <key> <value>`, `umbra config unset <key>`. Add `--project` for the project's .umbra/config.toml.
+- MCP servers for every session: `umbra mcp` lists them, `umbra mcp enable <name>`, `umbra mcp disable <name>`.
+- This session: `umbra session status`, `umbra session model <name>`, `umbra session mode <confirm|yolo|human>`, `umbra session mcp <on|off> <name>`, `umbra session compact [focus]`. A change applies before your next reply.
+- Models: `umbra models`. Updates: `umbra update --check`.
+Run `umbra <command> --help` for the options.
+{%- endif %}
 
 <system_information>
 {{system}} {{release}} {{version}} {{machine}}

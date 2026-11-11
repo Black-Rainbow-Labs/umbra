@@ -159,6 +159,7 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     apply_run_args(&mut config, &args)?;
     set_quiet(args.quiet);
     set_verbose(config.verbose && !args.quiet);
+    crate::ui::highlight::set_enabled(config.syntax_highlight);
     enable_status_bar(config.status_bar);
     let interaction = Interaction::new(config.mode, &config.whitelist_actions, config.confirm_exit);
     if !interaction.interactive && config.mode != Mode::Yolo {
@@ -173,6 +174,9 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     let off = resumed.as_ref().map(|r| r.session.mcp_off.clone()).unwrap_or_default();
     let mcp = start_mcp(&config, &context, &off);
     share_with_view(&config, &cwd, &context, &mcp);
+    if screen::is_active() {
+        super::update_service::start_background_check(&config.updates);
+    }
     if crate::utils::console::status_bar_on() && screen::is_active() {
         crate::utils::console::update_status(crate::utils::status_bar::StatusInfo { model: super::providers::resolve_model(&config, &config.model), ..Default::default() });
     }
@@ -194,6 +198,14 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
         }
         let opening = match first_task(&args, resumed.as_ref(), config.keep_open, &context)? {
             FirstTask::Task { typed, task } => (typed, task),
+            FirstTask::Update => {
+                show_event(Tone::Info, "·", "installing the newest Umbra release");
+                match super::update_service::install(None, &mut |line| show_event(Tone::Info, "·", line)) {
+                    Ok(_) => return restart_into(&args, resumed.as_ref().map(|r| r.session.id.as_str())),
+                    Err(error) => show_event(Tone::Failure, "·", &format!("the update was not installed: {error:#}")),
+                }
+                continue;
+            }
             FirstTask::Resume(id) => {
                 (resumed, resume_notice) = resume_by_id(&id, &mut args)?;
                 continue;
@@ -216,9 +228,71 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
                 show_banner(&config, &cwd, &context);
                 (resumed, resume_notice) = resume_by_id(&id, &mut args)?;
             }
+            Some(NextSession::Restart) => return restart_into(&args, Some(&result.session_id)),
             None => return Ok(finish_run(&result, args.quiet)),
         }
     }
+}
+
+/// Starts the newly installed binary in place of this one, resuming a session when there is one,
+/// with the options this run was started with. The fullscreen view is closed first so the new
+/// process gets the terminal as the shell left it. On Unix the process is replaced; elsewhere
+/// the new process runs to its end and its exit code is returned.
+/// @param args - this run's options
+/// @param session - the session to resume, or None to start fresh
+fn restart_into(args: &RunArgs, session: Option<&str>) -> Result<i32> {
+    screen::leave();
+    let exe = super::update_service::install_target()?;
+    let argv = restart_args(args, session);
+    let mut command = std::process::Command::new(&exe);
+    command.args(&argv);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = command.exec();
+        bail!("could not start {}: {error}", exe.display());
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command.status().with_context(|| format!("could not start {}", exe.display()))?;
+        Ok(status.code().unwrap_or(1))
+    }
+}
+
+/// The options a restarted Umbra gets: `--resume <id>`, then every option of this run that
+/// changes how the session runs. The task itself is left out, because the session already has it.
+/// @param args - this run's options
+/// @param session - the session to resume
+pub fn restart_args(args: &RunArgs, session: Option<&str>) -> Vec<String> {
+    let mut argv: Vec<String> = Vec::new();
+    let mut flag = |on: bool, name: &str| if on { argv.push(name.to_string()) };
+    flag(args.yolo, "--yolo");
+    flag(args.no_fullscreen, "--no-fullscreen");
+    flag(args.no_mouse, "--no-mouse");
+    flag(args.no_status_bar, "--no-status-bar");
+    flag(args.keep_open, "--keep-open");
+    flag(args.verbose, "--verbose");
+    flag(args.no_compact, "--no-compact");
+    flag(args.common.text, "--text");
+    flag(args.common.no_mcp, "--no-mcp");
+    flag(args.common.no_skills, "--no-skills");
+    flag(args.common.no_instructions, "--no-instructions");
+    let mut pair = |name: &str, value: Option<String>| if let Some(value) = value { argv.extend([name.to_string(), value]) };
+    pair("--mode", args.mode.clone());
+    pair("--cost-limit", args.cost_limit.map(|v| v.to_string()));
+    pair("--step-limit", args.step_limit.map(|v| v.to_string()));
+    pair("--context-window", args.context_window.map(|v| v.to_string()));
+    pair("--model", args.common.model.clone());
+    pair("--finish", args.common.finish.clone());
+    pair("--cwd", args.common.cwd.as_ref().map(|p| p.display().to_string()));
+    pair("--docker", args.common.docker.clone());
+    pair("--mcp", (!args.common.mcp.is_empty()).then(|| args.common.mcp.join(",")));
+    pair("--no-source", (!args.common.no_source.is_empty()).then(|| args.common.no_source.join(",")));
+    for file in &args.common.config {
+        pair("--config", Some(file.display().to_string()));
+    }
+    pair("--resume", session.map(String::from));
+    argv
 }
 
 /// `umbra resume`: with an id, continues that session; with none, shows the session picker. With
@@ -703,6 +777,8 @@ enum FirstTask {
     Task { typed: String, task: String },
     /// `/resume <id>` at the first prompt.
     Resume(String),
+    /// `/update` at the first prompt.
+    Update,
 }
 
 /// Gets the first task from the options, or asks for it in a terminal. A resumed session asks
@@ -741,6 +817,7 @@ fn first_task(args: &RunArgs, resumed: Option<&ResumedSession>, keep_open: bool,
             LineAction::SendToModel(task) => return Ok(FirstTask::Task { typed, task }),
             LineAction::Builtin(BuiltinCommand::Resume(Some(id))) => return Ok(FirstTask::Resume(id)),
             LineAction::Builtin(BuiltinCommand::Quit) => bail!("no task given"),
+            LineAction::Builtin(BuiltinCommand::Update) => return Ok(FirstTask::Update),
             LineAction::Builtin(BuiltinCommand::Clear | BuiltinCommand::Compact(_)) => show_event(Tone::Info, "·", "nothing to clear or compact yet"),
             LineAction::Builtin(_) => show_event(Tone::Info, "·", "that command opens in the fullscreen view"),
         }

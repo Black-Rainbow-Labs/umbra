@@ -6,6 +6,7 @@ pub mod actions;
 pub mod block;
 pub mod frame;
 pub mod header;
+pub mod highlight;
 pub mod live;
 pub mod markdown;
 pub mod overlay;
