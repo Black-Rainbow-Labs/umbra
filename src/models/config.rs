@@ -109,7 +109,7 @@ impl Default for UmbraConfig {
             action_format: ActionFormat::Tools,
             finish: Finish::Reply,
             step_limit: 0,
-            cost_limit: 3.0,
+            cost_limit: 0.0,
             wall_time_limit_seconds: 0,
             max_consecutive_format_errors: 3,
             confirm_exit: true,

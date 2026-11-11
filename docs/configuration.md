@@ -23,7 +23,7 @@ mode = "confirm"                       # confirm, yolo or human
 action_format = "tools"                # tools or text
 finish = "reply"                       # reply (a reply with no command ends the turn) or submit
 step_limit = 0                         # model calls; 0 means no limit
-cost_limit = 3.0                       # dollars; 0 means no limit
+cost_limit = 0                         # dollars; 0 means no limit
 wall_time_limit_seconds = 0
 max_consecutive_format_errors = 3
 confirm_exit = true                    # ask for a follow up task when the agent finishes
@@ -152,7 +152,7 @@ detect_paths = true                    # attach image files named in a task or a
 | `action_format` | `tools` | `tools` uses native tool calls; `text` asks for one fenced block per reply. |
 | `finish` | `reply` | How a turn ends. `reply`: a reply with no command ends the turn and your next message continues the conversation, as in Claude Code; the model is given your words as they are and decides from them how much work to do. `submit`: mini-swe-agent's behavior, where the task is framed as an issue, every reply must run a command, and the run ends when a command prints `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`. A mini-swe-agent YAML config sets `submit`. `--finish` sets it for a run. |
 | `step_limit` | 0 | Stop after this many model calls. |
-| `cost_limit` | 3.0 | Stop once the run has cost this many dollars. In a terminal Umbra asks whether to raise the limit. |
+| `cost_limit` | 0 | Stop once the run has cost this many dollars. 0 means no limit. In a terminal Umbra asks whether to raise the limit. |
 | `wall_time_limit_seconds` | 0 | Stop after this many seconds. |
 | `max_consecutive_format_errors` | 3 | End the run after this many unusable replies in a row. |
 | `confirm_exit` | true | When a turn ends in a terminal, wait for the next message instead of exiting. |

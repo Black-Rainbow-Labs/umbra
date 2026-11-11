@@ -186,4 +186,11 @@ mod tests {
         assert_eq!(converted["action_format"], "text");
         assert_eq!(converted["environment"]["shell"], serde_json::json!(["bash", "-c"]));
     }
+
+    /// task-2630: a run has no cost limit unless one is set, so a long task is not stopped at a
+    /// dollar amount nobody chose.
+    #[test]
+    fn the_cost_limit_is_off_by_default() {
+        assert_eq!(UmbraConfig::default().cost_limit, 0.0);
+    }
 }

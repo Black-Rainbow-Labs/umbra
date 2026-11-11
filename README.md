@@ -561,7 +561,7 @@ The listing commands take `--json`. The options used most:
 | `-m, --model provider/model` | Which model to use |
 | `-y, --yolo` | Run commands without asking |
 | `--text` | Text mode instead of tool calls |
-| `-l, --cost-limit <dollars>` | Stop at this cost (default 3.00; 0 means no limit) |
+| `-l, --cost-limit <dollars>` | Stop at this cost (default 0, which means no limit) |
 | `--step-limit <n>` | Stop after this many model calls |
 | `--cwd <folder>` | Work in this folder |
 | `--docker <image>` | Run every command in a new container |
