@@ -47,13 +47,45 @@ export function buildLaunch(input) {
 }
 
 /**
+ * Reads the newest record of a phase's session: the trajectory JSON, or the journal Umbra 0.6.3
+ * and later append after every step when it is newer (a run killed in the middle of a turn
+ * leaves only the journal current), the way Umbra itself picks on resume.
+ * @param file - the trajectory path
+ * @param journal - the journal path next to it
+ */
+function newestRecord(file, journal) {
+  const mtime = (p) => (fs.existsSync(p) ? fs.statSync(p).mtimeMs : -1);
+  if (mtime(journal) >= 0 && mtime(journal) >= mtime(file)) return loadJournal(journal);
+  return readJson(file);
+}
+
+/**
+ * Rebuilds a trajectory from an Umbra session journal, skipping a line cut off by a kill.
+ * @param journal - the journal path
+ */
+function loadJournal(journal) {
+  const info = {};
+  let messages = [];
+  for (const line of fs.readFileSync(journal, "utf8").split("\n")) {
+    let record;
+    try { record = JSON.parse(line); } catch { continue; }
+    if (record.t === "start") Object.assign(info, { config: record.config, umbra_version: record.umbra_version });
+    else if (record.t === "msg") messages.push(record.m);
+    else if (record.t === "truncate") messages = messages.slice(0, record.len);
+    else if (record.t === "info") for (const [key, value] of Object.entries(record)) if (key !== "t") info[key] = value;
+  }
+  return { info, messages };
+}
+
+/**
  * Returns the number of messages a branch keeps: every message before the user message that
  * sent `beforePrompt`, read from the trajectory of the phase being branched.
  * @param resume - the resume target, with fromResult and beforePrompt
  */
 function branchIndex(resume) {
   const file = resume.fromResult?.trajectoryPath;
-  const messages = file && fs.existsSync(file) ? readJson(file).messages || [] : [];
+  const journal = file ? file.replace(/\.json$/, ".journal.jsonl") : null;
+  const messages = file && (fs.existsSync(file) || fs.existsSync(journal)) ? newestRecord(file, journal).messages || [] : [];
   const index = messages.findIndex((m) => m.role === "user" && (m.extra?.user_text ?? m.content) === resume.beforePrompt);
   return index < 0 ? messages.length : index;
 }
@@ -77,9 +109,10 @@ export function sessionStoreFile(homeDir, sessionRef) {
  */
 export function readArtifacts(launch) {
   const file = launch.artifacts.trajectoryPath;
-  if (!fs.existsSync(file)) return { sessionRef: null, sessionValid: false, sessionDetail: "no trajectory written", malformedToolCalls: 0, agentExitStatus: null, toolCalls: 0, compactions: 0 };
+  const journal = file.replace(/\.json$/, ".journal.jsonl");
+  if (!fs.existsSync(file) && !fs.existsSync(journal)) return { sessionRef: null, sessionValid: false, sessionDetail: "no trajectory written", malformedToolCalls: 0, agentExitStatus: null, toolCalls: 0, compactions: 0 };
   let trajectory;
-  try { trajectory = readJson(file); } catch (error) {
+  try { trajectory = newestRecord(file, journal); } catch (error) {
     return { sessionRef: null, sessionValid: false, sessionDetail: `trajectory does not parse: ${error.message}`, malformedToolCalls: 0, agentExitStatus: null, toolCalls: 0, compactions: 0 };
   }
   const messages = trajectory.messages || [];
