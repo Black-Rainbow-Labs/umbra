@@ -92,7 +92,7 @@ export function renderMarkdown(scorecard, comparison) {
   const hardSign = scorecard.hardSignTest;
   const reference = scorecard.referenceRunId ? `pi cells come from the reference run ${scorecard.referenceRunId} (pi ${scorecard.referenceMeta?.versions?.pi || "?"}). ` : "";
   const reps = Object.entries(scorecard.reps || {}).map(([agent, n]) => `${agent} ${n}`).join(", ");
-  const build = meta.umbraBuild ? `Umbra build: ${meta.umbraBuild.bin}, commit ${meta.umbraBuild.commit}${meta.umbraBuild.dirty ? " with uncommitted changes" : ""}. ` : "";
+  const build = meta.umbraBuild ? `Umbra build: ${meta.umbraBuild.bin}, commit ${meta.umbraBuild.commit}${meta.umbraBuild.dirty ? " with uncommitted changes" : ""}${meta.umbraBuild.settings?.length ? `, settings: ${meta.umbraBuild.settings.join("; ")}` : ""}. ` : "";
   const signLine = (label, s) => s ? `${label}: Umbra better on ${s.umbraBetterTasks}, pi better on ${s.piBetterTasks}, tied on ${s.tiedTasks}, two sided p = ${s.pValue.toFixed(3)}.\n` : "";
   const parts = [
     `# Scorecard: ${scorecard.runId}`, "",
