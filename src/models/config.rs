@@ -206,6 +206,14 @@ pub struct ProviderConfig {
     /// OpenAI compatible servers only: stream the reply, so Ctrl+C closes the connection and the
     /// server stops generating. On unless set to false.
     pub stream: Option<bool>,
+    /// OpenAI compatible servers only: send each assistant message's reasoning text back to the
+    /// server, exactly as it was streamed. A server that renders thinking into the prompt can then
+    /// reuse its prompt cache for the whole history. On unless set to false.
+    pub send_reasoning: Option<bool>,
+    /// OpenAI compatible servers only: send `chat_template_kwargs.preserve_thinking: true`, so a
+    /// Qwen style chat template keeps the reasoning of earlier turns. Defaults to on for a server
+    /// on this machine and off for any other server.
+    pub preserve_thinking: Option<bool>,
 }
 
 /// Which other harnesses' files Umbra reads. All are on by default.

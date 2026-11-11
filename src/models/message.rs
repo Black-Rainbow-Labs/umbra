@@ -86,6 +86,14 @@ impl Message {
         self
     }
 
+    /// Returns the reasoning text an OpenAI compatible server streamed with this assistant reply,
+    /// with the field name the server used (`reasoning_content` or `reasoning`). It is read from
+    /// the reply kept in `extra.response`, so sessions saved by earlier versions have it too.
+    pub fn reasoning(&self) -> Option<(&'static str, &str)> {
+        let reply = &self.extra["response"]["choices"][0]["message"];
+        ["reasoning_content", "reasoning"].into_iter().find_map(|key| reply[key].as_str().filter(|text| !text.is_empty()).map(|text| (key, text)))
+    }
+
     /// Returns a copy of this message with the given `extra` data attached.
     /// @param extra - the trajectory data to attach
     pub fn with_extra(mut self, extra: Value) -> Self {
