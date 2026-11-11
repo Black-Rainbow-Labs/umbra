@@ -21,6 +21,9 @@ pub struct LocalEnvironment {
     config: EnvironmentConfig,
     cwd: PathBuf,
     shell: Vec<String>,
+    /// With `persistent_shell`: the file each command saves its working directory and exported
+    /// variables to, and the next command reads them from (task-2617, E10).
+    state_file: Option<PathBuf>,
 }
 
 impl LocalEnvironment {
@@ -30,7 +33,8 @@ impl LocalEnvironment {
     pub fn new(config: EnvironmentConfig, default_cwd: &Path) -> Self {
         let cwd = if config.cwd.is_empty() { default_cwd.to_path_buf() } else { PathBuf::from(&config.cwd) };
         let shell = if config.shell.is_empty() { find_default_shell() } else { config.shell.clone() };
-        LocalEnvironment { config, cwd, shell }
+        let state_file = (config.persistent_shell && is_posix_shell(&shell)).then(new_state_file);
+        LocalEnvironment { config, cwd, shell, state_file }
     }
 
     /// Runs the first shell entry as a program with the given arguments, with the timeout and
@@ -69,20 +73,54 @@ impl Environment for LocalEnvironment {
     /// @param timeout - seconds the model asked for, or None
     fn execute_timed(&mut self, command: &str, timeout: Option<u64>) -> Observation {
         let mut args: Vec<String> = self.shell[1..].to_vec();
-        args.push(wrap_command(&self.shell, command));
+        let command_text = match &self.state_file {
+            Some(state) => with_saved_state(command, state),
+            None => command.to_string(),
+        };
+        args.push(wrap_command(&self.shell, &command_text));
         let seconds = timeout.map_or(self.config.timeout, |asked| asked.clamp(1, self.config.max_timeout.max(self.config.timeout)));
         self.execute_args_for(&args, command, seconds)
     }
 
     /// Values the prompt templates can use: the platform, the working folder and the timeout.
     fn template_vars(&self) -> Value {
-        json!({ "cwd": self.cwd.to_string_lossy(), "timeout": self.config.timeout, "shell": self.shell.join(" "), "environment_kind": "local" })
+        json!({ "cwd": self.cwd.to_string_lossy(), "timeout": self.config.timeout, "shell": self.shell.join(" "), "environment_kind": "local", "persistent_shell": self.state_file.is_some() })
+    }
+
+    /// Removes the shell state file.
+    fn close(&mut self) {
+        if let Some(state) = self.state_file.take() {
+            let _ = std::fs::remove_file(state);
+        }
     }
 
     /// The settings recorded in the trajectory.
     fn describe(&self) -> Value {
         json!({ "environment": self.config, "environment_type": "umbra.local", "shell": self.shell })
     }
+}
+
+/// Returns true for bash and the shells like it, which `exec 2>&1` and the state file work in.
+/// @param shell - the shell program and flags
+fn is_posix_shell(shell: &[String]) -> bool {
+    let program = Path::new(&shell[0]).file_stem().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    ["bash", "sh", "zsh", "dash"].contains(&program.as_str())
+}
+
+/// A new, unused path for a session's shell state file in the system temp folder.
+fn new_state_file() -> PathBuf {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    std::env::temp_dir().join(format!("umbra-shell-{}-{nanos}.sh", std::process::id()))
+}
+
+/// Wraps a command so it starts in the working directory and with the exported variables the
+/// previous command ended with, and saves its own for the next one. The command's exit code is
+/// kept. A command that calls `exit` itself saves nothing, so the next one starts as this one did.
+/// @param command - the command text
+/// @param state - the state file
+fn with_saved_state(command: &str, state: &Path) -> String {
+    let path = state.to_string_lossy().replace('\\', "/").replace('\'', "'\\''");
+    format!("[ -f '{path}' ] && . '{path}' 2>/dev/null\n{command}\n__umbra_rc=$?\n{{ export -p; printf 'cd %q\\n' \"$PWD\"; }} > '{path}' 2>/dev/null\nexit $__umbra_rc")
 }
 
 /// Makes the shell send stderr to stdout so the output keeps its original order. Only shells

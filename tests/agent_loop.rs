@@ -282,3 +282,20 @@ fn the_same_command_and_output_three_times_gets_one_stall_message() {
     assert_eq!(stalls.len(), 1, "one stall message for the streak");
     assert_eq!(messages[stalls[0] - 1]["role"], "tool", "it follows the third result");
 }
+
+#[test]
+fn with_persistent_shell_cd_and_export_carry_over_and_the_exit_code_is_kept() {
+    let scratch = Scratch::new("persistent-shell");
+    std::fs::create_dir_all(scratch.path("work/sub")).unwrap();
+    scratch.write("shell.toml", "[environment]\npersistent_shell = true\n");
+    let call = |c: &str| json!({ "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": c } }] });
+    let model = script(&scratch, json!([call("cd sub && export UMBRA_X=kept"), call("pwd; echo $UMBRA_X; false"), "Done."]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "-c", &slash(&scratch.path("shell.toml")), "--cwd", &slash(&scratch.path("work")), "-o", &slash(&traj), "task"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let messages = read_trajectory(&traj)["messages"].as_array().unwrap().clone();
+    let second = &messages[5]["extra"];
+    let printed = second["raw_output"].as_str().unwrap();
+    assert!(printed.trim_end().ends_with("kept") && printed.contains("/sub"), "the second command started in sub with UMBRA_X set: {printed}");
+    assert_eq!(second["returncode"], 1, "the command's own exit code is kept");
+}

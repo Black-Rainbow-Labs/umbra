@@ -160,6 +160,9 @@ pub struct EnvironmentConfig {
     pub shell: Vec<String>,
     /// Extra environment variables for every command.
     pub env: BTreeMap<String, String>,
+    /// Local bash only: each command starts in the working directory and with the exported
+    /// variables the previous command ended with, as in one shell kept for the session.
+    pub persistent_shell: bool,
     pub image: String,
     pub docker_executable: String,
     pub run_args: Vec<String>,
@@ -180,6 +183,7 @@ impl Default for EnvironmentConfig {
             timeout: 120,
             max_timeout: 600,
             shell: Vec::new(),
+            persistent_shell: false,
             env,
             image: String::new(),
             docker_executable: "docker".into(),

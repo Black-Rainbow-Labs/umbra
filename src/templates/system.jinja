@@ -20,7 +20,11 @@ A reply that runs no command ends your turn. The user reads it and then sends th
 
 # Commands
 
+{%- if persistent_shell is defined and persistent_shell %}
+- Commands run one after another in the same shell state: the working directory and exported variables carry over to the next command.
+{%- else %}
 - Every command runs in a new shell. The working directory and environment variables do not carry over, so use absolute paths or prefix a command with `cd <dir> &&`.
+{%- endif %}
 - Commands that wait for input, open an editor or a pager, or never exit will time out. Pass the flags that make a command run without asking.
 - Read long files a part at a time, for example `sed -n '1,120p' file`. Search with `grep -rn` or `rg`.
 {%- if edit_tool is defined and edit_tool %}

@@ -156,6 +156,7 @@ const ENVIRONMENT_AND_DISCOVERY: &[SettingSpec] = &[
     s!("environment.run_args", Environment, "Docker run args", "Arguments passed to docker run.", List, Next),
     s!("environment.forward_env", Environment, "Forwarded variables", "Host variables copied into the container when set.", List, Next),
     s!("environment.max_timeout", Environment, "Maximum timeout", "The most seconds the model may give one command with the bash timeout argument.", Integer { min: 1, max: 86_400 }, Next),
+    s!("environment.persistent_shell", Environment, "Persistent shell", "Local bash: the working directory and exported variables carry over from one command to the next.", Toggle, Next),
     s!("sources.*", Discovery, "Source", "Read the files of this other harness.", Toggle, Next),
     s!("instructions.enabled", Discovery, "Instructions", "Read CLAUDE.md, AGENTS.md and similar files.", Toggle, Next),
     s!("instructions.max_bytes", Discovery, "Instructions budget", "Stop adding instruction files after this many bytes.", Integer { min: 0, max: 1_000_000_000 }, Next),
