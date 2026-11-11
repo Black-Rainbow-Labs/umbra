@@ -1,6 +1,8 @@
 //! Any server that speaks the OpenAI Chat Completions API (`POST /chat/completions`): OpenAI,
 //! OpenRouter, llama.cpp's `llama-server`, Ollama, vLLM and others.
 
+use std::time::{Duration, Instant};
+
 use serde_json::{json, Value};
 
 use super::credentials::api_key;
@@ -73,7 +75,8 @@ impl OpenAiProvider {
     /// @param body - the request body
     fn send(&self, body: &Value) -> Result<ModelResponse, ProviderError> {
         let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
-        let raw = if self.streaming() { self.send_streaming(&url, body)? } else { self.send_whole(&url, body)? };
+        let started = Instant::now();
+        let (raw, first_token) = if self.streaming() { self.send_streaming(&url, body, started)? } else { (self.send_whole(&url, body)?, None) };
         if let Some(error) = raw.get("error").filter(|e| !e.is_null()) {
             if is_overflow_text(&error.to_string()) {
                 return Err(ProviderError { message: format!("server error: {error}"), retryable: false, context_overflow: true, interrupted: false });
@@ -82,6 +85,7 @@ impl OpenAiProvider {
         }
         let mut response = parse_response(&raw);
         response.cost = cost_of(&response.usage, price_for(&self.model, &self.config));
+        response.timing = call_timing(started.elapsed(), first_token, &raw["timings"]);
         Ok(response)
     }
 }
@@ -99,13 +103,15 @@ impl OpenAiProvider {
     }
 
     /// Sends a streaming request and joins the chunks into the JSON a whole reply would have had.
+    /// Also returns how long after `started` the first content, reasoning or tool call text came.
     /// On Ctrl+C the stream is dropped, which closes the connection at the next chunk.
     /// @param url - the endpoint
     /// @param body - the request body
-    fn send_streaming(&self, url: &str, body: &Value) -> Result<Value, ProviderError> {
+    /// @param started - when the call began
+    fn send_streaming(&self, url: &str, body: &Value, started: Instant) -> Result<(Value, Option<Duration>), ProviderError> {
         let stream = post_stream(&self.agent, url, &self.headers(), body);
         let mut status = 0;
-        let mut assembler = StreamAssembler::default();
+        let mut assembler = StreamAssembler { started: Some(started), ..Default::default() };
         loop {
             match stream.next().map_err(ProviderError::from_request)? {
                 StreamEvent::Start(code) => status = code,
@@ -115,8 +121,26 @@ impl OpenAiProvider {
                 StreamEvent::Failed(message) => return Err(ProviderError::network(format!("the stream from {url} broke: {message}"))),
             }
         }
-        assembler.finish().map_err(|e| ProviderError::fatal(format!("bad reply from {url}: {e}")))
+        let first_token = assembler.first_token;
+        let raw = assembler.finish().map_err(|e| ProviderError::fatal(format!("bad reply from {url}: {e}")))?;
+        Ok((raw, first_token))
     }
+}
+
+/// Builds the timing record of one call, kept in the trajectory so a run's speed and the
+/// server's prompt cache can be read without a proxy.
+/// @param total - how long the whole call took
+/// @param first_token - how long until the first content, reasoning or tool call text, if streamed
+/// @param server - the server's own `timings` object, or null
+fn call_timing(total: Duration, first_token: Option<Duration>, server: &Value) -> Value {
+    let mut timing = json!({ "total_ms": total.as_millis() as u64 });
+    if let Some(first) = first_token {
+        timing["first_token_ms"] = json!(first.as_millis() as u64);
+    }
+    if server.is_object() {
+        timing["timings"] = server.clone();
+    }
+    timing
 }
 
 impl Provider for OpenAiProvider {
@@ -275,8 +299,9 @@ pub fn parse_response(raw: &Value) -> ModelResponse {
         output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
         cache_read_tokens: cached,
         cache_write_tokens: 0,
+        reasoning_tokens: usage["completion_tokens_details"]["reasoning_tokens"].as_u64().unwrap_or(0),
     };
-    ModelResponse { content: message["content"].as_str().unwrap_or("").to_string(), tool_calls, finish_reason: choice["finish_reason"].as_str().unwrap_or("").to_string(), usage, cost: 0.0, raw: raw.clone() }
+    ModelResponse { content: message["content"].as_str().unwrap_or("").to_string(), tool_calls, finish_reason: choice["finish_reason"].as_str().unwrap_or("").to_string(), usage, cost: 0.0, raw: raw.clone(), timing: Value::Null }
 }
 
 /// Reads one tool call, giving it an id when the server sent none.
@@ -309,6 +334,11 @@ struct StreamAssembler {
     calls: Vec<PartialCall>,
     finish_reason: Value,
     usage: Value,
+    /// The server's `timings` object (llama.cpp and NInfer send one with the last chunk).
+    timings: Value,
+    /// When the request was sent, and how long after that the first text arrived.
+    started: Option<Instant>,
+    first_token: Option<Duration>,
     error: Value,
     id: Value,
     model: Value,
@@ -350,16 +380,32 @@ impl StreamAssembler {
         if chunk["usage"].is_object() {
             self.usage = chunk["usage"].clone();
         }
+        if chunk["timings"].is_object() {
+            self.timings = chunk["timings"].clone();
+        }
         for choice in chunk["choices"].as_array().into_iter().flatten() {
             if !choice["finish_reason"].is_null() {
                 self.finish_reason = choice["finish_reason"].clone();
             }
             let delta = &choice["delta"];
+            self.note_first_token(delta);
             self.content.push_str(delta["content"].as_str().unwrap_or(""));
             self.push_reasoning_delta(delta);
             for (position, call) in delta["tool_calls"].as_array().into_iter().flatten().enumerate() {
                 self.push_call_delta(call, position);
             }
+        }
+    }
+
+    /// Records the time of the first delta that carries content, reasoning or a tool call.
+    /// @param delta - the chunk's `delta` object
+    fn note_first_token(&mut self, delta: &Value) {
+        if self.first_token.is_some() {
+            return;
+        }
+        let text = ["content", "reasoning_content", "reasoning"].iter().any(|key| delta[*key].as_str().is_some_and(|t| !t.is_empty()));
+        if text || delta["tool_calls"].as_array().is_some_and(|calls| !calls.is_empty()) {
+            self.first_token = self.started.map(|started| started.elapsed());
         }
     }
 
@@ -406,6 +452,9 @@ impl StreamAssembler {
             message["tool_calls"] = Value::Array(tool_calls);
         }
         let mut raw = json!({ "id": self.id, "model": self.model, "object": "chat.completion", "choices": [{ "index": 0, "message": message, "finish_reason": self.finish_reason }], "usage": self.usage, "streamed": true });
+        if !self.timings.is_null() {
+            raw["timings"] = self.timings;
+        }
         if !self.error.is_null() {
             raw["error"] = self.error;
         }
@@ -441,6 +490,24 @@ mod tests {
         assert_eq!(parsed.finish_reason, "tool_calls");
         assert_eq!((parsed.usage.input_tokens, parsed.usage.cache_read_tokens, parsed.usage.output_tokens), (8, 3, 4));
         assert_eq!(parsed.raw["choices"][0]["message"]["reasoning_content"], "think");
+    }
+
+    #[test]
+    fn keeps_the_server_timings_reasoning_tokens_and_time_to_first_token() {
+        let mut assembler = StreamAssembler { started: Some(Instant::now()), ..Default::default() };
+        assembler.push_line(r#"data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}"#);
+        assert!(assembler.first_token.is_none(), "a delta with no text is not the first token");
+        assembler.push_line(r#"data: {"choices":[{"delta":{"reasoning_content":"hm"},"finish_reason":null}]}"#);
+        assert!(assembler.first_token.is_some());
+        assembler.push_line(r#"data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"completion_tokens_details":{"reasoning_tokens":3},"prompt_tokens_details":{"cached_tokens":8}},"timings":{"cache_n":8,"prompt_n":2}}"#);
+        let first = assembler.first_token;
+        let raw = assembler.finish().unwrap();
+        let parsed = parse_response(&raw);
+        assert_eq!(parsed.usage.reasoning_tokens, 3);
+        let timing = call_timing(Duration::from_millis(40), first, &raw["timings"]);
+        assert_eq!(timing["timings"]["cache_n"], 8);
+        assert_eq!(timing["total_ms"], 40);
+        assert!(timing["first_token_ms"].is_u64());
     }
 
     #[test]

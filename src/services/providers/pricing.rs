@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn prices_haiku_and_leaves_local_models_free() {
         let config = ProviderConfig::default();
-        let usage = Usage { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_tokens: 0, cache_write_tokens: 0 };
+        let usage = Usage { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0 };
         assert!((cost_of(&usage, price_for("claude-haiku-5-5", &config)) - 0.60).abs() < 1e-9);
         assert_eq!(cost_of(&usage, price_for("qwen3.8-27b", &config)), 0.0);
     }

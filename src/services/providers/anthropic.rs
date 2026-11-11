@@ -236,13 +236,14 @@ pub fn parse_response(raw: &Value) -> ModelResponse {
         output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
         cache_read_tokens: usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
         cache_write_tokens: usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+        reasoning_tokens: 0,
     };
     let finish_reason = match raw["stop_reason"].as_str().unwrap_or("") {
         "max_tokens" => "length".to_string(),
         "tool_use" => "tool_calls".to_string(),
         other => other.to_string(),
     };
-    let mut response = ModelResponse { content: text.join("\n"), tool_calls, finish_reason, usage, cost: 0.0, raw: raw.clone() };
+    let mut response = ModelResponse { content: text.join("\n"), tool_calls, finish_reason, usage, cost: 0.0, raw: raw.clone(), timing: Value::Null };
     response.raw = attach_raw_content(raw, Value::Array(blocks));
     response
 }

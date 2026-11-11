@@ -19,6 +19,10 @@ pub struct ModelStats {
     pub output_tokens: u64,
     /// How many times the history was compacted.
     pub compactions: u32,
+    /// The part of `input_tokens` the server read from its prompt cache.
+    pub cache_read_tokens: u64,
+    /// The part of `output_tokens` the model spent reasoning.
+    pub reasoning_tokens: u64,
 }
 
 /// The `info` block of a trajectory.
