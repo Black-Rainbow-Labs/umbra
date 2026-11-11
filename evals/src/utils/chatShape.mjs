@@ -1,5 +1,17 @@
 // Helpers that read and adjust OpenAI chat completion requests and responses.
 
+import { createHash } from "node:crypto";
+
+/**
+ * Returns a short hash of every message in a request, in order. Comparing these between two
+ * requests of one session shows whether the later one only added messages at the end (the
+ * server's prompt cache can reuse everything) or changed an earlier message (a compaction).
+ * @param messages - the request's messages
+ */
+export function messageHashes(messages) {
+  return messages.map((message) => createHash("sha1").update(JSON.stringify(message)).digest("hex").slice(0, 12));
+}
+
 /**
  * Applies the run's sampling settings to a chat request body. Messages and tools are left alone.
  * @param body - the parsed request JSON, changed in place
@@ -24,6 +36,7 @@ export function describeRequest(body) {
   const systemText = messages.filter((m) => m.role === "system" || m.role === "developer").map((m) => contentText(m.content)).join("");
   return {
     messageCount: messages.length,
+    messageHashes: messageHashes(messages),
     toolCount: tools.length,
     systemBytes: Buffer.byteLength(systemText, "utf8"),
     toolsBytes: tools.length ? Buffer.byteLength(JSON.stringify(tools), "utf8") : 0,

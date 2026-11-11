@@ -30,10 +30,35 @@ export function buildLaunch(input) {
   const trajectoryPath = path.join(input.phaseDir, "trajectory.json");
   const args = ["-m", `${PROVIDER}/${input.model}`, "--yolo", "--quiet", "--no-fullscreen", "--no-status-bar", "--exit-immediately", "--no-mcp", "--no-skills", "--no-instructions", "--step-limit", String(input.stepLimit), "--cwd", input.workspaceDir, "-o", trajectoryPath];
   if (input.resume) args.push("--resume", input.resume.sessionRef);
+  if (input.resume?.mode === "branch") args.push("--at", String(branchIndex(input.resume)), "--fork");
   if (input.resume?.mode === "fork") args.push("--fork");
   args.push("-t", input.prompt);
   const env = { ...process.env, UMBRA_HOME_OVERRIDE: input.homeDir, UMBRA_BANNER: "0", UMBRA_STATUS_BAR: "0", UMBRA_FULLSCREEN: "0" };
   return { command: UMBRA_BIN, args, env, cwd: input.workspaceDir, artifacts: { trajectoryPath } };
+}
+
+/**
+ * Returns the number of messages a branch keeps: every message before the user message that
+ * sent `beforePrompt`, read from the trajectory of the phase being branched.
+ * @param resume - the resume target, with fromResult and beforePrompt
+ */
+function branchIndex(resume) {
+  const file = resume.fromResult?.trajectoryPath;
+  const messages = file && fs.existsSync(file) ? readJson(file).messages || [] : [];
+  const index = messages.findIndex((m) => m.role === "user" && (m.extra?.user_text ?? m.content) === resume.beforePrompt);
+  return index < 0 ? messages.length : index;
+}
+
+/**
+ * Returns the file Umbra resumes a session from: the journal when the session index names one,
+ * otherwise the trajectory.
+ * @param homeDir - the isolated home
+ * @param sessionRef - the session id
+ */
+export function sessionStoreFile(homeDir, sessionRef) {
+  const entry = readJson(path.join(homeDir, ".umbra", "sessions", `${sessionRef}.json`), null);
+  if (!entry) return null;
+  return entry.journal || entry.trajectory || null;
 }
 
 /**
@@ -59,6 +84,7 @@ export function readArtifacts(launch) {
     toolCalls: messages.filter((m) => m.role === "tool").length,
     compactions: (trajectory.info?.compactions || []).length,
     messageCount: messages.length,
+    trajectoryPath: file,
     agentVersion: trajectory.info?.umbra_version || null,
   };
 }

@@ -1,0 +1,7 @@
+{
+  "id": "contracts-64k-clauses",
+  "contextWindow": 65536,
+  "stepLimit": 110,
+  "timeoutSeconds": 2700,
+  "prompt": "The folder contracts/ holds 36 contract files, contract-01.txt to contract-36.txt. Each file names the governing clause of the contract once, in a sentence of the form \"The governing clause of this contract is CL-<number>.\" Some files also mention clauses that were withdrawn; those do not govern and must be ignored.\n\nRead the contracts one at a time, in order, with a separate command for each file. Do not read several files in one command and do not write a script that processes them. After reading each file, and before you read the next, append one line for it to report.txt.\n\nreport.txt has exactly this format. The first line is:\n\nCLAUSE REPORT\n\nThen one line per contract, in file order, in the form:\n\ncontract-<NN>: CL-<number>\n\nwhere <NN> is the two digit file number and CL-<number> is the governing clause exactly as written in the file. Exception list: contracts 05, 12, 19, 27 and 33 are exempt. For those five contracts the line is \"contract-<NN>: EXEMPT\" instead of the clause id. After the 36 contract lines comes a last line in the form:\n\nTOTAL: <n>\n\nwhere <n> is the number of contracts that are not exempt. Then reply with a one line summary."
+}

@@ -1,0 +1,6 @@
+{
+  "id": "stack-vm-spec",
+  "prompt": "Implement an interpreter for the small stack language described in SPEC.md, as the Node program vm.mjs in the project folder. Run as `node vm.mjs program.svm`. Read SPEC.md completely before you start: it defines the instructions, the exact error messages with line numbers, the exit codes and the limits, and the output has to match it exactly (standard output, standard error and the exit code are all checked). Use only Node's built in modules and put the whole interpreter in vm.mjs. examples/countdown.svm and examples/countdown.out show one program and its output. Hidden test programs check every instruction, every error message and the limits, so write your own test programs for the edge cases in the spec (negative division and remainder, 64 bit overflow, errors found before running, the step limit, the call stack limit, CRLF files, large output) and run them.",
+  "timeoutSeconds": 1500,
+  "stepLimit": 150
+}

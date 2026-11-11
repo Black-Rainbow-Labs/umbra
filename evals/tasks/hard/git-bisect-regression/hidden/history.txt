@@ -1,0 +1,731 @@
+=== Initial commit
+--- package.json
+{
+  "name": "invoicer",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}
+--- README.md
+# invoicer
+
+A small library for pricing invoices in whole cents.
+=== Add money helpers
+--- src/money.mjs
+export function toCents(amount) {
+  return Math.round(amount * 100);
+}
+
+export function fromCents(cents) {
+  return cents / 100;
+}
+=== Add money tests
+--- test/money.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { toCents, fromCents } from "../src/money.mjs";
+
+test("toCents converts dollars to cents", () => {
+  assert.equal(toCents(19.99), 1999);
+});
+
+test("fromCents converts cents to dollars", () => {
+  assert.equal(fromCents(1999), 19.99);
+});
+=== Add tax calculation
+--- src/tax.mjs
+export function taxFor(cents, bps) {
+  return Math.round((cents * bps) / 10000);
+}
+=== Add tax tests
+--- test/tax.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { taxFor } from "../src/tax.mjs";
+
+test("tax is zero for a zero rate", () => {
+  assert.equal(taxFor(1000, 0), 0);
+});
+
+test("tax on an exact number of cents", () => {
+  assert.equal(taxFor(2000, 500), 100);
+});
+
+test("tax is rounded half up to the cent", () => {
+  assert.equal(taxFor(1050, 500), 53);
+  assert.equal(taxFor(10, 500), 1);
+  assert.equal(taxFor(1999, 825), 165);
+});
+=== Add line items
+--- src/invoice.mjs
+export function lineTotal(item) {
+  return item.qty * item.unitCents;
+}
+
+export function subtotal(items) {
+  return items.reduce((sum, item) => sum + lineTotal(item), 0);
+}
+=== Add invoice total with tax per line
+--- src/invoice.mjs
+import { taxFor } from "./tax.mjs";
+
+export function lineTotal(item) {
+  return item.qty * item.unitCents;
+}
+
+export function subtotal(items) {
+  return items.reduce((sum, item) => sum + lineTotal(item), 0);
+}
+
+export function invoiceTotal(items, bps) {
+  return items.reduce((sum, item) => sum + lineTotal(item) + taxFor(lineTotal(item), bps), 0);
+}
+=== Add invoice tests
+--- test/invoice.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { lineTotal, subtotal, invoiceTotal } from "../src/invoice.mjs";
+
+const items = [
+  { qty: 2, unitCents: 1000 },
+  { qty: 1, unitCents: 500 },
+];
+
+test("lineTotal multiplies quantity and price", () => {
+  assert.equal(lineTotal(items[0]), 2000);
+});
+
+test("subtotal sums the lines", () => {
+  assert.equal(subtotal(items), 2500);
+});
+
+test("invoiceTotal adds tax for each line", () => {
+  assert.equal(invoiceTotal(items, 1000), 2750);
+});
+=== Add usage section to the README
+--- README.md
+# invoicer
+
+A small library for pricing invoices in whole cents.
+
+## Usage
+
+Prices are integers in cents. Tax rates are in basis points, so 825 means 8.25 percent.
+Tax is calculated for each line and rounded to the cent.
+=== Add percentage discounts
+--- src/discounts.mjs
+export function applyPercent(cents, pct) {
+  return cents - (cents * pct) / 100;
+}
+=== Add discount tests
+--- test/discounts.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { applyPercent } from "../src/discounts.mjs";
+
+test("applyPercent takes a percentage off", () => {
+  assert.equal(applyPercent(1000, 10), 900);
+});
+=== Round discounts to whole cents
+--- src/discounts.mjs
+export function applyPercent(cents, pct) {
+  return cents - Math.round((cents * pct) / 100);
+}
+--- test/discounts.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { applyPercent } from "../src/discounts.mjs";
+
+test("applyPercent takes a percentage off", () => {
+  assert.equal(applyPercent(1000, 10), 900);
+});
+
+test("applyPercent rounds the discount to whole cents", () => {
+  assert.equal(applyPercent(999, 10), 899);
+});
+=== Add money formatting
+--- src/format.mjs
+export function formatMoney(cents) {
+  const sign = cents < 0 ? "-" : "";
+  const abs = Math.abs(cents);
+  return `${sign}$${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
+}
+=== Add formatting tests
+--- test/format.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { formatMoney } from "../src/format.mjs";
+
+test("formatMoney writes dollars and cents", () => {
+  assert.equal(formatMoney(1234), "$12.34");
+  assert.equal(formatMoney(5), "$0.05");
+});
+
+test("formatMoney writes negative amounts", () => {
+  assert.equal(formatMoney(-250), "-$2.50");
+});
+=== Add invoice summary text
+--- src/invoice.mjs
+import { taxFor } from "./tax.mjs";
+import { formatMoney } from "./format.mjs";
+
+export function lineTotal(item) {
+  return item.qty * item.unitCents;
+}
+
+export function subtotal(items) {
+  return items.reduce((sum, item) => sum + lineTotal(item), 0);
+}
+
+export function invoiceTotal(items, bps) {
+  return items.reduce((sum, item) => sum + lineTotal(item) + taxFor(lineTotal(item), bps), 0);
+}
+
+export function summary(items, bps) {
+  const sub = subtotal(items);
+  const total = invoiceTotal(items, bps);
+  return [`Subtotal: ${formatMoney(sub)}`, `Tax: ${formatMoney(total - sub)}`, `Total: ${formatMoney(total)}`].join("\n");
+}
+=== Test the invoice summary
+--- test/summary.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { summary } from "../src/invoice.mjs";
+
+const items = [
+  { qty: 2, unitCents: 1000 },
+  { qty: 1, unitCents: 500 },
+];
+
+test("summary lists subtotal, tax and total", () => {
+  assert.equal(summary(items, 1000), "Subtotal: $25.00\nTax: $2.50\nTotal: $27.50");
+});
+=== Add a changelog
+--- CHANGELOG.md
+# Changelog
+
+## 0.1.0
+
+- Money helpers, tax per line, percentage discounts, invoice summary text.
+=== Fix rounding in fromCents
+--- src/money.mjs
+export function toCents(amount) {
+  return Math.round(amount * 100);
+}
+
+export function fromCents(cents) {
+  return Number((cents / 100).toFixed(2));
+}
+--- test/money.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { toCents, fromCents } from "../src/money.mjs";
+
+test("toCents converts dollars to cents", () => {
+  assert.equal(toCents(19.99), 1999);
+});
+
+test("fromCents converts cents to dollars", () => {
+  assert.equal(fromCents(1999), 19.99);
+});
+
+test("fromCents keeps two decimals", () => {
+  assert.equal(fromCents(7), 0.07);
+});
+=== Add a currency to formatting and summaries
+--- src/format.mjs
+const SYMBOLS = { USD: "$", EUR: "€", GBP: "£" };
+
+export function formatMoney(cents, currency = "USD") {
+  const sign = cents < 0 ? "-" : "";
+  const abs = Math.abs(cents);
+  return `${sign}${SYMBOLS[currency] ?? "$"}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
+}
+--- src/invoice.mjs
+import { taxFor } from "./tax.mjs";
+import { formatMoney } from "./format.mjs";
+
+export function lineTotal(item) {
+  return item.qty * item.unitCents;
+}
+
+export function subtotal(items) {
+  return items.reduce((sum, item) => sum + lineTotal(item), 0);
+}
+
+export function invoiceTotal(items, bps) {
+  return items.reduce((sum, item) => sum + lineTotal(item) + taxFor(lineTotal(item), bps), 0);
+}
+
+export function summary(items, bps, currency = "USD") {
+  const sub = subtotal(items);
+  const total = invoiceTotal(items, bps);
+  return [`Subtotal: ${formatMoney(sub, currency)}`, `Tax: ${formatMoney(total - sub, currency)}`, `Total: ${formatMoney(total, currency)}`].join("\n");
+}
+=== Test currency symbols
+--- test/format.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { formatMoney } from "../src/format.mjs";
+
+test("formatMoney writes dollars and cents", () => {
+  assert.equal(formatMoney(1234), "$12.34");
+  assert.equal(formatMoney(5), "$0.05");
+});
+
+test("formatMoney writes negative amounts", () => {
+  assert.equal(formatMoney(-250), "-$2.50");
+});
+
+test("formatMoney writes a currency symbol", () => {
+  assert.equal(formatMoney(1234, "EUR"), "€12.34");
+});
+--- test/summary.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { summary } from "../src/invoice.mjs";
+
+const items = [
+  { qty: 2, unitCents: 1000 },
+  { qty: 1, unitCents: 500 },
+];
+
+test("summary lists subtotal, tax and total", () => {
+  assert.equal(summary(items, 1000), "Subtotal: $25.00\nTax: $2.50\nTotal: $27.50");
+});
+
+test("summary uses the currency symbol", () => {
+  assert.equal(summary(items, 1000, "EUR"), "Subtotal: €25.00\nTax: €2.50\nTotal: €27.50");
+});
+=== Split line total into small helpers
+--- src/invoice.mjs
+import { taxFor } from "./tax.mjs";
+import { formatMoney } from "./format.mjs";
+
+function quantityOf(item) {
+  return item.qty;
+}
+
+function priceOf(item) {
+  return item.unitCents;
+}
+
+export function lineTotal(item) {
+  return quantityOf(item) * priceOf(item);
+}
+
+export function subtotal(items) {
+  return items.reduce((sum, item) => sum + lineTotal(item), 0);
+}
+
+export function invoiceTotal(items, bps) {
+  return items.reduce((sum, item) => sum + lineTotal(item) + taxFor(lineTotal(item), bps), 0);
+}
+
+export function summary(items, bps, currency = "USD") {
+  const sub = subtotal(items);
+  const total = invoiceTotal(items, bps);
+  return [`Subtotal: ${formatMoney(sub, currency)}`, `Tax: ${formatMoney(total - sub, currency)}`, `Total: ${formatMoney(total, currency)}`].join("\n");
+}
+=== Add a command line entry point
+--- src/cli.mjs
+import fs from "node:fs";
+import { summary } from "./invoice.mjs";
+
+export function runCli(argv) {
+  const data = JSON.parse(fs.readFileSync(argv[0], "utf8"));
+  return summary(data.items, data.bps, data.currency);
+}
+=== Test the command line entry point
+--- test/cli.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { runCli } from "../src/cli.mjs";
+
+test("runCli prints the summary for a JSON file", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "invoicer-"));
+  const file = path.join(dir, "invoice.json");
+  fs.writeFileSync(file, JSON.stringify({ items: [{ qty: 2, unitCents: 1000 }], bps: 1000, currency: "USD" }));
+  assert.equal(runCli([file]), "Subtotal: $20.00\nTax: $2.00\nTotal: $22.00");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+=== Extract computeTax and share the rounding helper
+--- src/money.mjs
+export function toCents(amount) {
+  return Math.round(amount * 100);
+}
+
+export function fromCents(cents) {
+  return Number((cents / 100).toFixed(2));
+}
+
+export function roundCents(value) {
+  return Math.trunc(value);
+}
+--- src/tax.mjs
+import { roundCents } from "./money.mjs";
+
+export function computeTax(cents, bps) {
+  return roundCents((cents * bps) / 10000);
+}
+
+export const taxFor = computeTax;
+=== Add a tax rate table
+--- src/tax.mjs
+import { roundCents } from "./money.mjs";
+
+export const RATES = { CA: 725, NY: 400, TX: 625, WA: 650 };
+
+export function rateFor(region) {
+  return RATES[region] ?? 0;
+}
+
+export function computeTax(cents, bps) {
+  return roundCents((cents * bps) / 10000);
+}
+
+export const taxFor = computeTax;
+=== Test the tax rate table
+--- test/rates.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { rateFor } from "../src/tax.mjs";
+
+test("rateFor returns the rate in basis points", () => {
+  assert.equal(rateFor("CA"), 725);
+  assert.equal(rateFor("NY"), 400);
+});
+
+test("rateFor returns zero for an unknown region", () => {
+  assert.equal(rateFor("ZZ"), 0);
+});
+=== Document the tax rates
+--- README.md
+# invoicer
+
+A small library for pricing invoices in whole cents.
+
+## Usage
+
+Prices are integers in cents. Tax rates are in basis points, so 825 means 8.25 percent.
+Tax is calculated for each line and rounded to the cent.
+
+## Regions
+
+`rateFor(region)` returns the tax rate for CA, NY, TX and WA. Other regions have no tax.
+=== Cap percentage discounts
+--- src/discounts.mjs
+export function applyPercent(cents, pct) {
+  const capped = Math.min(Math.max(pct, 0), 100);
+  return cents - Math.round((cents * capped) / 100);
+}
+=== Test the discount cap
+--- test/discounts.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { applyPercent } from "../src/discounts.mjs";
+
+test("applyPercent takes a percentage off", () => {
+  assert.equal(applyPercent(1000, 10), 900);
+});
+
+test("applyPercent rounds the discount to whole cents", () => {
+  assert.equal(applyPercent(999, 10), 899);
+});
+
+test("applyPercent caps the percentage between 0 and 100", () => {
+  assert.equal(applyPercent(1000, 150), 0);
+  assert.equal(applyPercent(1000, -5), 1000);
+});
+=== Add a due date helper
+--- src/dates.mjs
+export function dueDate(issued, days) {
+  const date = new Date(`${issued}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+--- test/dates.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { dueDate } from "../src/dates.mjs";
+
+test("dueDate adds days to the issue date", () => {
+  assert.equal(dueDate("2024-01-30", 30), "2024-02-29");
+  assert.equal(dueDate("2023-12-15", 20), "2024-01-04");
+});
+=== Move the tax code into its own folder
+--- delete src/tax.mjs
+--- src/tax/rates.mjs
+export const RATES = { CA: 725, NY: 400, TX: 625, WA: 650 };
+
+export function rateFor(region) {
+  return RATES[region] ?? 0;
+}
+--- src/tax/index.mjs
+import { roundCents } from "../money.mjs";
+
+export { RATES, rateFor } from "./rates.mjs";
+
+export function computeTax(cents, bps) {
+  return roundCents((cents * bps) / 10000);
+}
+
+export const taxFor = computeTax;
+--- src/invoice.mjs
+import { taxFor } from "./tax/index.mjs";
+import { formatMoney } from "./format.mjs";
+
+function quantityOf(item) {
+  return item.qty;
+}
+
+function priceOf(item) {
+  return item.unitCents;
+}
+
+export function lineTotal(item) {
+  return quantityOf(item) * priceOf(item);
+}
+
+export function subtotal(items) {
+  return items.reduce((sum, item) => sum + lineTotal(item), 0);
+}
+
+export function invoiceTotal(items, bps) {
+  return items.reduce((sum, item) => sum + lineTotal(item) + taxFor(lineTotal(item), bps), 0);
+}
+
+export function summary(items, bps, currency = "USD") {
+  const sub = subtotal(items);
+  const total = invoiceTotal(items, bps);
+  return [`Subtotal: ${formatMoney(sub, currency)}`, `Tax: ${formatMoney(total - sub, currency)}`, `Total: ${formatMoney(total, currency)}`].join("\n");
+}
+--- test/tax.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { taxFor } from "../src/tax/index.mjs";
+
+test("tax is zero for a zero rate", () => {
+  assert.equal(taxFor(1000, 0), 0);
+});
+
+test("tax on an exact number of cents", () => {
+  assert.equal(taxFor(2000, 500), 100);
+});
+
+test("tax is rounded half up to the cent", () => {
+  assert.equal(taxFor(1050, 500), 53);
+  assert.equal(taxFor(10, 500), 1);
+  assert.equal(taxFor(1999, 825), 165);
+});
+--- test/rates.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { rateFor } from "../src/tax/index.mjs";
+
+test("rateFor returns the rate in basis points", () => {
+  assert.equal(rateFor("CA"), 725);
+  assert.equal(rateFor("NY"), 400);
+});
+
+test("rateFor returns zero for an unknown region", () => {
+  assert.equal(rateFor("ZZ"), 0);
+});
+=== Add a summary for a tax region
+--- src/invoice.mjs
+import { taxFor, rateFor } from "./tax/index.mjs";
+import { formatMoney } from "./format.mjs";
+
+function quantityOf(item) {
+  return item.qty;
+}
+
+function priceOf(item) {
+  return item.unitCents;
+}
+
+export function lineTotal(item) {
+  return quantityOf(item) * priceOf(item);
+}
+
+export function subtotal(items) {
+  return items.reduce((sum, item) => sum + lineTotal(item), 0);
+}
+
+export function invoiceTotal(items, bps) {
+  return items.reduce((sum, item) => sum + lineTotal(item) + taxFor(lineTotal(item), bps), 0);
+}
+
+export function summary(items, bps, currency = "USD") {
+  const sub = subtotal(items);
+  const total = invoiceTotal(items, bps);
+  return [`Subtotal: ${formatMoney(sub, currency)}`, `Tax: ${formatMoney(total - sub, currency)}`, `Total: ${formatMoney(total, currency)}`].join("\n");
+}
+
+export function summaryForRegion(items, region, currency = "USD") {
+  return summary(items, rateFor(region), currency);
+}
+=== Test the regional summary
+--- test/summary.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { summary, summaryForRegion } from "../src/invoice.mjs";
+
+const items = [
+  { qty: 2, unitCents: 1000 },
+  { qty: 1, unitCents: 500 },
+];
+
+test("summary lists subtotal, tax and total", () => {
+  assert.equal(summary(items, 1000), "Subtotal: $25.00\nTax: $2.50\nTotal: $27.50");
+});
+
+test("summary uses the currency symbol", () => {
+  assert.equal(summary(items, 1000, "EUR"), "Subtotal: €25.00\nTax: €2.50\nTotal: €27.50");
+});
+
+test("summaryForRegion uses the rate of the region", () => {
+  assert.equal(summaryForRegion(items, "NY"), "Subtotal: $25.00\nTax: $1.00\nTotal: $26.00");
+});
+=== Add refunds
+--- src/refunds.mjs
+import { roundCents } from "./money.mjs";
+
+export function refundCents(cents, pct) {
+  return roundCents((cents * pct) / 100);
+}
+=== Test refunds
+--- test/refunds.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { refundCents } from "./../src/refunds.mjs";
+
+test("refundCents refunds a percentage of the amount", () => {
+  assert.equal(refundCents(1000, 10), 100);
+});
+
+test("refundCents never refunds more than the percentage", () => {
+  assert.equal(refundCents(999, 50), 499);
+  assert.equal(refundCents(1001, 50), 500);
+});
+=== Document refunds
+--- README.md
+# invoicer
+
+A small library for pricing invoices in whole cents.
+
+## Usage
+
+Prices are integers in cents. Tax rates are in basis points, so 825 means 8.25 percent.
+Tax is calculated for each line and rounded to the cent.
+
+## Regions
+
+`rateFor(region)` returns the tax rate for CA, NY, TX and WA. Other regions have no tax.
+
+## Refunds
+
+`refundCents(cents, pct)` returns the part of an amount that is refunded. It never refunds a fraction of a cent.
+=== Document the money helpers
+--- src/money.mjs
+/** Converts a dollar amount to whole cents. */
+export function toCents(amount) {
+  return Math.round(amount * 100);
+}
+
+/** Converts whole cents to a dollar amount with two decimals. */
+export function fromCents(cents) {
+  return Number((cents / 100).toFixed(2));
+}
+
+/** Drops the fraction of a cent. Rounds toward zero, so 2.9 becomes 2 and -2.9 becomes -2. */
+export function roundCents(value) {
+  return Math.trunc(value);
+}
+=== Let invoice lines have zero quantity
+--- src/invoice.mjs
+import { taxFor, rateFor } from "./tax/index.mjs";
+import { formatMoney } from "./format.mjs";
+
+function quantityOf(item) {
+  return Math.max(0, item.qty);
+}
+
+function priceOf(item) {
+  return item.unitCents;
+}
+
+export function lineTotal(item) {
+  return quantityOf(item) * priceOf(item);
+}
+
+export function subtotal(items) {
+  return items.reduce((sum, item) => sum + lineTotal(item), 0);
+}
+
+export function invoiceTotal(items, bps) {
+  return items.reduce((sum, item) => sum + lineTotal(item) + taxFor(lineTotal(item), bps), 0);
+}
+
+export function summary(items, bps, currency = "USD") {
+  const sub = subtotal(items);
+  const total = invoiceTotal(items, bps);
+  return [`Subtotal: ${formatMoney(sub, currency)}`, `Tax: ${formatMoney(total - sub, currency)}`, `Total: ${formatMoney(total, currency)}`].join("\n");
+}
+
+export function summaryForRegion(items, region, currency = "USD") {
+  return summary(items, rateFor(region), currency);
+}
+=== Test zero quantity lines
+--- test/invoice.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { lineTotal, subtotal, invoiceTotal } from "../src/invoice.mjs";
+
+const items = [
+  { qty: 2, unitCents: 1000 },
+  { qty: 1, unitCents: 500 },
+];
+
+test("lineTotal multiplies quantity and price", () => {
+  assert.equal(lineTotal(items[0]), 2000);
+});
+
+test("subtotal sums the lines", () => {
+  assert.equal(subtotal(items), 2500);
+});
+
+test("invoiceTotal adds tax for each line", () => {
+  assert.equal(invoiceTotal(items, 1000), 2750);
+});
+
+test("a line with zero or negative quantity is worth nothing", () => {
+  assert.equal(lineTotal({ qty: 0, unitCents: 500 }), 0);
+  assert.equal(lineTotal({ qty: -2, unitCents: 500 }), 0);
+});
+=== Bump the version to 0.2.0
+--- package.json
+{
+  "name": "invoicer",
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}
+=== Update the changelog for 0.2.0
+--- CHANGELOG.md
+# Changelog
+
+## 0.2.0
+
+- Currencies in summaries, tax regions, a due date helper, refunds, zero quantity lines.
+
+## 0.1.0
+
+- Money helpers, tax per line, percentage discounts, invoice summary text.

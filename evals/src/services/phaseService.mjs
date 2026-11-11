@@ -5,19 +5,62 @@ import fs from "node:fs";
 import path from "node:path";
 import { runProcess } from "../utils/process.mjs";
 import { listFiles } from "../utils/files.mjs";
+import { taskPhases } from "../repositories/taskRepository.mjs";
 
 /**
- * Works out which session a phase resumes or forks, from the phase's mode and `from` index.
+ * Works out which session a phase resumes, forks or branches, from the phase's mode and `from`
+ * index. A branch continues the session from just before the user message that phase `at` sent,
+ * so the branch's history has none of that phase or anything after it.
  * @param phase - the TaskPhase
  * @param index - the phase index
  * @param earlier - results of the phases already run
+ * @param phases - every phase of the task
  */
-export function resumeTarget(phase, index, earlier) {
+export function resumeTarget(phase, index, earlier, phases = []) {
   const mode = phase.mode || (index === 0 ? "new" : "resume");
   if (mode === "new") return null;
   const from = earlier[phase.from ?? index - 1];
   if (!from || !from.sessionRef) return { mode, sessionRef: null, missing: true };
-  return { mode, sessionRef: from.sessionRef };
+  const target = { mode, sessionRef: from.sessionRef, fromResult: from };
+  if (mode === "branch") target.beforePrompt = phases[phase.at]?.prompt || "";
+  return target;
+}
+
+/**
+ * Cuts the last bytes off the session file a phase is about to resume, the way a crash in the
+ * middle of a write would leave it.
+ * @param adapter - the agent adapter
+ * @param input - the AdapterInput
+ * @param bytes - how many bytes to remove from the end
+ */
+function cutSessionFile(adapter, input, bytes) {
+  const file = adapter.sessionStoreFile?.(input.homeDir, input.resume.sessionRef, input.resume.fromResult);
+  if (!file || !fs.existsSync(file)) return { cutFile: file || null, cutBytes: 0 };
+  const size = fs.statSync(file).size;
+  fs.truncateSync(file, Math.max(0, size - bytes));
+  return { cutFile: file, cutBytes: Math.min(bytes, size) };
+}
+
+/**
+ * Reads the measurements a phase asked for: the time from launch to its first model request,
+ * and the bytes the agent wrote apart from its own stdout and stderr, which is what it wrote to
+ * its session store.
+ * @param phase - the TaskPhase
+ * @param outcome - what runProcess returned
+ * @param proxy - the running proxy
+ * @param phaseDir - the phase folder holding stdout.log and stderr.log
+ */
+function phaseMeasurements(phase, outcome, proxy, phaseDir) {
+  const out = {};
+  if (phase.measureResumeStartup) {
+    out.measureResumeStartup = true;
+    out.firstRequestAfterMs = proxy.state.phaseFirstChatAt ? proxy.state.phaseFirstChatAt - outcome.startedAtMs : null;
+  }
+  if (phase.measureStoreWrites && Number.isFinite(outcome.bytesWritten)) {
+    const logBytes = ["stdout.log", "stderr.log"].reduce((total, name) => total + (fs.existsSync(path.join(phaseDir, name)) ? fs.statSync(path.join(phaseDir, name)).size : 0), 0);
+    out.storeBytesWritten = Math.max(0, outcome.bytesWritten - logBytes);
+  }
+  return out;
 }
 
 /**
@@ -38,19 +81,21 @@ export async function runPhase(ctx) {
   fs.mkdirSync(phaseDir, { recursive: true });
   const proxy = proxyBox.proxy;
   const contextWindow = phase.contextWindow ?? task.contextWindow ?? null;
-  Object.assign(proxy.state, { phase: index, contextWindow, phaseChatCount: 0 });
-  const resume = resumeTarget(phase, index, ctx.earlier);
+  Object.assign(proxy.state, { phase: index, contextWindow, phaseChatCount: 0, phaseFirstChatAt: null });
+  const resume = resumeTarget(phase, index, ctx.earlier, taskPhases(task));
   if (resume?.missing) return skippedPhase(phase, index, resume, "the phase to resume has no session id");
-  const input = { workspaceDir: ctx.workspaceDir, prompt: phase.prompt, proxyBaseUrl: proxy.baseUrl, model: ctx.model, contextWindow, timeoutSeconds: task.timeoutSeconds, stepLimit: task.stepLimit, homeDir: path.join(ctx.cellDir, "home"), phaseDir, resume };
+  const input = { workspaceDir: ctx.workspaceDir, prompt: phase.prompt, proxyBaseUrl: proxy.baseUrl, model: ctx.model, contextWindow, timeoutSeconds: task.timeoutSeconds, stepLimit: phase.stepLimit ?? task.stepLimit, homeDir: path.join(ctx.cellDir, "home"), phaseDir, resume };
+  const cut = phase.cutSessionBytes && resume ? cutSessionFile(adapter, input, phase.cutSessionBytes) : {};
   const launch = adapter.buildLaunch(input);
-  const handle = runProcess({ command: launch.command, args: launch.args, cwd: launch.cwd, env: launch.env, stdoutPath: path.join(phaseDir, "stdout.log"), stderrPath: path.join(phaseDir, "stderr.log"), timeoutSeconds: task.timeoutSeconds, killAfterSeconds: phase.killAfterSeconds });
-  proxyBox.onChat = (count) => { if (count > task.stepLimit) handle.kill("step-limit"); };
+  const handle = runProcess({ command: launch.command, args: launch.args, cwd: launch.cwd, env: launch.env, stdoutPath: path.join(phaseDir, "stdout.log"), stderrPath: path.join(phaseDir, "stderr.log"), timeoutSeconds: task.timeoutSeconds, killAfterSeconds: phase.killAfterSeconds, measureWrites: Boolean(phase.measureStoreWrites) });
+  proxyBox.onChat = (count) => { if (count > input.stepLimit) handle.kill("step-limit"); };
   const outcome = await handle.done;
   proxyBox.onChat = null;
   await waitForProxyIdle(proxy);
   const artifacts = safeReadArtifacts(adapter, launch);
   const workspaceFiles = Array.isArray(task.phases) ? listFiles(ctx.workspaceDir) : undefined;
-  return { index, label: phase.label || `phase-${index}`, mode: resume?.mode || "new", resumedFrom: resume?.sessionRef || null, contextWindow, ...outcome, stdoutPath: path.join(phaseDir, "stdout.log"), ...artifacts, requests: proxy.state.phaseChatCount, workspaceFiles };
+  const measured = phaseMeasurements(phase, outcome, proxy, phaseDir);
+  return { index, label: phase.label || `phase-${index}`, mode: resume?.mode || "new", resumedFrom: resume?.sessionRef || null, contextWindow, ...outcome, ...cut, ...measured, stdoutPath: path.join(phaseDir, "stdout.log"), ...artifacts, requests: proxy.state.phaseChatCount, workspaceFiles };
 }
 
 /**

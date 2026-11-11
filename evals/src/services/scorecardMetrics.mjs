@@ -30,18 +30,38 @@ function previousMessageCount(chats, i, phases) {
 }
 
 /**
- * Finds compactions in one cell: requests whose message count dropped compared with the
- * request before them in the same session. A run of consecutive drops (a summary call
- * followed by the rebuilt history) counts once. Returns the index of each drop.
+ * Returns true when a request changed an earlier message of the request before it in the same
+ * phase, instead of only adding messages at the end. That is what a compaction does, whether it
+ * removes messages (a summary) or rewrites them in place (Umbra's mask pass), and it is what
+ * makes the server's prompt cache stop matching. Needs the proxy's per message hashes.
+ * @param previous - the earlier request record
+ * @param current - the later request record
+ */
+function rewroteHistory(previous, current) {
+  const before = previous.messageHashes;
+  const after = current.messageHashes;
+  if (!Array.isArray(before) || !Array.isArray(after)) return null;
+  if (after.length < before.length) return true;
+  return before.some((hash, index) => after[index] !== hash);
+}
+
+/**
+ * Finds compactions in one cell. Inside a phase, a request that rewrote the history of the
+ * request before it counts; records from before the proxy kept message hashes fall back to a
+ * drop in the message count. Across a resume, a drop in the message count compared with the
+ * resumed session counts. A run of consecutive compactions (a summary call followed by the
+ * rebuilt history) counts once. Returns the index of each compaction.
  * @param chats - the chat requests of one cell, in order
  * @param phases - the cell's phase results
  */
 export function compactionIndexes(chats, phases) {
   const indexes = [];
   for (let i = 1; i < chats.length; i += 1) {
-    const previous = previousMessageCount(chats, i, phases);
-    const dropped = previous !== null && chats[i].messageCount < previous;
-    if (dropped && indexes[indexes.length - 1] !== i - 1) indexes.push(i);
+    const samePhase = chats[i].phase === chats[i - 1].phase;
+    const rewritten = samePhase ? rewroteHistory(chats[i - 1], chats[i]) : null;
+    const previous = rewritten === null ? previousMessageCount(chats, i, phases) : null;
+    const compacted = rewritten ?? (previous !== null && chats[i].messageCount < previous);
+    if (compacted && indexes[indexes.length - 1] !== i - 1) indexes.push(i);
   }
   return indexes;
 }
@@ -88,6 +108,23 @@ function reliabilityMetrics(cells) {
     httpErrorRequests: chats.filter((r) => r.status >= 400 || (r.status === 0 && !r.aborted)).length,
     malformedToolCalls: sum(cells.map((c) => c.result.malformedToolCalls || 0)),
     nonzeroExits: cells.filter((c) => c.result.nonzeroExit).length,
+    isolationBreaches: cells.filter((c) => c.result.isolationBreach).length,
+  };
+}
+
+/**
+ * Computes the session cost measurements from phases that recorded them: the time from launch
+ * to the first model request when resuming a long session, and the bytes the agent wrote to its
+ * session store divided by the model requests of the phase.
+ * @param cells - all cells of one agent
+ */
+function sessionCostMetrics(cells) {
+  const phases = cells.flatMap((c) => c.result.phases || []);
+  const startups = phases.filter((p) => p.measureResumeStartup && Number.isFinite(p.firstRequestAfterMs)).map((p) => p.firstRequestAfterMs);
+  const stores = phases.filter((p) => Number.isFinite(p.storeBytesWritten) && p.requests > 0);
+  return {
+    resumeStartupMs: mean(startups),
+    storeBytesPerStep: stores.length ? sum(stores.map((p) => p.storeBytesWritten)) / sum(stores.map((p) => p.requests)) : null,
   };
 }
 
@@ -160,5 +197,6 @@ function sessionMetrics(cells) {
 export function agentScorecard(cells) {
   const categories = [...new Set(cells.map((c) => c.result.category))];
   const perCategory = Object.fromEntries(categories.map((category) => [category, metricsFor(cells.filter((c) => c.result.category === category))]));
-  return { overall: metricsFor(cells), perCategory, compaction: compactionMetrics(cells), sessions: sessionMetrics(cells) };
+  const hardCells = cells.filter((c) => c.result.category === "hard");
+  return { overall: metricsFor(cells), perCategory, compaction: compactionMetrics(cells), sessions: sessionMetrics(cells), sessionCost: sessionCostMetrics(cells), hard: hardCells.length ? metricsFor(hardCells) : {} };
 }

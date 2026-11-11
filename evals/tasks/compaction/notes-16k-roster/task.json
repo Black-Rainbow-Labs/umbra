@@ -1,0 +1,7 @@
+{
+  "id": "notes-16k-roster",
+  "contextWindow": 16384,
+  "stepLimit": 80,
+  "timeoutSeconds": 2700,
+  "prompt": "The folder notes/ holds 24 files of workshop notes, part-01.md to part-24.md. Read them one at a time, in order, with a separate command for each file. Do not read several files in one command and do not write a script that processes them.\n\nEach file has one line that starts with \"Attendee:\" followed by a person's full name (first name, then surname). After reading each file, and before you read the next, append one line for that attendee to roster.txt in exactly this form:\n\n<NN> | <SURNAME>, <Firstname> | teal\n\n<NN> is the two digit file number, <SURNAME> is the surname in capital letters, <Firstname> keeps its normal capitalization, and the last field is the word teal in lower case. Example: \"07 | HARLOW, Dana | teal\". roster.txt must end up with 24 lines, in file order.\n\nTwo facts are stated somewhere in the notes: the project code and the name of the project coordinator. When all 24 files are done, write summary.json with exactly these keys: \"project_code\" (string), \"coordinator\" (string, full name as written in the notes), \"attendee_count\" (number of lines in roster.txt). Then reply with a one line summary."
+}

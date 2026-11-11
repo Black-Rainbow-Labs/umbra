@@ -1,0 +1,6 @@
+{
+  "id": "eight-bugs-suite",
+  "prompt": "The Python package shiplib/ has 8 failing tests. Run them with `python -m unittest discover -s tests -t .` from the project folder. Each of the 8 failures comes from a different bug, and the bugs are spread over six of the modules in shiplib/ (orders.py and __init__.py have none). Some of the failing tests go through shiplib/orders.py, so the file a failure points at is not always the file with the bug.\n\nFix the bugs in shiplib/ so that all tests pass. Do not edit anything in tests/. Fix each bug the way its docstring describes, for every input and not only for the values the visible tests use: a second, larger test suite will check the same behavior with other values, including values at the edges (for example exactly at a threshold, rounding of half cents, and several objects used one after another). Do not change behavior that already works, and do not change the signatures of public functions or classes, except that a mutable default argument may become None if you create the real default inside the function.",
+  "timeoutSeconds": 1500,
+  "stepLimit": 150
+}

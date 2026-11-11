@@ -1,0 +1,10 @@
+{
+  "id": "branch-earlier",
+  "scenario": "branch",
+  "timeoutSeconds": 600,
+  "phases": [
+    { "label": "first", "prompt": "We are naming the build artifacts for a project called heron. The artifact prefix is heron-blue. Remember the prefix, but do not write it into any file yet. Create notes/start.txt containing the word started and stop." },
+    { "label": "second", "mode": "resume", "from": 0, "prompt": "Change of plan: the artifact prefix is now heron-gold, replacing the one I gave you before. Create notes/second.txt containing the word changed and stop." },
+    { "label": "branch", "mode": "branch", "from": 1, "at": 1, "prompt": "Create notes/prefix.txt containing only the current artifact prefix and stop." }
+  ]
+}

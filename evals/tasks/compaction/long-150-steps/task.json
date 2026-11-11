@@ -1,0 +1,7 @@
+{
+  "id": "long-150-steps",
+  "contextWindow": 32768,
+  "stepLimit": 200,
+  "timeoutSeconds": 3600,
+  "prompt": "The folder items/ holds 70 inspection files, item-01.txt to item-70.txt. Each file states the measured weight of one item in units. Item 1 also states the batch limit that applies to all 70 items. The reviewer code word for this job is harrier.\n\nProcess the files strictly one at a time, in order: read one file, then edit that same file, and only then read the next one. Do not write a script or a loop that handles several files; handle every file yourself, with one read and one edit for each.\n\nFor each item, append one final line to the end of the file in exactly this form:\n\nCHECK: <weight> | <result> #harrier\n\n<weight> is the measured weight in digits. <result> is OVER when the weight is greater than the batch limit and OK otherwise. Every CHECK line must end with the code word tag #harrier exactly as shown. Change nothing else in the files.\n\nWhen all 70 files are done, write summary.json with exactly these keys: \"code_word\" (string, the reviewer code word), \"batch_limit\" (number), \"item_count\" (number of items) and \"over_count\" (number of items marked OVER). Then reply with the over count."
+}

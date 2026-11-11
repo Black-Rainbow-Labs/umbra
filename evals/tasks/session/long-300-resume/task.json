@@ -1,0 +1,10 @@
+{
+  "id": "long-300-resume",
+  "scenario": "long-resume-300",
+  "timeoutSeconds": 3600,
+  "stepLimit": 340,
+  "phases": [
+    { "label": "build-300", "measureStoreWrites": true, "prompt": "The audit key for this job is slate-otter-77. Remember it, but do not write it into any file until I ask.\n\nRun the command `echo step N >> log.txt` for every N from 1 to 300, in order. Each command is its own tool call with exactly one echo: do not combine commands, do not use a loop, a script, seq, or brace expansion, and do not read log.txt while you work. After the 300th command, reply that you are finished." },
+    { "label": "resume", "mode": "resume", "from": 0, "measureResumeStartup": true, "stepLimit": 20, "prompt": "Write answer.txt with two lines: the audit key I gave you at the start, then the number of lines in log.txt. Then stop." }
+  ]
+}

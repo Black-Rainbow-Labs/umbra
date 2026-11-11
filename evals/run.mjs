@@ -10,7 +10,7 @@ import { runProxyCheck } from "./src/services/proxyCheckService.mjs";
 const USAGE = `usage:
   node evals/run.mjs run --agents umbra,pi --reps 1 [--tasks id,id] [--category x] [--run-id name]
   node evals/run.mjs selftest [--tasks id,id] [--category x]
-  node evals/run.mjs report <run id> [--compare <other run id>]
+  node evals/run.mjs report <run id> [--compare <other run id>] [--ref <pi reference run id>]
   node evals/run.mjs proxycheck [--run <run id>]`;
 
 /**
@@ -34,7 +34,7 @@ async function main(argv) {
   if (command === "selftest") return (await runSelftest({ taskIds: listFlag(flags.tasks), category: flags.category || null })) ? 0 : 1;
   if (command === "proxycheck") return (await runProxyCheck(flags.run || null)) ? 0 : 1;
   if (command === "report" && positional[0]) {
-    console.log(writeReport(positional[0], flags.compare || null));
+    console.log(writeReport(positional[0], flags.compare || null, flags.ref || null));
     return 0;
   }
   console.error(USAGE);
