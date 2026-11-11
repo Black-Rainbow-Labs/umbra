@@ -123,7 +123,7 @@ extra_body = { chat_template_kwargs = { enable_thinking = false } }
 | `api_key` | The key itself. Prefer `api_key_env`, so the key is not stored in a file. |
 | `auth` | Anthropic only: `auto`, `api_key` or `claude_code` |
 | `headers` | Extra request headers |
-| `max_tokens` | The reply length limit |
+| `max_tokens` | The reply length limit. For a server on this machine Umbra sends 16,000 when this is not set, because llama.cpp's own default of 8192 can be used up by thinking alone. Other OpenAI compatible servers get no limit unless this is set. |
 | `temperature` | Only sent when set |
 | `effort` | Anthropic only: `low`, `medium`, `high`, `xhigh` or `max` |
 | `input_cost_per_mtok`, `output_cost_per_mtok` | Dollars per million tokens, for a model Umbra has no price for |

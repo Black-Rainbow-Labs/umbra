@@ -43,7 +43,7 @@ impl OpenAiProvider {
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.iter().map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.input_schema } })).collect());
         }
-        if let Some(max_tokens) = self.config.max_tokens {
+        if let Some(max_tokens) = self.config.max_tokens.or_else(|| is_local_url(&self.config.base_url).then_some(LOCAL_MAX_TOKENS)) {
             body["max_tokens"] = json!(max_tokens);
         }
         if let Some(temperature) = self.config.temperature {
@@ -205,6 +205,11 @@ fn thinking_for(setting: Option<&str>, messages: &[Message]) -> Option<bool> {
         _ => None,
     }
 }
+
+/// The reply length limit sent to a server on this machine when `max_tokens` is not set. Without
+/// it the server's own default applies (8192 on llama.cpp), and a thinking model can spend all of
+/// it on reasoning, so the reply is cut off with no text or tool call in it.
+const LOCAL_MAX_TOKENS: u32 = 16000;
 
 /// Returns true for a server on this machine.
 /// @param url - the base URL
@@ -596,6 +601,17 @@ mod tests {
         let sent = convert_messages(&[assistant], true);
         assert_eq!(sent[0]["reasoning"], "hm");
         assert!(sent[0].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn sends_a_reply_limit_to_a_local_server_when_none_is_set() {
+        let config = |url: &str, max: Option<u32>| ProviderConfig { kind: "openai".into(), base_url: url.into(), max_tokens: max, ..Default::default() };
+        let body = OpenAiProvider::new(config("http://127.0.0.1:8080/v1", None), "m").request_body(&[], &[]);
+        assert_eq!(body["max_tokens"], 16000);
+        let body = OpenAiProvider::new(config("http://localhost:8080/v1", Some(4096)), "m").request_body(&[], &[]);
+        assert_eq!(body["max_tokens"], 4096);
+        let body = OpenAiProvider::new(config("https://api.openai.com/v1", None), "m").request_body(&[], &[]);
+        assert!(body.get("max_tokens").is_none());
     }
 
     #[test]
