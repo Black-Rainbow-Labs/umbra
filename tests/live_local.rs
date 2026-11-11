@@ -154,3 +154,17 @@ fn live_ctrl_c_stops_a_running_command_and_the_model_recovers() {
     assert!(interrupted, "the command's result says it was interrupted");
     assert!(!s.path("work/slept.txt").exists(), "the sleep was killed");
 }
+
+#[test]
+#[ignore = "needs the local model on localhost:8080"]
+fn live_the_prompt_cache_covers_the_previous_request() {
+    let s = Scratch::new("live-cache");
+    let task = "Run these three commands, one per step, in this order: `echo one`, `echo two`, `echo three`. Then submit the word DONE.";
+    let (output, trajectory) = run_live(&s, &["--no-skills", "--no-instructions", task], "run.traj.json");
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let usages: Vec<&Value> = trajectory["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "assistant").map(|m| &m["extra"]["response"]["usage"]).collect();
+    assert!(usages.len() >= 3, "three model calls at least, got {}", usages.len());
+    let prompt_2 = usages[1]["prompt_tokens"].as_u64().unwrap() as f64;
+    let cached_3 = usages[2]["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap() as f64;
+    assert!(cached_3 >= 0.9 * prompt_2, "request 3 reuses request 2's prompt: cached {cached_3} of {prompt_2}");
+}

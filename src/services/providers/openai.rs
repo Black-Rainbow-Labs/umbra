@@ -32,7 +32,7 @@ impl OpenAiProvider {
     /// @param messages - the conversation
     /// @param tools - the tools offered to the model
     fn request_body(&self, messages: &[Message], tools: &[ToolSpec]) -> Value {
-        let mut body = json!({ "model": self.model, "messages": convert_messages(messages) });
+        let mut body = json!({ "model": self.model, "messages": convert_messages(messages, self.config.send_reasoning.unwrap_or(true)) });
         if self.streaming() {
             body["stream"] = json!(true);
             body["stream_options"] = json!({ "include_usage": true });
@@ -45,6 +45,9 @@ impl OpenAiProvider {
         }
         if let Some(temperature) = self.config.temperature {
             body["temperature"] = json!(temperature);
+        }
+        if self.config.preserve_thinking.unwrap_or_else(|| is_local_url(&self.config.base_url)) {
+            body["chat_template_kwargs"] = json!({ "preserve_thinking": true });
         }
         apply_extra_body(&mut body, &self.config);
         body
@@ -195,7 +198,8 @@ pub const TOOL_IMAGES_TEXT: &str = "Images returned by the tools above:";
 
 /// Converts the history into Chat Completions messages.
 /// @param messages - the conversation
-pub fn convert_messages(messages: &[Message]) -> Value {
+/// @param send_reasoning - send each assistant reply's reasoning text back to the server
+pub fn convert_messages(messages: &[Message], send_reasoning: bool) -> Value {
     let mut converted = Vec::new();
     let mut tool_images: Vec<&ImageData> = Vec::new();
     for message in messages.iter().filter(|m| m.role != Role::Exit) {
@@ -205,7 +209,7 @@ pub fn convert_messages(messages: &[Message]) -> Value {
         if message.role == Role::Tool {
             tool_images.extend(message.images.iter());
         }
-        converted.push(convert_message(message));
+        converted.push(convert_message(message, send_reasoning));
     }
     if !tool_images.is_empty() {
         converted.push(user_with_images(TOOL_IMAGES_TEXT, &tool_images));
@@ -222,9 +226,13 @@ fn user_with_images(text: &str, images: &[&ImageData]) -> Value {
     json!({ "role": "user", "content": parts })
 }
 
-/// Converts one message. Tool call arguments are sent as JSON text, as the API requires.
+/// Converts one message. Tool call arguments are sent as JSON text, as the API requires. An
+/// assistant reply gets back the reasoning text the server streamed for it, byte for byte and
+/// under the field name the server used, so the server renders the turn exactly as it generated
+/// it and its prompt cache matches past that turn.
 /// @param message - one history entry
-fn convert_message(message: &Message) -> Value {
+/// @param send_reasoning - send the reply's reasoning text back
+fn convert_message(message: &Message, send_reasoning: bool) -> Value {
     match message.role {
         Role::System => json!({ "role": "system", "content": message.content }),
         Role::User | Role::Exit if !message.images.is_empty() => user_with_images(&message.content, &message.images.iter().collect::<Vec<_>>()),
@@ -232,6 +240,9 @@ fn convert_message(message: &Message) -> Value {
         Role::Tool => json!({ "role": "tool", "tool_call_id": message.tool_call_id.clone().unwrap_or_default(), "content": message.content }),
         Role::Assistant => {
             let mut out = json!({ "role": "assistant", "content": message.content });
+            if let Some((key, text)) = message.reasoning().filter(|_| send_reasoning) {
+                out[key] = json!(text);
+            }
             if !message.tool_calls.is_empty() {
                 out["tool_calls"] = Value::Array(message.tool_calls.iter().map(tool_call_json).collect());
             }
@@ -293,6 +304,8 @@ struct PartialCall {
 struct StreamAssembler {
     content: String,
     reasoning: String,
+    /// `reasoning_content` or `reasoning`, whichever the server streamed first.
+    reasoning_key: Option<&'static str>,
     calls: Vec<PartialCall>,
     finish_reason: Value,
     usage: Value,
@@ -343,9 +356,21 @@ impl StreamAssembler {
             }
             let delta = &choice["delta"];
             self.content.push_str(delta["content"].as_str().unwrap_or(""));
-            self.reasoning.push_str(delta["reasoning_content"].as_str().or(delta["reasoning"].as_str()).unwrap_or(""));
+            self.push_reasoning_delta(delta);
             for (position, call) in delta["tool_calls"].as_array().into_iter().flatten().enumerate() {
                 self.push_call_delta(call, position);
+            }
+        }
+    }
+
+    /// Adds one chunk's reasoning text and remembers the field name the server used for it.
+    /// @param delta - the chunk's `delta` object
+    fn push_reasoning_delta(&mut self, delta: &Value) {
+        for key in ["reasoning_content", "reasoning"] {
+            if let Some(text) = delta[key].as_str().filter(|text| !text.is_empty()) {
+                self.reasoning_key.get_or_insert(key);
+                self.reasoning.push_str(text);
+                return;
             }
         }
     }
@@ -375,7 +400,7 @@ impl StreamAssembler {
         let tool_calls: Vec<Value> = self.calls.iter().map(|c| json!({ "id": c.id, "type": "function", "function": { "name": c.name, "arguments": c.arguments } })).collect();
         let mut message = json!({ "role": "assistant", "content": self.content });
         if !self.reasoning.is_empty() {
-            message["reasoning_content"] = json!(self.reasoning);
+            message[self.reasoning_key.unwrap_or("reasoning_content")] = json!(self.reasoning);
         }
         if !tool_calls.is_empty() {
             message["tool_calls"] = Value::Array(tool_calls);
@@ -431,7 +456,7 @@ mod tests {
         let mut assistant = Message::new(Role::Assistant, "");
         assistant.tool_calls = vec![ToolCall { id: "a".into(), name: "shot".into(), arguments: json!({}) }, ToolCall { id: "b".into(), name: "bash".into(), arguments: json!({}) }];
         let messages = vec![Message::user("look").with_images(vec![image.clone()]), assistant, Message::tool("a", "took it").with_images(vec![image]), Message::tool("b", "ok"), Message::user("next")];
-        let sent = convert_messages(&messages);
+        let sent = convert_messages(&messages, true);
         assert_eq!(sent[0]["content"][0]["image_url"]["url"], "data:image/png;base64,QUJD");
         assert_eq!(sent[0]["content"][1]["text"], "look");
         let roles: Vec<&str> = sent.as_array().unwrap().iter().map(|m| m["role"].as_str().unwrap()).collect();
@@ -451,13 +476,55 @@ mod tests {
     }
 
     #[test]
+    fn sends_the_streamed_reasoning_back_byte_for_byte() {
+        let reasoning = "Let me look.\n\n  Two spaces, a tab\t and \u{e9}.\n";
+        let lines = [
+            format!("data: {}", json!({"choices":[{"delta":{"reasoning_content": &reasoning[..9]},"finish_reason":null}]})),
+            format!("data: {}", json!({"choices":[{"delta":{"reasoning_content": &reasoning[9..]},"finish_reason":null}]})),
+            format!("data: {}", json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]},"finish_reason":"tool_calls"}]})),
+        ];
+        let mut assembler = StreamAssembler::default();
+        lines.iter().for_each(|l| assembler.push_line(l));
+        let response = parse_response(&assembler.finish().unwrap());
+        let mut assistant = Message::new(Role::Assistant, response.content.clone());
+        assistant.tool_calls = response.tool_calls.clone();
+        assistant.extra = json!({ "response": response.raw });
+        let sent = convert_messages(&[Message::user("go"), assistant.clone()], true);
+        assert_eq!(sent[1]["reasoning_content"].as_str().unwrap(), reasoning);
+        assert!(convert_messages(&[assistant], false)[0].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn keeps_the_reasoning_field_name_the_server_used() {
+        let mut assembler = StreamAssembler::default();
+        assembler.push_line(r#"data: {"choices":[{"delta":{"reasoning":"hm"},"finish_reason":"stop"}]}"#);
+        let raw = assembler.finish().unwrap();
+        let mut assistant = Message::new(Role::Assistant, "ok");
+        assistant.extra = json!({ "response": raw });
+        let sent = convert_messages(&[assistant], true);
+        assert_eq!(sent[0]["reasoning"], "hm");
+        assert!(sent[0].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn asks_a_local_server_to_preserve_thinking() {
+        let config = |url: &str, preserve: Option<bool>| ProviderConfig { kind: "openai".into(), base_url: url.into(), preserve_thinking: preserve, ..Default::default() };
+        let body = OpenAiProvider::new(config("http://127.0.0.1:8080/v1", None), "m").request_body(&[], &[]);
+        assert_eq!(body["chat_template_kwargs"]["preserve_thinking"], true);
+        let body = OpenAiProvider::new(config("https://api.openai.com/v1", None), "m").request_body(&[], &[]);
+        assert!(body.get("chat_template_kwargs").is_none());
+        let body = OpenAiProvider::new(config("http://localhost:8080/v1", Some(false)), "m").request_body(&[], &[]);
+        assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
     fn round_trips_tool_calls() {
         let raw = json!({"choices": [{"message": {"content": null, "tool_calls": [{"id": "x", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}}]}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 7, "completion_tokens": 3}});
         let parsed = parse_response(&raw);
         assert_eq!(parsed.tool_calls[0].arguments["command"], "ls");
         let mut assistant = Message::new(Role::Assistant, "");
         assistant.tool_calls = parsed.tool_calls.clone();
-        let sent = convert_messages(&[assistant]);
+        let sent = convert_messages(&[assistant], true);
         assert_eq!(sent[0]["tool_calls"][0]["function"]["arguments"], "{\"command\":\"ls\"}");
     }
 }

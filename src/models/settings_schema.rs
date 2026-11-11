@@ -97,6 +97,8 @@ const MODELS_AND_PROVIDERS: &[SettingSpec] = &[
     s!("providers.*.replay_file", Providers, "Replay file", "Replay only: a JSON file of scripted replies.", Text, Call),
     s!("providers.*.max_retries", Providers, "Max retries", "How many times a failed call is tried again.", Integer { min: 0, max: 100 }, Call),
     s!("providers.*.stream", Providers, "Stream", "OpenAI compatible servers: stream the reply so Ctrl+C stops generation.", Toggle, Call),
+    s!("providers.*.send_reasoning", Providers, "Send reasoning back", "OpenAI compatible servers: send each reply's reasoning text back, so the server's prompt cache covers the whole history.", Toggle, Call),
+    s!("providers.*.preserve_thinking", Providers, "Preserve thinking", "OpenAI compatible servers: ask the chat template to keep earlier turns' reasoning. On by default for a server on this machine.", Toggle, Call),
 ];
 
 const COMPACTION_AND_MCP: &[SettingSpec] = &[
