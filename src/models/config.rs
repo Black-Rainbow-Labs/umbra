@@ -151,8 +151,11 @@ pub struct EnvironmentConfig {
     pub kind: String,
     /// Working directory. Empty means the directory Umbra was started in (local) or `/` (docker).
     pub cwd: String,
-    /// Seconds before a command is killed.
+    /// Seconds before a command is killed, unless the model asks for another timeout.
     pub timeout: u64,
+    /// The most seconds the model may ask a command to be allowed with the bash tool's
+    /// `timeout` argument.
+    pub max_timeout: u64,
     /// The program and flags that run a command string. Empty means bash, found automatically.
     pub shell: Vec<String>,
     /// Extra environment variables for every command.
@@ -165,7 +168,7 @@ pub struct EnvironmentConfig {
 }
 
 impl Default for EnvironmentConfig {
-    /// The mini-swe-agent defaults: a 30 second timeout and pagers turned off.
+    /// A 120 second timeout that the model may raise to 600 for one command, and pagers turned off.
     fn default() -> Self {
         let env = [("PAGER", "cat"), ("MANPAGER", "cat"), ("LESS", "-R"), ("PIP_PROGRESS_BAR", "off"), ("TQDM_DISABLE", "1"), ("GIT_PAGER", "cat")]
             .into_iter()
@@ -174,7 +177,8 @@ impl Default for EnvironmentConfig {
         EnvironmentConfig {
             kind: "local".into(),
             cwd: String::new(),
-            timeout: 30,
+            timeout: 120,
+            max_timeout: 600,
             shell: Vec::new(),
             env,
             image: String::new(),

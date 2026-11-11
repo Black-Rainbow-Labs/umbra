@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn always_allow_remembers_the_program() {
-        let bash = |c: &str| Action::Bash { command: c.into(), tool_call_id: None };
+        let bash = |c: &str| Action::Bash { command: c.into(), tool_call_id: None, timeout: None };
         assert_eq!(always_key(&bash("cargo test --all")), "bash:cargo");
         assert_eq!(always_key(&bash("cd src && /usr/bin/make -j4")), "bash:make");
         assert_eq!(always_key(&bash("cd src")), "bash:cd");

@@ -250,3 +250,21 @@ fn the_edit_tool_changes_only_the_match_when_it_is_on() {
     let tools = read_trajectory(&traj)["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").count();
     assert_eq!(tools, 1);
 }
+
+#[test]
+fn the_model_can_give_one_command_a_longer_timeout_up_to_the_maximum() {
+    let scratch = Scratch::new("timeout-arg");
+    scratch.write("short.toml", "[environment]\ntimeout = 1\nmax_timeout = 3\n");
+    let model = script(&scratch, json!([
+        { "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "sleep 2 && echo slept", "timeout": 30 } }] },
+        { "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "sleep 20", "timeout": 30 } }] },
+        { "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" } }] }
+    ]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "-c", &slash(&scratch.path("short.toml")), "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "task"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let messages = read_trajectory(&traj)["messages"].as_array().unwrap().clone();
+    assert_eq!(messages[3]["extra"]["raw_output"].as_str().unwrap().trim(), "slept", "the asked for timeout let a 2 second command finish");
+    let stopped = messages[5]["extra"]["exception_info"].as_str().unwrap();
+    assert!(stopped.contains("timed out after 3 seconds") && stopped.contains("in the background"), "the maximum caps the ask: {stopped}");
+}

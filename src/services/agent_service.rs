@@ -1161,7 +1161,7 @@ impl Agent {
     /// @param action - the action
     fn execute_untimed(&mut self, action: &Action) -> Observation {
         match action {
-            Action::Bash { command, .. } => self.parts.environment.execute(command),
+            Action::Bash { command, timeout, .. } => self.parts.environment.execute_timed(command, *timeout),
             Action::Mcp { server, tool, arguments, .. } if is_tool_search(server, tool) => self.run_tool_search(arguments),
             Action::Mcp { server, tool, arguments, .. } if is_edit(server, tool) => run_edit(&self.parts.cwd, arguments),
             Action::Mcp { server, tool, arguments, .. } => {
@@ -1212,7 +1212,7 @@ impl Agent {
             HumanInput::Quit => return Ok(Step::Exit("UserQuit".into(), String::new())),
             HumanInput::Interrupted => return self.interrupted(),
         };
-        let action = Action::Bash { command: command.clone(), tool_call_id: None };
+        let action = Action::Bash { command: command.clone(), tool_call_id: None, timeout: None };
         self.messages.push(Message::user(format!("User command: \n```bash\n{command}\n```")).with_extra(json!({ "actions": [action] })));
         self.show_status(running_phase(std::slice::from_ref(&action)));
         self.parts.events.action_started(0, &action);
@@ -1290,7 +1290,7 @@ pub fn tool_specs(mcp_tools: &[McpTool]) -> Vec<ToolSpec> {
     let bash = ToolSpec {
         name: "bash".into(),
         description: "Execute a bash command".into(),
-        input_schema: json!({ "type": "object", "properties": { "command": { "type": "string", "description": "The bash command to execute" } }, "required": ["command"] }),
+        input_schema: json!({ "type": "object", "properties": { "command": { "type": "string", "description": "The bash command to execute" }, "timeout": { "type": "integer", "description": "Seconds to allow the command before it is stopped. Optional; give more for a slow build or test run" } }, "required": ["command"] }),
     };
     let mut specs = vec![bash];
     specs.extend(mcp_tools.iter().map(|t| ToolSpec { name: t.qualified_name(), description: format!("[MCP server {}] {}", t.server, t.description), input_schema: t.input_schema.clone() }));

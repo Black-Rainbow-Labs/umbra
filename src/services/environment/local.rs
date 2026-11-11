@@ -38,11 +38,19 @@ impl LocalEnvironment {
     /// @param args - the program's arguments
     /// @param label - the command text, for the timeout message
     pub fn execute_args(&self, args: &[String], label: &str) -> Observation {
+        self.execute_args_for(args, label, self.config.timeout)
+    }
+
+    /// Runs the shell with the given arguments and a timeout in seconds.
+    /// @param args - the program's arguments
+    /// @param label - the command text, for the timeout message
+    /// @param seconds - how long the command may run
+    fn execute_args_for(&self, args: &[String], label: &str, seconds: u64) -> Observation {
         let mut process = Command::new(&self.shell[0]);
         process.args(args).current_dir(&self.cwd).envs(&self.config.env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         own_process_group(&mut process);
         match process.spawn() {
-            Ok(child) => wait_for_output(child, Duration::from_secs(self.config.timeout.max(1)), label),
+            Ok(child) => wait_for_output(child, Duration::from_secs(seconds.max(1)), label, self.config.max_timeout.max(self.config.timeout)),
             Err(e) => Observation::failed("", format!("An error occurred while executing the command: could not start {}: {e}", self.shell[0])),
         }
     }
@@ -52,9 +60,18 @@ impl Environment for LocalEnvironment {
     /// Runs one command with stdout and stderr merged, killing it after the timeout.
     /// @param command - the shell command text
     fn execute(&mut self, command: &str) -> Observation {
+        self.execute_timed(command, None)
+    }
+
+    /// Runs one command with the timeout the model asked for, no more than `max_timeout`, or
+    /// the configured timeout when it asked for none.
+    /// @param command - the shell command text
+    /// @param timeout - seconds the model asked for, or None
+    fn execute_timed(&mut self, command: &str, timeout: Option<u64>) -> Observation {
         let mut args: Vec<String> = self.shell[1..].to_vec();
         args.push(wrap_command(&self.shell, command));
-        self.execute_args(&args, command)
+        let seconds = timeout.map_or(self.config.timeout, |asked| asked.clamp(1, self.config.max_timeout.max(self.config.timeout)));
+        self.execute_args_for(&args, command, seconds)
     }
 
     /// Values the prompt templates can use: the platform, the working folder and the timeout.
@@ -112,7 +129,8 @@ enum Ending {
 /// @param child - the running shell
 /// @param timeout - how long to wait
 /// @param command - the command text, for the timeout message
-fn wait_for_output(mut child: Child, timeout: Duration, command: &str) -> Observation {
+/// @param max_timeout - the most seconds a command may ask for, named in the timeout message
+fn wait_for_output(mut child: Child, timeout: Duration, command: &str, max_timeout: u64) -> Observation {
     let job = ProcessJob::track(&child);
     let stdout = spawn_reader(child.stdout.take());
     let stderr = spawn_reader(child.stderr.take());
@@ -128,9 +146,18 @@ fn wait_for_output(mut child: Child, timeout: Duration, command: &str) -> Observ
     output.push_str(&stderr.recv_timeout(grace).unwrap_or_default());
     match ending {
         Ending::Exited(code) => Observation { output, returncode: code.unwrap_or(-1), exception_info: String::new(), images: Vec::new(), ..Default::default() },
-        Ending::TimedOut => Observation::failed(output, format!("An error occurred while executing the command: Command '{command}' timed out after {} seconds", timeout.as_secs())),
+        Ending::TimedOut => Observation::failed(output, timeout_message(command, timeout.as_secs(), max_timeout)),
         Ending::Interrupted(seconds) => Observation::failed(output, format!("{INTERRUPTED_COMMAND} after {seconds:.1} seconds")),
     }
+}
+
+/// The error a command gets when it runs past its timeout: what happened, and the two ways to
+/// run something long.
+/// @param command - the command text
+/// @param seconds - the timeout it had
+/// @param max_timeout - the most seconds a command may ask for
+fn timeout_message(command: &str, seconds: u64, max_timeout: u64) -> String {
+    format!("Command '{command}' timed out after {seconds} seconds and was stopped; any output it printed is above. If it needs longer, run it again with a larger timeout argument (up to {max_timeout} seconds). For something longer than that, start it in the background with its output in a file, for example `nohup <command> > run.log 2>&1 &`, and check the file. If it was waiting for input, pass the flag that makes it run without asking.")
 }
 
 /// The start of the error a command gets when Ctrl+C stops it.

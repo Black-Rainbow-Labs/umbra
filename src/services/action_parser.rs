@@ -83,7 +83,7 @@ pub fn parse_tool_actions(response: &ModelResponse, mcp_tools: &[McpTool]) -> Re
         }
         if call.name == "bash" {
             match call.arguments.get("command").and_then(Value::as_str) {
-                Some(command) => actions.push(Action::Bash { command: command.to_string(), tool_call_id: id }),
+                Some(command) => actions.push(Action::Bash { command: command.to_string(), tool_call_id: id, timeout: call.arguments.get("timeout").and_then(Value::as_u64) }),
                 None => errors.push("Missing 'command' argument in bash tool call.".into()),
             }
         } else if let Some(tool) = mcp_tools.iter().find(|t| t.qualified_name() == call.name || (t.server == BUILTIN_SERVER && t.name == call.name)) {
@@ -109,7 +109,7 @@ pub fn parse_text_action(response: &ModelResponse, bash_regex: &str, mcp_tools: 
         return Err(format!("Expected exactly 1 action, found {found}."));
     }
     if let Some(command) = commands.into_iter().next() {
-        return Ok(vec![Action::Bash { command, tool_call_id: None }]);
+        return Ok(vec![Action::Bash { command, tool_call_id: None, timeout: None }]);
     }
     parse_mcp_block(&calls[0], mcp_tools).map(|a| vec![a])
 }
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn text_mode_needs_exactly_one_block() {
         let one = ModelResponse { content: "THOUGHT\n```umbra_bash\nls -la\n```".into(), ..Default::default() };
-        assert_eq!(parse_text_action(&one, DEFAULT_BASH_REGEX, &[]).unwrap(), vec![Action::Bash { command: "ls -la".into(), tool_call_id: None }]);
+        assert_eq!(parse_text_action(&one, DEFAULT_BASH_REGEX, &[]).unwrap(), vec![Action::Bash { command: "ls -la".into(), tool_call_id: None, timeout: None }]);
         let two = ModelResponse { content: "```umbra_bash\nls\n```\n```umbra_bash\npwd\n```".into(), ..Default::default() };
         assert_eq!(parse_text_action(&two, DEFAULT_BASH_REGEX, &[]).unwrap_err(), "Expected exactly 1 action, found 2.");
         let mcp = ModelResponse { content: "```umbra_mcp\n{\"tool\": \"mcp__docs__search\", \"arguments\": {\"q\": \"x\"}}\n```".into(), ..Default::default() };
