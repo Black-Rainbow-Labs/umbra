@@ -62,9 +62,9 @@ impl McpPanel {
         let toggle = if matches!(state, ServerState::Off) { "[ ]" } else { "[x]" };
         let (word, detail, code) = match state {
             ServerState::Off => ("off".to_string(), String::new(), "90"),
-            ServerState::Starting { .. } => (format!("{} starting", ctx.spinner), String::new(), "36"),
+            ServerState::Starting { since } => (format!("{} starting", ctx.spinner), format!("{}s", since.elapsed().as_secs()), "36"),
             ServerState::Ready { tools, .. } => ("running".to_string(), format!("{} {}", tools.len(), if tools.len() == 1 { "tool" } else { "tools" }), "32"),
-            ServerState::Failed { error, .. } => ("✖ failed".to_string(), error.lines().next().unwrap_or("").to_string(), "31"),
+            ServerState::Failed { error, at, .. } => ("✖ failed".to_string(), format!("{} ({}s ago)", error.lines().next().unwrap_or(""), at.elapsed().as_secs()), "31"),
         };
         let pointer = if selected { "›" } else { " " };
         let left = format!(" {pointer} {toggle} {name:<16} ");

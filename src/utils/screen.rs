@@ -7,7 +7,7 @@
 use std::cell::Cell;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use super::keys::Key;
@@ -15,7 +15,6 @@ use super::status_bar::StatusInfo;
 use super::terminal_mode::{enable_raw, reassert_raw, restore, terminal_height};
 use crate::ui::block::Block;
 use crate::ui::frame::render_frame;
-use crate::ui::overlay::Overlay;
 use crate::ui::transcript::Transcript;
 pub use crate::ui::view::KeyOutcome;
 use crate::ui::view::View;
@@ -40,13 +39,13 @@ static VIEW: Mutex<Option<View>> = Mutex::new(None);
 /// Wakes the ticker when something starts to animate.
 static TICK: (Mutex<()>, Condvar) = (Mutex::new(()), Condvar::new());
 
+/// Set when a redraw was asked for from code that may hold the view's lock.
+static DIRTY: AtomicBool = AtomicBool::new(false);
+
 thread_local! {
     /// Set while code catches its own panics, so the panic hook leaves the screen alone.
     static QUIET_PANICS: Cell<bool> = const { Cell::new(false) };
 }
-
-/// Lays out rows for a screen width. Kept for blocks that draw themselves with a function.
-pub type Layout = Arc<dyn Fn(usize) -> Vec<String> + Send + Sync>;
 
 /// Returns true while the fullscreen view is on.
 pub fn is_active() -> bool {
@@ -107,6 +106,13 @@ pub fn leave_now() {
 /// Wakes the ticker, after something started that animates, such as a running command.
 pub fn poke() {
     TICK.1.notify_all();
+}
+
+/// Asks the ticker to draw the screen again soon. Unlike `redraw`, this takes no lock, so it is
+/// safe from code that runs while the view handles a key.
+pub fn request_redraw() {
+    DIRTY.store(true, Ordering::SeqCst);
+    poke();
 }
 
 /// Runs code that may panic on purpose and catches the panic itself, such as a layout of odd
@@ -186,9 +192,9 @@ pub fn set_input(text: &str) {
     });
 }
 
-/// Opens an overlay.
+/// Opens an overlay, such as the session picker `umbra resume` shows first.
 /// @param overlay - the overlay
-pub fn open_overlay(overlay: Box<dyn Overlay>) {
+pub fn open_overlay(overlay: Box<dyn crate::ui::overlay::Overlay>) {
     with_view(|view| view.overlay = Some(overlay));
 }
 
@@ -255,13 +261,18 @@ fn tick() {
     }
     while is_active() {
         let animating = VIEW.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|v| v.animating(Instant::now()));
+        if DIRTY.swap(false, Ordering::SeqCst) {
+            redraw();
+        }
         if animating {
             redraw();
             std::thread::sleep(Duration::from_millis(period));
             continue;
         }
         let guard = TICK.0.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = TICK.1.wait_timeout(guard, Duration::from_millis(500));
+        if !DIRTY.load(Ordering::SeqCst) {
+            let _ = TICK.1.wait_timeout(guard, Duration::from_millis(500));
+        }
     }
 }
 
@@ -445,16 +456,15 @@ mod tests {
     }
 
     #[test]
-    fn a_laid_out_block_follows_the_screen_width() {
-        // task-2590: a new split pane made the screen narrower, and the banner drawn for the old
-        // width wrapped into a jumble. A laid out block is drawn again for the new width.
+    fn a_block_is_laid_out_again_for_a_new_width() {
+        // task-2590: a new split pane made the screen narrower, and rows drawn for the old width
+        // wrapped into a jumble. A block is laid out again for the new width.
         let mut view = view_with(0);
-        view.push_block(Block::Laid(Arc::new(|width: usize| vec![format!("╭{}╮", "─".repeat(width - 2))])));
+        view.push_block(Block::Text("x".repeat(50)));
         let wide = plain(&render_frame(&mut view, 60, 6));
-        assert_eq!(wide[0].chars().count(), 60);
+        assert_eq!((wide[0].chars().count(), wide[1].as_str()), (50, ""));
         let narrow = plain(&render_frame(&mut view, 30, 6));
-        assert_eq!(narrow[0], format!("╭{}╮", "─".repeat(28)));
-        assert_eq!(narrow[1], "", "the block takes one row at the new width");
+        assert_eq!((narrow[0].chars().count(), narrow[1].chars().count()), (30, 20));
     }
 
     #[test]

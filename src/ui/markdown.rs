@@ -1,6 +1,4 @@
 //! Renders a markdown reply into rows of terminal text, laid out for a given width.
-// The renderer is not called from the rest of the program yet.
-#![allow(dead_code)]
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -96,7 +94,7 @@ enum Deco {
 /// @param color - true to emit SGR codes and OSC 8 links
 pub fn render(source: &str, width: usize, color: bool) -> Vec<MdRow> {
     let width = width.max(1);
-    match catch_unwind(AssertUnwindSafe(|| layout(source, width, color))) {
+    match crate::utils::screen::quiet_panics(|| catch_unwind(AssertUnwindSafe(|| layout(source, width, color)))) {
         Ok(rows) => rows,
         Err(_) => plain_rows(&sanitize(source), width),
     }

@@ -97,6 +97,9 @@ impl AnthropicProvider {
     fn send(&self, body: &Value) -> Result<ModelResponse, ProviderError> {
         let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
         let reply = post_json_interruptible(&self.agent, &url, &self.headers(), body).map_err(ProviderError::from_request)?;
+        if matches!(self.credential, Credential::OAuthToken(_)) {
+            crate::services::usage_service::from_headers(&reply.headers);
+        }
         if reply.status != 200 {
             return Err(ProviderError::from_status(reply.status, &reply.body));
         }

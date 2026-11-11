@@ -48,7 +48,8 @@ pub struct SettingSpec {
 }
 
 /// Keys that are deliberately not in the modal, with the reason. A path covers itself and every
-/// key under it.
+/// key under it. The coverage test reads it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const EXCLUDED: &[(&str, &str)] = &[
     ("output", "set per run with --output; the default folder is right for nearly everyone"),
     ("mcp_servers", "server definitions are JSON objects; the MCP section lists them but they are edited in the file"),

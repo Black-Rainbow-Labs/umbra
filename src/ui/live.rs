@@ -35,7 +35,7 @@ pub struct CommandEntry {
 }
 
 /// Something the view asks the agent to do at its next safe point.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum UiRequest {
     /// Use this `provider/model` from the next model call.
     SetModel(String),
@@ -43,6 +43,8 @@ pub enum UiRequest {
     SetMode(Mode),
     /// End the session.
     Quit,
+    /// The configuration modal saved changes: apply the ones that take effect now.
+    ApplyConfig(Box<UmbraConfig>),
 }
 
 static HEADER: Mutex<Option<HeaderInfo>> = Mutex::new(None);
@@ -51,6 +53,18 @@ static CONFIG: Mutex<Option<UmbraConfig>> = Mutex::new(None);
 static COMMANDS: Mutex<Vec<CommandEntry>> = Mutex::new(Vec::new());
 static REQUESTS: Mutex<Vec<UiRequest>> = Mutex::new(Vec::new());
 static SESSION: Mutex<String> = Mutex::new(String::new());
+static MCP_ORIGINS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// Keeps where each MCP server was defined, for the configuration modal.
+/// @param origins - each server's name and the file it came from
+pub fn set_mcp_origins(origins: Vec<(String, String)>) {
+    *MCP_ORIGINS.lock().unwrap_or_else(|e| e.into_inner()) = origins;
+}
+
+/// Where each MCP server was defined.
+pub fn mcp_origins() -> Vec<(String, String)> {
+    MCP_ORIGINS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
 
 /// Sets what the header shows.
 /// @param info - the header's values
@@ -63,13 +77,14 @@ pub fn header() -> Option<HeaderInfo> {
     HEADER.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// Changes one field of the header and draws the screen again.
+/// Changes one field of the header and asks for a redraw. It takes no lock of the view, so the
+/// view's own key handling may call it.
 /// @param change - the change
 pub fn update_header(change: impl FnOnce(&mut HeaderInfo)) {
     if let Some(info) = HEADER.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         change(info);
     }
-    crate::utils::screen::redraw();
+    crate::utils::screen::request_redraw();
 }
 
 /// Sets the session's MCP servers, which the header, the status bar and the panel read.

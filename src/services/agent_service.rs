@@ -243,8 +243,40 @@ impl Agent {
                 UiRequest::SetModel(spec) => self.switch_model(&spec),
                 UiRequest::SetMode(mode) => self.parts.interaction.mode = mode,
                 UiRequest::Quit => self.quit_requested = true,
+                UiRequest::ApplyConfig(config) => self.apply_config(*config),
             }
         }
+    }
+
+    /// Applies settings saved in the configuration modal. Settings that take effect in the open
+    /// session replace the running ones; settings that apply to the next session keep their
+    /// running values. A change to the model or its provider makes a new provider.
+    /// @param saved - the config with the saved changes
+    fn apply_config(&mut self, saved: UmbraConfig) {
+        let old = self.parts.config.clone();
+        let mut next = saved;
+        next.action_format = old.action_format;
+        next.finish = old.finish;
+        next.templates = old.templates.clone();
+        next.environment = old.environment.clone();
+        next.mcp = old.mcp.clone();
+        next.mcp_servers = old.mcp_servers.clone();
+        next.sources = old.sources.clone();
+        next.instructions = old.instructions.clone();
+        next.skills = old.skills.clone();
+        next.commands = old.commands.clone();
+        next.fullscreen = old.fullscreen;
+        next.mouse = old.mouse;
+        let provider_changed = next.model != old.model || serde_json::to_value(&next.providers).ok() != serde_json::to_value(&old.providers).ok() || next.models != old.models;
+        self.parts.interaction.mode = next.mode;
+        console::set_verbose(next.verbose);
+        let model = next.model.clone();
+        self.parts.config = next;
+        self.compaction.window = None;
+        if provider_changed {
+            self.switch_model(&model);
+        }
+        self.show_status(Phase::Waiting);
     }
 
     /// Switches to another model from the next model call, after checking it can be used.

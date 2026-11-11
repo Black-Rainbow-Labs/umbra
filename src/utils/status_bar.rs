@@ -343,16 +343,6 @@ fn trim_zero(text: String) -> String {
     text.replace(".0k", "k").replace(".0M", "M")
 }
 
-/// Writes a duration the short way: 42s, 12m04s, 1h05m.
-/// @param secs - the duration in seconds
-pub fn short_duration(secs: u64) -> String {
-    match secs {
-        0..=59 => format!("{secs}s"),
-        60..=3599 => format!("{}m{:02}s", secs / 60, secs % 60),
-        _ => format!("{}h{:02}m", secs / 3600, secs % 3600 / 60),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,13 +430,11 @@ mod tests {
     }
 
     #[test]
-    fn counts_and_times_read_short() {
+    fn counts_read_short() {
         assert_eq!(short_tokens(950), "950");
         assert_eq!(short_tokens(5_300), "5.3k");
         assert_eq!(short_tokens(128_000), "128k");
         assert_eq!(short_tokens(1_000_000), "1M");
         assert_eq!(short_tokens(1_250_000), "1.2M");
-        assert_eq!(short_duration(42), "42s");
-        assert_eq!(short_duration(3_900), "1h05m");
     }
 }

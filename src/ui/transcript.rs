@@ -73,6 +73,7 @@ impl Transcript {
 
     /// The block with an id.
     /// @param id - the block id
+    #[cfg(test)]
     pub fn block(&self, id: u64) -> Option<&Block> {
         self.entries.iter().find(|e| e.id == id).map(|e| &e.block)
     }
@@ -168,19 +169,13 @@ impl Transcript {
         dropped
     }
 
-    /// Drops every cached layout, for a change that affects every block, such as the color setting.
-    pub fn invalidate(&mut self) {
-        for entry in &mut self.entries {
-            entry.cache = None;
-        }
-    }
-
     /// True when any block draws something that changes with time, such as a running command.
     pub fn animating(&self) -> bool {
         self.entries.iter().any(|e| matches!(&e.block, Block::CommandGroup(g) if g.runs.iter().any(|r| matches!(r.state, super::block::RunState::Running { .. }))))
     }
 
     /// The newest command group, by id.
+    #[cfg(test)]
     pub fn last_group(&self) -> Option<u64> {
         self.entries.iter().rev().find(|e| matches!(e.block, Block::CommandGroup(_))).map(|e| e.id)
     }

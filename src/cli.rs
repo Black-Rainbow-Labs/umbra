@@ -33,6 +33,8 @@ pub enum Command {
     Prompt(PromptArgs),
     /// List saved sessions, newest first, for --resume.
     Sessions(SessionsArgs),
+    /// Pick a saved session from a list and continue it. With an id, continue that session.
+    Resume(ResumeArgs),
     /// Run as an Agent Client Protocol server on stdin and stdout, for an editor such as Zed,
     /// a JetBrains IDE or Unluminous.
     Acp(AcpArgs),
@@ -148,6 +150,9 @@ pub struct RunArgs {
     /// as it was.
     #[arg(long)]
     pub fork: bool,
+    /// Set by `umbra resume --all`: the session picker lists every folder's sessions.
+    #[arg(skip)]
+    pub pick_all: bool,
 }
 
 /// Options shared by every subcommand.
@@ -208,6 +213,18 @@ pub struct McpArgs {
     /// Start each server and list its tools.
     #[arg(long)]
     pub connect: bool,
+}
+
+/// Options for `umbra resume`.
+#[derive(Debug, Clone, Args, Default)]
+pub struct ResumeArgs {
+    /// The session id, or the start of it. With none, pick from a list.
+    pub id: Option<String>,
+    /// List every folder's sessions, not only this folder's.
+    #[arg(long)]
+    pub all: bool,
+    #[command(flatten)]
+    pub run: RunArgs,
 }
 
 /// Options for `umbra sessions`.

@@ -347,3 +347,291 @@ fn process_alive(pid: u32) -> bool {
 fn process_alive(pid: u32) -> bool {
     std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().is_ok_and(|s| s.success())
 }
+
+impl Setup {
+    /// Starts umbra in the fullscreen view with exactly these arguments.
+    /// @param args - the whole command line
+    /// @param envs - extra environment variables
+    fn start_raw(&self, args: &[&str], envs: &[(&str, &str)]) -> Screen {
+        Screen::start(&self.scratch.path("home"), args, envs, (100, 32))
+    }
+
+    /// The work folder, with forward slashes.
+    fn work(&self) -> String {
+        slash(&self.scratch.path("work"))
+    }
+
+    /// Runs one session over a pipe, so it is saved in the session index.
+    /// @param name - the script file name
+    /// @param reply - the reply
+    /// @param task - the task
+    fn saved_session(&self, name: &str, reply: &str, task: &str) {
+        let model = self.model(name, json!([reply]));
+        let work = self.work();
+        let output = common::run_umbra(&self.scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--cwd", &work, task]);
+        assert_eq!(output.status.code(), Some(0), "{}", common::text(&output));
+        std::thread::sleep(Duration::from_millis(30));
+    }
+
+    /// The session index entries in the fake home, newest first.
+    fn index(&self) -> Vec<Value> {
+        let dir = self.scratch.path("home/.umbra/sessions");
+        let mut entries: Vec<Value> = std::fs::read_dir(dir).map(|d| d.flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).filter_map(|t| serde_json::from_str(&t).ok()).collect()).unwrap_or_default();
+        entries.sort_by(|a: &Value, b: &Value| b["updated_at"].as_f64().unwrap_or(0.0).total_cmp(&a["updated_at"].as_f64().unwrap_or(0.0)));
+        entries
+    }
+}
+
+#[test]
+fn the_model_picker_switches_the_model_for_the_next_request() {
+    let setup = Setup::new("fs-model");
+    let first = slash(&setup.scratch.write("first.json", &json!(["from the first model"]).to_string()));
+    let second = slash(&setup.scratch.write("second.json", &json!(["from the second model"]).to_string()));
+    let config = setup.config(&format!("[models.first]\nprovider = \"replay\"\nmodel = \"{first}\"\n[models.second]\nprovider = \"replay\"\nmodel = \"{second}\"\n[models.broken]\nprovider = \"anthropic\"\nmodel = \"claude-sonnet-5-5\"\n"));
+    let mut screen = setup.start(&["-m", "first", "-y", "--no-mcp", "-c", &config], &[]);
+    screen.wait_for("❯");
+    screen.type_line("/model");
+    let frame = screen.wait_for("Other...");
+    assert!(has(&frame, r"● first") && has(&frame, r"○ second") && has(&frame, r"○ broken"), "{}", frame.text());
+    screen.type_text("broken");
+    screen.press("Enter");
+    let frame = screen.wait_for("no Anthropic credential");
+    assert!(frame.text().contains("first.json"), "the model did not change:\n{}", frame.text());
+    for _ in 0.."broken".len() {
+        screen.press("Backspace");
+    }
+    screen.type_text("second");
+    screen.press("Enter");
+    screen.wait_until("the picker to close", Duration::from_secs(5), |f| f.row_of("Other...").is_none());
+    screen.type_line("hello");
+    screen.wait_for("● from the second model");
+}
+
+#[test]
+fn clear_starts_a_new_session_and_keeps_the_old_one() {
+    let setup = Setup::new("fs-clear");
+    let model = setup.model("script.json", json!(["first answer"]));
+    let mut screen = setup.start_raw(&["-m", &model, "-y", "--no-mcp", "--cwd", &setup.work()], &[]);
+    screen.wait_for("❯");
+    screen.type_line("first question");
+    screen.wait_for("● first answer");
+    screen.type_line("/clear");
+    screen.wait_until("an empty transcript", Duration::from_secs(10), |f| f.row_of("first answer").is_none() && f.row_of("mcp     off").is_some());
+    screen.type_line("second question");
+    let frame = screen.wait_for("● first answer");
+    assert!(frame.row_of("❯ second question").is_some() && frame.row_of("❯ first question").is_none(), "the new session starts its own script again:\n{}", frame.text());
+    let (output, code) = screen.finish(Duration::from_secs(10));
+    assert_eq!(code, Some(0), "{output}");
+    let index = setup.index();
+    assert_eq!(index.len(), 2, "both sessions are listed: {index:#?}");
+    assert_eq!(index[0]["title"], "second question");
+    assert_eq!(index[1]["title"], "first question");
+}
+
+#[test]
+fn umbra_resume_lists_sessions_with_titles_and_rebuilds_the_chosen_one() {
+    let setup = Setup::new("fs-resume");
+    setup.saved_session("one.json", "answer one", "task one");
+    setup.saved_session("two.json", "answer two", "task two");
+    setup.saved_session("three.json", "answer three", "task three");
+    let output = common::run_umbra(&setup.scratch.path("home"), &["resume", "--cwd", &setup.work()]);
+    assert_eq!(output.status.code(), Some(2), "over a pipe an id is needed: {}", common::text(&output));
+    assert!(common::text(&output).contains("task two"), "{}", common::text(&output));
+    let model = setup.model("next.json", json!(["after the resume"]));
+    let work = setup.work();
+    let mut screen = setup.start_raw(&["resume", "--cwd", &work, "-m", &model, "-y", "--no-mcp"], &[]);
+    let frame = screen.wait_for("Resume a session");
+    let three = frame.row_of("task three").unwrap();
+    assert!(three < frame.row_of("task two").unwrap() && frame.row_of("task two").unwrap() < frame.row_of("task one").unwrap(), "newest first:\n{}", frame.text());
+    assert!(has(&frame, r"task three .*1 call"), "{}", frame.text());
+    screen.press("Down");
+    screen.press("Enter");
+    let frame = screen.wait_for("● answer two");
+    assert!(frame.row_of("❯ task two").is_some() && frame.row_of("resuming session").is_some(), "{}", frame.text());
+    assert!(frame.row_of("answer three").is_none(), "{}", frame.text());
+    screen.type_line("carry on");
+    screen.wait_for("● after the resume");
+}
+
+#[test]
+fn a_session_gets_a_title_and_summary_from_the_model_after_its_first_turn() {
+    let setup = Setup::new("fs-title");
+    let title = json!({ "title_reply": "{\"title\": \"Greeting the user warmly today\", \"summary\": \"The user said hello.\"}" });
+    let model = setup.model("script.json", json!(["Hello there.", title]));
+    let mut screen = setup.start(&["-m", &model, "-y", "--no-mcp"], &[]);
+    screen.wait_for("❯");
+    screen.type_line("say hi");
+    screen.wait_for("● Hello there.");
+    let (output, code) = screen.finish(Duration::from_secs(10));
+    assert_eq!(code, Some(0), "{output}");
+    let index = setup.index();
+    assert_eq!(index[0]["title"], "Greeting the user warmly today");
+    assert_eq!(index[0]["summary"], "The user said hello.");
+    let setup = Setup::new("fs-title-off");
+    let config = setup.config("[sessions]\nauto_title = false\n");
+    let model = setup.model("script.json", json!(["Hello there.", title]));
+    let mut screen = setup.start(&["-m", &model, "-y", "--no-mcp", "-c", &config], &[]);
+    screen.wait_for("❯");
+    screen.type_line("say hi");
+    screen.wait_for("● Hello there.");
+    screen.finish(Duration::from_secs(10));
+    assert_eq!(setup.index()[0]["title"], "say hi", "with auto_title off the title is the first prompt");
+}
+
+#[test]
+fn the_config_modal_saves_a_change_and_keeps_the_comments() {
+    let setup = Setup::new("fs-config");
+    let user = setup.scratch.write("home/.umbra/config.toml", "# my settings\nstep_limit = 0\n");
+    let model = setup.model("script.json", json!(["ok"]));
+    let mut screen = setup.start(&["-m", &model, "-y", "--no-mcp"], &[]);
+    screen.wait_for("❯");
+    screen.type_line("/config");
+    screen.wait_for("Configure Umbra");
+    screen.press("Down");
+    screen.press("Down");
+    screen.press("Tab");
+    screen.wait_for("Context window");
+    screen.press("Down");
+    screen.press("Enter");
+    screen.type_text("abc");
+    screen.press("Enter");
+    screen.wait_for("Enter a whole number.");
+    screen.press("Esc");
+    screen.press("Down");
+    screen.press("Enter");
+    screen.send(b"\x15");
+    screen.type_text("70");
+    screen.press("Enter");
+    let frame = screen.wait_for("changed");
+    assert!(has(&frame, r"Trigger\s+70%"), "{}", frame.text());
+    screen.send(b"\x13");
+    screen.wait_for("Saved to");
+    let text = std::fs::read_to_string(&user).unwrap();
+    assert!(text.contains("# my settings") && text.contains("step_limit = 0"), "the comment and the other keys are kept:\n{text}");
+    assert!(text.contains("trigger_ratio = 0.7"), "{text}");
+    screen.press("Esc");
+    screen.wait_until("the modal to close", Duration::from_secs(5), |f| f.row_of("Configure Umbra").is_none());
+}
+
+/// The paths a fake HTTP server saw.
+type Seen = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+/// A local HTTP server for a test. Each request's path is recorded, and the reply comes from a
+/// function of the path. Returns the address and the recorded paths.
+/// @param reply - the status and body for a path
+fn http_server(reply: impl Fn(&str) -> (u16, String) + Send + 'static) -> (String, Seen) {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    let paths: Seen = Default::default();
+    let seen = paths.clone();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut data = Vec::new();
+            let mut buffer = [0u8; 8192];
+            loop {
+                let n = stream.read(&mut buffer).unwrap_or(0);
+                data.extend_from_slice(&buffer[..n]);
+                let text = String::from_utf8_lossy(&data).to_string();
+                let done = match text.find("\r\n\r\n") {
+                    Some(end) => {
+                        let length = text.lines().find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))).unwrap_or(0);
+                        data.len() >= end + 4 + length
+                    }
+                    None => false,
+                };
+                if done || n == 0 {
+                    break;
+                }
+            }
+            let text = String::from_utf8_lossy(&data).to_string();
+            let path = text.split_whitespace().nth(1).unwrap_or("/").to_string();
+            seen.lock().unwrap().push(path.clone());
+            let (status, body) = reply(&path);
+            let response = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (address, paths)
+}
+
+/// A reply from the Anthropic messages endpoint.
+fn claude_reply() -> String {
+    json!({ "id": "m", "type": "message", "role": "assistant", "model": "claude-sonnet-5-5", "content": [{ "type": "text", "text": "Hi from Claude." }], "stop_reason": "end_turn", "usage": { "input_tokens": 10, "output_tokens": 3 } }).to_string()
+}
+
+/// Starts a session on a fake Claude login or API key, with a usage endpoint that answers
+/// `usage`. Returns the screen and the paths the server saw.
+/// @param setup - the test folder
+/// @param usage - the usage endpoint's status and body
+/// @param token - true to sign in with a login token, false with an API key
+fn claude_session(setup: &Setup, usage: (u16, String), token: bool) -> (Screen, Seen) {
+    let (address, paths) = http_server(move |path| if path.starts_with("/api/oauth/usage") { usage.clone() } else { (200, claude_reply()) });
+    let config = setup.config(&format!("[providers.claude]\nkind = \"anthropic\"\nbase_url = \"{address}\"\napi_key_env = \"UMBRA_TEST_CLAUDE_KEY\"\n"));
+    let usage_url = format!("{address}/api/oauth/usage");
+    let mut envs = vec![("UMBRA_TEST_USAGE_URL", usage_url.as_str())];
+    if token {
+        envs.push(("ANTHROPIC_AUTH_TOKEN", "test-login-token"));
+    } else {
+        envs.push(("UMBRA_TEST_CLAUDE_KEY", "sk-test"));
+    }
+    let screen = setup.start(&["-m", "claude/claude-sonnet-5-5", "-y", "--no-mcp", "-c", &config], &envs);
+    (screen, paths)
+}
+
+#[test]
+fn the_weekly_usage_bar_follows_the_claude_usage_endpoint() {
+    let setup = Setup::new("fs-usage");
+    let body = json!({ "five_hour": { "utilization": 12.0, "resets_at": "2026-11-10T20:00:00Z" }, "seven_day": { "utilization": 23.0, "resets_at": "2099-11-14T08:00:00Z" } }).to_string();
+    let (mut screen, paths) = claude_session(&setup, (200, body), true);
+    screen.wait_until("the usage bar", Duration::from_secs(10), |f| f.rows.iter().any(|r| r.contains("week") && r.contains("23%")));
+    screen.type_line("hello");
+    screen.wait_for("● Hi from Claude.");
+    screen.click_text("week");
+    screen.wait_for("resets in");
+    assert_eq!(paths.lock().unwrap().iter().filter(|p| p.starts_with("/api/oauth/usage")).count(), 1, "polled once, not again within 180 seconds");
+    for (status, body) in [(401, "{}".to_string()), (200, json!({ "seven_day": null }).to_string())] {
+        let setup = Setup::new("fs-usage-hidden");
+        let (screen, paths) = claude_session(&setup, (status, body), true);
+        screen.wait_for("mcp     off");
+        let started = Instant::now();
+        while paths.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!paths.lock().unwrap().is_empty(), "the endpoint was polled");
+        assert!(!screen.frame().text().contains("week"), "status {status} hides the bar:\n{}", screen.frame().text());
+    }
+    let setup = Setup::new("fs-usage-key");
+    let (mut screen, paths) = claude_session(&setup, (200, "{}".into()), false);
+    screen.wait_for("❯");
+    screen.type_line("hello");
+    screen.wait_for("● Hi from Claude.");
+    assert!(!paths.lock().unwrap().iter().any(|p| p.starts_with("/api/oauth/usage")), "an API key never polls the usage endpoint");
+}
+
+#[test]
+fn durations_are_saved_and_an_old_trajectory_without_them_still_resumes() {
+    let setup = Setup::new("fs-durations");
+    let model = setup.model("script.json", json!([{ "content": "", "tool_calls": [bash("echo hi")] }, "done"]));
+    let work = setup.work();
+    let traj = slash(&setup.scratch.path("run.traj.json"));
+    let output = common::run_umbra(&setup.scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--cwd", &work, "-o", &traj, "go"]);
+    assert_eq!(output.status.code(), Some(0), "{}", common::text(&output));
+    let mut trajectory = common::read_trajectory(&setup.scratch.path("run.traj.json"));
+    let tool = trajectory["messages"].as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap().clone();
+    assert!(tool["extra"]["duration_ms"].as_u64().is_some(), "{tool}");
+    for message in trajectory["messages"].as_array_mut().unwrap() {
+        if let Some(extra) = message["extra"].as_object_mut() {
+            extra.remove("duration_ms");
+            extra.remove("started_at");
+        }
+    }
+    std::fs::write(setup.scratch.path("run.traj.json"), trajectory.to_string()).unwrap();
+    let next = setup.model("next.json", json!(["resumed fine"]));
+    let mut screen = setup.start_raw(&["-m", &next, "-y", "--no-mcp", "--cwd", &work, "--resume", &traj], &[]);
+    let frame = screen.wait_for("Ran 1 shell command");
+    assert!(frame.row_of("❯ go").is_some(), "{}", frame.text());
+    screen.type_line("again");
+    screen.wait_for("● resumed fine");
+}

@@ -167,10 +167,6 @@ impl View {
                 self.overlay = None;
                 (KeyOutcome::Line(line), Vec::new())
             }
-            Outcome::Replace(next) => {
-                self.overlay = Some(next);
-                (KeyOutcome::None, Vec::new())
-            }
         }
     }
 

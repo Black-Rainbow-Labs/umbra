@@ -145,6 +145,12 @@ fn apply_run_args(config: &mut UmbraConfig, args: &RunArgs) -> Result<()> {
 pub fn run_task(args: &RunArgs) -> Result<i32> {
     interrupt::install();
     let mut args = args.clone();
+    // `--resume` with no id picks from a list: in the fullscreen view once it is open, else the
+    // numbered list on the main screen.
+    let pick = args.resume.as_deref() == Some("") && !args.continue_last && wants_fullscreen_picker(&args);
+    if pick {
+        args.resume = None;
+    }
     let (mut resumed, mut resume_notice) = load_resume_target(&args)?;
     if let Some(resumed) = &resumed {
         fill_from_session(&mut args, &resumed.session);
@@ -173,7 +179,16 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     if !args.quiet {
         show_banner(&config, &cwd, &context);
     }
+    if pick {
+        match pick_in_view(&cwd, args.pick_all) {
+            Some(id) => (resumed, resume_notice) = resume_by_id(&id, &mut args)?,
+            None => return Ok(0),
+        }
+    }
     loop {
+        if let Some(session) = resumed.as_ref().filter(|_| args.common.model.is_none()) {
+            adopt_session_model(&mut config, session);
+        }
         if let Some(session) = &resumed {
             show_resumed(session, resume_notice.as_deref(), &mcp);
         }
@@ -204,6 +219,76 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
             None => return Ok(finish_run(&result, args.quiet)),
         }
     }
+}
+
+/// `umbra resume`: with an id, continues that session; with none, shows the session picker. With
+/// no terminal it prints the sessions and says an id is needed.
+/// @param args - the resume options
+pub fn resume_command(args: &crate::cli::ResumeArgs) -> Result<i32> {
+    let mut run = args.run.clone();
+    if let Some(id) = &args.id {
+        run.resume = Some(id.clone());
+        return run_task(&run);
+    }
+    let terminal = fullscreen_forced() || (std::io::IsTerminal::is_terminal(&std::io::stdin()) && std::io::IsTerminal::is_terminal(&std::io::stdout()));
+    if !terminal {
+        let cwd = match &run.common.cwd { Some(dir) => absolute_path(dir), None => std::env::current_dir()? };
+        for session in super::session_service::listed_sessions(&cwd, args.all) {
+            println!("{}", super::session_service::describe_session(&session));
+        }
+        eprintln!("umbra: a session id is needed when stdin or stdout is not a terminal: umbra resume <id>");
+        return Ok(2);
+    }
+    run.resume = Some(String::new());
+    run.pick_all = args.all;
+    run_task(&run)
+}
+
+/// True when `--resume` with no id should use the fullscreen session picker: the run can open
+/// the fullscreen view.
+/// @param args - the run options
+fn wants_fullscreen_picker(args: &RunArgs) -> bool {
+    let terminal = fullscreen_forced() || (std::io::IsTerminal::is_terminal(&std::io::stdin()) && std::io::IsTerminal::is_terminal(&std::io::stdout()));
+    terminal && !args.no_fullscreen && !args.quiet && std::env::var("UMBRA_FULLSCREEN").map_or(true, |v| v != "0")
+}
+
+/// Shows the session picker in the fullscreen view and waits for a choice. Returns the chosen
+/// session's id, or None when the person pressed Esc or there is no session.
+/// @param cwd - the folder whose sessions are listed
+/// @param all - list every folder's sessions
+fn pick_in_view(cwd: &Path, all: bool) -> Option<String> {
+    let sessions = super::session_service::listed_sessions(cwd, all);
+    if sessions.is_empty() {
+        show_event(Tone::Info, "·", &format!("no saved session in {}", cwd.display()));
+        return None;
+    }
+    screen::open_overlay(crate::ui::overlay::pickers::start_picker(sessions));
+    loop {
+        match crate::utils::console::prompt_line("❯ ") {
+            Input::Line(line) => match line.trim().strip_prefix("/resume ") {
+                Some(id) => return Some(id.trim().to_string()),
+                None if line.trim() == "/quit" => return None,
+                None => continue,
+            },
+            _ => return None,
+        }
+    }
+}
+
+/// Makes a resumed session use its own model, when that model can still be used. Called only
+/// when the command line did not name a model.
+/// @param config - the merged config, changed in place
+/// @param session - the resumed session
+fn adopt_session_model(config: &mut UmbraConfig, session: &ResumedSession) {
+    let model = &session.session.model;
+    if model.is_empty() || *model == config.model || check_credentials(config, model).is_err() {
+        return;
+    }
+    config.model = model.clone();
+    live::set_config(config.clone());
+    let shown = super::providers::resolve_model(config, model);
+    usage_service::start(config, model);
+    live::update_header(|h| h.model = shown);
 }
 
 /// What a session of the run needs besides the options.
@@ -273,6 +358,7 @@ fn share_with_view(config: &UmbraConfig, cwd: &Path, context: &RunContext, mcp: 
     live::set_config(config.clone());
     live::set_mcp(Some(mcp.clone()));
     live::set_commands(command_entries(context));
+    live::set_mcp_origins(context.mcp_servers.iter().map(|d| (d.name.clone(), d.origin.display().to_string())).collect());
     let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned());
     let mode = serde_json::to_value(config.mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     live::set_header(HeaderInfo { version: env!("CARGO_PKG_VERSION").into(), model: super::providers::resolve_model(config, &config.model), folder: display_folder(&cwd.to_string_lossy(), home.as_deref()), cwd: cwd.to_path_buf(), mode, skills: context.skills.len(), mcp_enabled: config.mcp.enabled, reveal_from: None });

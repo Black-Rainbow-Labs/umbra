@@ -39,6 +39,10 @@ pub enum Key {
     CtrlK,
     /// Ctrl+W, delete the word before the cursor.
     CtrlW,
+    /// Ctrl+S, save in the configuration modal.
+    CtrlS,
+    /// Ctrl+T, switch the configuration modal's file.
+    CtrlT,
     /// Alt+Left, one word left.
     WordLeft,
     /// Alt+Right, one word right.
@@ -180,6 +184,8 @@ fn decode_one(bytes: &[u8]) -> Decoded {
         0x05 => Decoded::Key(Key::CtrlE, 1),
         0x0b => Decoded::Key(Key::CtrlK, 1),
         0x17 => Decoded::Key(Key::CtrlW, 1),
+        0x13 => Decoded::Key(Key::CtrlS, 1),
+        0x14 => Decoded::Key(Key::CtrlT, 1),
         b'\t' => Decoded::Key(Key::Tab, 1),
         0x00..=0x1f => Decoded::Skip(1),
         _ => decode_utf8(bytes),

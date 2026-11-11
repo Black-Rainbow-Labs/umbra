@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::services::interaction_service::Tone;
 use crate::services::work_clock::clock_text;
 use crate::utils::ansi;
-use crate::utils::screen::{char_width, visible_width, wrap_ansi, Layout};
+use crate::utils::screen::{char_width, visible_width, wrap_ansi};
 
 /// Something on screen a click or the keyboard can act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,8 +76,6 @@ pub enum Block {
     Notice { tone: Tone, marker: String, text: String },
     /// A printed line that has no structure of its own.
     Text(String),
-    /// Rows laid out again for each width by a function.
-    Laid(Layout),
 }
 
 /// Commands run in a row.
@@ -144,7 +142,7 @@ impl Block {
     /// True when the block's rows change with time or live state, so they are never cached.
     pub fn is_live(&self) -> bool {
         match self {
-            Block::Header | Block::Laid(_) => true,
+            Block::Header => true,
             Block::CommandGroup(group) => group.runs.iter().any(|r| matches!(r.state, RunState::Running { .. })),
             _ => false,
         }
@@ -163,7 +161,6 @@ impl Block {
             Block::CommandGroup(group) => group_rows(group, id, width, ctx),
             Block::Notice { tone, marker, text } => notice_rows(*tone, marker, text, width, ctx),
             Block::Text(line) => hard_wrap(line, width),
-            Block::Laid(layout) => layout(width).iter().flat_map(|row| hard_wrap(row, width)).collect(),
         }
     }
 }

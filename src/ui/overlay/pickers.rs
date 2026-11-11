@@ -111,6 +111,14 @@ pub fn session_picker(sessions: Vec<SessionIndexEntry>) -> Box<dyn Overlay> {
     Box::new(picker)
 }
 
+/// The session picker `umbra resume` opens before a session starts: Esc ends the run.
+/// @param sessions - the sessions, newest first
+pub fn start_picker(sessions: Vec<SessionIndexEntry>) -> Box<dyn Overlay> {
+    let items: Vec<PickItem> = sessions.iter().map(session_item).collect();
+    let picker = Picker::new("Resume a session", items, false, Box::new(|item, _| Ok(Outcome::Line(format!("/resume {}", item.value))))).with_hint("↑↓ move · Enter resume · type to filter · Esc cancel").on_cancel("/quit");
+    Box::new(picker)
+}
+
 /// One session as a picker item.
 /// @param session - the index entry
 pub fn session_item(session: &SessionIndexEntry) -> PickItem {

@@ -35,8 +35,6 @@ pub enum Outcome {
     CloseWith(Vec<Effect>),
     /// Close and send this line, as if the person typed it and pressed Enter.
     Line(String),
-    /// Close and show another overlay in its place.
-    Replace(Box<dyn Overlay>),
 }
 
 /// An overlay.

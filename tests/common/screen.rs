@@ -150,6 +150,7 @@ impl Screen {
         let mut command = super::umbra_command(home, args);
         let (cols, rows) = (size.0.to_string(), size.1.to_string());
         command.env("UMBRA_FORCE_FULLSCREEN", "1").env("COLUMNS", &cols).env("LINES", &rows).env("UMBRA_BANNER_ANIMATION", "0").env("UMBRA_STATUS_BAR", "1");
+        command.env_remove("ANTHROPIC_API_KEY").env_remove("ANTHROPIC_AUTH_TOKEN").env_remove("OPENAI_API_KEY");
         command.envs(envs.iter().copied()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = command.spawn().expect("umbra binary runs");
         let stdin = child.stdin.take();

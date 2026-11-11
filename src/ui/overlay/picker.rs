@@ -40,6 +40,8 @@ pub struct Picker {
     on_choose: Choose,
     /// Draw ○ and ● markers, as for a choice with one current value.
     radio: bool,
+    /// A line Esc sends, for a picker that the run waits on.
+    cancel_line: Option<String>,
 }
 
 impl Picker {
@@ -50,7 +52,14 @@ impl Picker {
     /// @param on_choose - what choosing an item does
     pub fn new(title: &str, items: Vec<PickItem>, radio: bool, on_choose: Choose) -> Self {
         let selected = items.iter().position(|i| i.current).unwrap_or(0);
-        Picker { title: title.to_string(), hint: "↑↓ move · Enter choose · type to filter · Esc close".into(), items, filter: String::new(), selected, error: None, entering: None, on_choose, radio }
+        Picker { title: title.to_string(), hint: "↑↓ move · Enter choose · type to filter · Esc close".into(), items, filter: String::new(), selected, error: None, entering: None, on_choose, radio, cancel_line: None }
+    }
+
+    /// Makes Esc send a line, for a picker the run is waiting on.
+    /// @param line - the line
+    pub fn on_cancel(mut self, line: &str) -> Self {
+        self.cancel_line = Some(line.to_string());
+        self
     }
 
     /// Sets the hint shown at the right of the title row.
@@ -180,7 +189,7 @@ impl Overlay for Picker {
             Key::Down | Key::Tab => self.selected = (self.selected + 1).min(count.saturating_sub(1)),
             Key::BackTab => self.selected = self.selected.saturating_sub(1),
             Key::Enter => return self.choose(),
-            Key::Escape => return Outcome::Close,
+            Key::Escape => return match &self.cancel_line { Some(line) => Outcome::Line(line.clone()), None => Outcome::Close },
             Key::Backspace => {
                 self.filter.pop();
             }

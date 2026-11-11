@@ -428,21 +428,10 @@ pub fn config_options(shared: &SessionShared) -> Value {
 /// The slash commands and skills, for `available_commands_update`.
 /// @param context - the session's loaded commands and skills
 fn available_commands(context: &RunContext) -> Vec<Value> {
-    let mut commands: Vec<Value> = context.commands.iter().map(|c| json!({ "name": c.name, "description": short(&c.description, &format!("Run {}", c.path.display())), "input": { "hint": "arguments" } })).collect();
-    for skill in &context.skills {
-        if !context.commands.iter().any(|c| c.name == skill.name) {
-            commands.push(json!({ "name": skill.name, "description": short(&skill.description, "A skill"), "input": { "hint": "what to do" } }));
-        }
-    }
-    commands
-}
-
-/// A description shortened to one line of at most 200 characters, or the fallback when empty.
-/// @param text - the description
-/// @param fallback - used when there is none
-fn short(text: &str, fallback: &str) -> String {
-    let line = text.lines().next().unwrap_or("").trim();
-    if line.is_empty() { fallback.to_string() } else { line.chars().take(200).collect() }
+    crate::services::command_service::custom_entries(context).into_iter().map(|entry| {
+        let hint = if entry.kind == "skill" { "what to do" } else { "arguments" };
+        json!({ "name": entry.name, "description": entry.description, "input": { "hint": hint } })
+    }).collect()
 }
 
 /// Checks that Umbra could start a session in a folder: a model is set and it has a credential.

@@ -25,6 +25,7 @@ fn main() {
         Some(Command::Config(args)) => inspect_service::show_config(&args).map(|_| 0),
         Some(Command::Prompt(args)) => run_service::print_prompt(&args).map(|_| 0),
         Some(Command::Sessions(args)) => inspect_service::list_sessions(&args).map(|_| 0),
+        Some(Command::Resume(args)) => run_service::resume_command(&args),
         Some(Command::Acp(args)) if args.setup => setup_service::run_setup(&cli::SetupArgs::default()),
         Some(Command::Acp(args)) => acp::serve(&args),
         Some(Command::Setup(args)) => setup_service::run_setup(&args),
