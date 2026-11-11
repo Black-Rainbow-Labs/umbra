@@ -9,6 +9,7 @@ import { waitForIdleServer } from "./serverCheck.mjs";
 import { loadAllTasks, selectTasks } from "../repositories/taskRepository.mjs";
 import { cellDir, cellFinished, writeRunMeta, runDir } from "../repositories/runRepository.mjs";
 import { readJson } from "../utils/files.mjs";
+import { acquireRunLock } from "../repositories/runLock.mjs";
 import { DEFAULT_MODEL, DEFAULT_SAMPLING } from "../utils/config.mjs";
 import * as umbraAdapter from "../../agents/umbra.mjs";
 import * as piAdapter from "../../agents/pi.mjs";
@@ -85,10 +86,12 @@ async function runOrSkipCell(ctx) {
 }
 
 /**
- * Runs the eval. Cells run strictly one after another, agents interleaved per task.
+ * Runs the eval. Cells run strictly one after another, agents interleaved per task. Takes the
+ * machine wide runner lock first, so a second eval run started at the same time stops with an error.
  * @param options - { agents: string[], reps: number, taskIds: string[]|null, category: string|null, runId: string }
  */
 export async function runEval(options) {
+  acquireRunLock(options.runId);
   const adapters = adaptersFor(options.agents);
   const tasks = selectTasks(loadAllTasks(), { taskIds: options.taskIds, category: options.category });
   const model = DEFAULT_MODEL;

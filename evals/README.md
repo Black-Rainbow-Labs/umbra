@@ -21,7 +21,9 @@ node evals/run.mjs proxycheck [--run <run id>]
 
 - `run` runs cells one at a time: for each task, each repetition, Umbra and then pi. Before the
   batch and before every cell it sends one tiny request straight to the server and waits until
-  it answers within 5 seconds, because the server has one slot. Giving an existing `--run-id`
+  it answers within 5 seconds, because the server has one slot. `run` also takes the lock file
+  `~/.umbra-evals-runner.lock` (or `EVAL_LOCK_FILE`) and stops with an error while another live
+  `run` holds it, so two runs can never share the model. Giving an existing `--run-id`
   resumes the run: cells that have a `result.json` are skipped, and a cell that has no
   `result.json` (it was cut off, or the runner hit an error and wrote `error.txt`) is run again
   from scratch. The runner records both agents' versions in `run.json` and checks them again
