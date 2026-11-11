@@ -12,7 +12,7 @@ import { removeCreatedTree, listFiles } from "../utils/files.mjs";
  * @param task - the EvalTask
  */
 function syntheticRunInfo(task) {
-  const phases = taskPhases(task).map((phase, index) => ({ index, label: phase.label || `phase-${index}`, mode: phase.mode || (index ? "resume" : "new"), exitCode: 0, killReason: index === 0 && phase.killAfterSeconds ? "planned-interrupt" : "", sessionRef: index && (phase.mode === "fork" || phase.mode === "branch") ? `selftest-${phase.mode}` : "selftest", sessionValid: true, malformedToolCalls: 0 }));
+  const phases = taskPhases(task).map((phase, index) => ({ index, label: phase.label || `phase-${index}`, mode: phase.mode || (index ? "resume" : "new"), exitCode: 0, killReason: index === 0 && (phase.killAfterSeconds || phase.killWhenFiles) ? "planned-interrupt" : "", sessionRef: index && (phase.mode === "fork" || phase.mode === "branch") ? `selftest-${phase.mode}` : "selftest", sessionValid: true, malformedToolCalls: 0 }));
   return { task, agent: "selftest", phases, requests: [], taskDir: task.dir, selftest: true };
 }
 

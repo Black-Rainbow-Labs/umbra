@@ -87,7 +87,7 @@ export async function runPhase(ctx) {
   const input = { workspaceDir: ctx.workspaceDir, prompt: phase.prompt, proxyBaseUrl: proxy.baseUrl, model: ctx.model, contextWindow, timeoutSeconds: task.timeoutSeconds, stepLimit: phase.stepLimit ?? task.stepLimit, homeDir: path.join(ctx.cellDir, "home"), phaseDir, resume };
   const cut = phase.cutSessionBytes && resume ? cutSessionFile(adapter, input, phase.cutSessionBytes) : {};
   const launch = adapter.buildLaunch(input);
-  const handle = runProcess({ command: launch.command, args: launch.args, cwd: launch.cwd, env: launch.env, stdoutPath: path.join(phaseDir, "stdout.log"), stderrPath: path.join(phaseDir, "stderr.log"), timeoutSeconds: task.timeoutSeconds, killAfterSeconds: phase.killAfterSeconds, measureWrites: Boolean(phase.measureStoreWrites) });
+  const handle = runProcess({ command: launch.command, args: launch.args, cwd: launch.cwd, env: launch.env, stdoutPath: path.join(phaseDir, "stdout.log"), stderrPath: path.join(phaseDir, "stderr.log"), timeoutSeconds: task.timeoutSeconds, killAfterSeconds: phase.killAfterSeconds, killWhen: filesTrigger(phase.killWhenFiles, ctx.workspaceDir), measureWrites: Boolean(phase.measureStoreWrites) });
   proxyBox.onChat = (count) => { if (count > input.stepLimit) handle.kill("step-limit"); };
   const outcome = await handle.done;
   proxyBox.onChat = null;
@@ -118,4 +118,16 @@ function safeReadArtifacts(adapter, launch) {
  */
 function skippedPhase(phase, index, resume, reason) {
   return { index, label: phase.label || `phase-${index}`, mode: resume.mode, resumedFrom: null, exitCode: null, killReason: "skipped", killed: false, timedOut: false, wallMs: 0, skipped: reason, sessionRef: null, sessionValid: false, malformedToolCalls: 0, compactions: 0, requests: 0 };
+}
+
+/**
+ * Builds the planned interrupt test for `killWhenFiles`: true once the folder in the workspace
+ * holds at least `count` files. Returns undefined when the phase has no such trigger.
+ * @param trigger - { dir, count } from the phase, or undefined
+ * @param workspaceDir - the cell's workspace folder
+ */
+function filesTrigger(trigger, workspaceDir) {
+  if (!trigger) return undefined;
+  const dir = path.join(workspaceDir, trigger.dir);
+  return () => fs.existsSync(dir) && fs.readdirSync(dir).length >= trigger.count;
 }

@@ -36,8 +36,9 @@ function watchWrittenBytes(pid) {
  * Runs a command with stdin closed, stdout and stderr written to files, and a kill switch.
  * Resolves when the process exits. `controller.kill(reason)` kills the tree from outside. With
  * `measureWrites`, the result has `bytesWritten`, the bytes the process wrote, read about every
- * half second while it ran.
- * @param spec - { command, args, cwd, env, stdoutPath, stderrPath, timeoutSeconds, killAfterSeconds, measureWrites }
+ * half second while it ran. `killWhen`, a function polled every 250 ms, kills the process as a
+ * planned interrupt the first time it returns true.
+ * @param spec - { command, args, cwd, env, stdoutPath, stderrPath, timeoutSeconds, killAfterSeconds, killWhen, measureWrites }
  */
 export function runProcess(spec) {
   const out = fs.openSync(spec.stdoutPath, "w");
@@ -49,11 +50,13 @@ export function runProcess(spec) {
   const kill = (reason) => { if (status.killReason) return; status.killReason = reason; killProcessTree(child.pid); };
   const timers = [setTimeout(() => kill("timeout"), spec.timeoutSeconds * 1000)];
   if (spec.killAfterSeconds) timers.push(setTimeout(() => kill("planned-interrupt"), spec.killAfterSeconds * 1000));
+  const poll = spec.killWhen ? setInterval(() => { try { if (spec.killWhen()) kill("planned-interrupt"); } catch { /* keep polling */ } }, 250) : null;
   const done = new Promise((resolve) => {
     const finish = (code, error) => {
       if (status.finished) return;
       status.finished = true;
       timers.forEach(clearTimeout);
+      if (poll) clearInterval(poll);
       fs.closeSync(out);
       fs.closeSync(err);
       const bytesWritten = stopWatching();
