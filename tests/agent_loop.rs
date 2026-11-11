@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{read_trajectory, recorded_requests, run_umbra, run_umbra_with, slash, text, Scratch};
+use common::{read_trajectory, recorded_requests, run_umbra, run_umbra_with, slash, text, Running, Scratch};
 use serde_json::json;
 
 /// Writes a replay script and returns the `-m` value for it.
@@ -102,7 +102,16 @@ fn a_follow_up_continues_the_conversation_after_a_reply() {
     ]));
     let traj = scratch.path("run.traj.json");
     let envs = [("UMBRA_FORCE_INTERACTIVE", "1"), ("UMBRA_REPLAY_RECORD", &slash(&record) as &str)];
-    let output = run_umbra_with(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "Hello"], &envs, "list the files\n");
+    // The follow up is typed once the first reply is in, as a person would. Typed earlier, it is
+    // read while the first turn runs and goes to the model as a message sent during the turn.
+    let mut running = Running::start(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "Hello"], &envs);
+    let started = std::time::Instant::now();
+    while recorded_requests(&record).is_empty() && started.elapsed() < std::time::Duration::from_secs(20) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    running.type_line("list the files");
+    let output = running.finish(std::time::Duration::from_secs(30));
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let requests = recorded_requests(&record);
     assert_eq!(requests.len(), 3);
