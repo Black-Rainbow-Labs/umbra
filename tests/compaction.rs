@@ -125,8 +125,8 @@ fn no_compact_turns_it_off() {
 fn summary_runs_when_masking_is_not_enough() {
     let scratch = Scratch::new("compact-summary");
     let config = scratch.write("compact.toml", "[compaction]\ncontext_window = 10700\nkeep_recent_ratio = 0.15\n");
-    let long_reply = json!({ "content": "b".repeat(4000), "tool_calls": [{ "name": "bash", "arguments": { "command": "echo ok" } }] });
-    let mut replies: Vec<Value> = (0..8).map(|_| long_reply.clone()).collect();
+    let long_reply = |i: usize| json!({ "content": "b".repeat(4000), "tool_calls": [{ "name": "bash", "arguments": { "command": format!("echo ok {i}") } }] });
+    let mut replies: Vec<Value> = (0..8).map(long_reply).collect();
     replies.push(json!("SUMMARY-TEXT: printed ok eight times."));
     replies.push(submit());
     let (output, requests) = run(&scratch, json!(replies), &["-c", &slash(&config)]);

@@ -268,3 +268,17 @@ fn the_model_can_give_one_command_a_longer_timeout_up_to_the_maximum() {
     let stopped = messages[5]["extra"]["exception_info"].as_str().unwrap();
     assert!(stopped.contains("timed out after 3 seconds") && stopped.contains("in the background"), "the maximum caps the ask: {stopped}");
 }
+
+#[test]
+fn the_same_command_and_output_three_times_gets_one_stall_message() {
+    let scratch = Scratch::new("stall");
+    let same = json!({ "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo same" } }] });
+    let model = script(&scratch, json!([same.clone(), same.clone(), same.clone(), same, "Done."]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "task"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let messages = read_trajectory(&traj)["messages"].as_array().unwrap().clone();
+    let stalls: Vec<usize> = messages.iter().enumerate().filter(|(_, m)| m["extra"]["interrupt_type"] == "Stall").map(|(i, _)| i).collect();
+    assert_eq!(stalls.len(), 1, "one stall message for the streak");
+    assert_eq!(messages[stalls[0] - 1]["role"], "tool", "it follows the third result");
+}

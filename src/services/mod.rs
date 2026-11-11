@@ -21,6 +21,7 @@ pub mod run_service;
 pub mod session_service;
 pub mod session_title_service;
 pub mod settings_service;
+pub mod stall_service;
 pub mod setup_service;
 pub mod terminal_events;
 pub mod tool_search_service;
