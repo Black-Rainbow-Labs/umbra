@@ -1,0 +1,13 @@
+│ rust
+│ fn main() {
+│     println!("hello");
+│ }
+│ 
+│ fn long() { let value = some_function_
+│ ↪name(first_argument, second_argument,
+│ ↪ third_argument); }
+
+│ indented code
+│ second line
+
+After.

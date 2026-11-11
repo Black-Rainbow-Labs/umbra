@@ -1,0 +1,2 @@
+Plain bold text and italic text and struck text and bold italic with bold and
+nested italic inside to wrap the paragraph across rows at narrow widths.

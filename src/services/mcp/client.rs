@@ -109,7 +109,7 @@ impl McpClient {
                     output.push('\n');
                     output.push_str(note);
                 }
-                Observation { output, returncode: if failed { 1 } else { 0 }, exception_info: String::new(), images }
+                Observation { output, returncode: if failed { 1 } else { 0 }, exception_info: String::new(), images, ..Default::default() }
             }
             Err(error) if interrupt::is_pending() => Observation::failed("", format!("{INTERRUPTED_MCP_CALL} ({error})")),
             Err(error) => Observation::failed("", format!("MCP call {}.{tool} failed: {error}", self.name)),
@@ -199,7 +199,7 @@ pub fn render_tool_result(result: &Value) -> String {
 
 /// Makes a server name safe to use as a file name.
 /// @param name - the server name
-fn sanitize(name: &str) -> String {
+pub fn sanitize(name: &str) -> String {
     name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 

@@ -1,6 +1,8 @@
 //! Small helpers with no knowledge of the agent.
 
+pub mod ansi;
 pub mod banner;
+pub mod clipboard;
 pub mod console;
 pub mod env_expand;
 pub mod frontmatter;

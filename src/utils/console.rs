@@ -173,14 +173,23 @@ pub fn enable_status_bar(wanted: bool) -> bool {
     on
 }
 
+/// Set once the fullscreen view was used, so the run's last lines are not printed twice.
+static USED_FULLSCREEN: AtomicBool = AtomicBool::new(false);
+
 /// Opens the fullscreen view when it was asked for and the terminal can show it: stdin and stdout
 /// are real terminals, the run is not quiet, `TERM` is not `dumb`, ANSI codes work, and
-/// `UMBRA_FULLSCREEN` is not `0`. Returns true when the view opened.
+/// `UMBRA_FULLSCREEN` is not `0`. `UMBRA_FORCE_FULLSCREEN=1` opens it over pipes, for tests.
+/// Returns true when the view opened.
 /// @param wanted - false when the config or `--no-fullscreen` turned it off
-pub fn start_fullscreen(wanted: bool) -> bool {
+/// @param mouse - true to turn mouse reporting on
+pub fn start_fullscreen(wanted: bool, mouse: bool) -> bool {
     let allowed = std::env::var("UMBRA_FULLSCREEN").map_or(true, |v| v != "0");
-    let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && std::env::var("TERM").map_or(true, |t| t != "dumb");
-    wanted && allowed && terminal && !is_quiet() && !USE_STDERR.load(Ordering::SeqCst) && enable_ansi() && screen::enter()
+    let terminal = screen::forced() || (std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && std::env::var("TERM").map_or(true, |t| t != "dumb"));
+    let opened = wanted && allowed && terminal && !is_quiet() && !USE_STDERR.load(Ordering::SeqCst) && enable_ansi() && screen::enter(mouse, color_enabled());
+    if opened {
+        USED_FULLSCREEN.store(true, Ordering::SeqCst);
+    }
+    opened
 }
 
 /// Returns true when the status bar is on.
@@ -196,8 +205,7 @@ pub fn update_status(info: StatusInfo) {
         return;
     }
     if screen::is_active() {
-        let (shown, color) = (info.clone(), color_enabled());
-        screen::set_status_layout(Some(std::sync::Arc::new(move |width| vec![render_status(&shown, width, color)])));
+        screen::set_status(Some(info.clone()));
         footer.info = Some(info);
         return;
     }
@@ -212,16 +220,18 @@ pub fn update_status(info: StatusInfo) {
 /// scrollback keeps the session's final numbers.
 /// @param phase - the phase the last line shows
 pub fn finish_status(phase: Phase) {
-    // The fullscreen view prints its own last lines when it closes; this runs after that.
     screen::leave();
     let mut footer = FOOTER.lock().unwrap_or_else(|e| e.into_inner());
-    if !footer.on {
+    if !footer.on || USED_FULLSCREEN.load(Ordering::SeqCst) {
+        footer.on = false;
         return;
     }
     let mut out = String::new();
     footer.erase(&mut out);
     if let Some(info) = footer.info.as_mut() {
         info.phase = phase;
+        info.work_secs = crate::services::work_clock::elapsed().as_secs();
+        info.working = false;
         out.push_str(&render_status(info, terminal_width(), color_enabled()));
         out.push('\n');
     }
@@ -453,9 +463,16 @@ pub fn prompt_line(prompt: &str) -> Input {
         // Nothing echoed the typed line, so it is added to the transcript after its prompt.
         if let Input::Line(line) = &input {
             let tail = prompt.rsplit('\n').next().unwrap_or("");
-            screen::push_text(&format!("{}{line}", paint("1;33", tail)));
+            if tail.trim() == "❯" {
+                if !line.trim().is_empty() && crate::services::command_service::parse_builtin(line).is_none() {
+                    screen::push_block(crate::ui::block::Block::UserPrompt { marker: "❯".into(), text: line.clone() });
+                }
+            } else {
+                screen::push_text(&format!("{}{line}", paint("1;33", tail)));
+            }
         }
         screen::set_prompt("");
+        screen::set_pending(Vec::new());
     }
     input
 }
@@ -494,7 +511,7 @@ fn show_prompt(prompt: &str) {
         None => ("", prompt),
     };
     if screen::is_active() {
-        let status = footer.info.as_ref().filter(|_| footer.on).map(|info| render_status(info, terminal_width(), color_enabled()));
+        let status = footer.info.clone().filter(|_| footer.on);
         drop(footer);
         let head = head.trim_end_matches('\n');
         if !head.is_empty() {
@@ -526,5 +543,5 @@ pub fn read_line(prompt: &str) -> Option<String> {
 /// Returns true when stdin is a terminal, so Umbra can ask the person questions.
 /// `UMBRA_FORCE_INTERACTIVE=1` treats a pipe as a terminal, which is how tests type into prompts.
 pub fn stdin_is_terminal() -> bool {
-    std::env::var("UMBRA_FORCE_INTERACTIVE").is_ok_and(|v| v == "1") || std::io::stdin().is_terminal()
+    std::env::var("UMBRA_FORCE_INTERACTIVE").is_ok_and(|v| v == "1") || screen::forced() || std::io::stdin().is_terminal()
 }

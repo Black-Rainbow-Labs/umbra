@@ -254,7 +254,7 @@ pub fn history_updates(messages: &[Message], cwd: &Path) -> Vec<Value> {
 /// @param message - a tool result or text mode observation message
 fn observation_of(message: &Message) -> Observation {
     let extra = &message.extra;
-    Observation { output: extra["raw_output"].as_str().unwrap_or("").to_string(), returncode: extra["returncode"].as_i64().unwrap_or(0) as i32, exception_info: extra["exception_info"].as_str().unwrap_or("").to_string(), images: Vec::new() }
+    Observation { output: extra["raw_output"].as_str().unwrap_or("").to_string(), returncode: extra["returncode"].as_i64().unwrap_or(0) as i32, exception_info: extra["exception_info"].as_str().unwrap_or("").to_string(), images: Vec::new(), ..Default::default() }
 }
 
 /// The ACP stop reason for how a turn ended.

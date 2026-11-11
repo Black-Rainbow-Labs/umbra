@@ -19,6 +19,14 @@ pub struct SessionInfo {
     pub started_at: f64,
     /// Each time the session was resumed, oldest first.
     pub resumes: Vec<ResumeRecord>,
+    /// The session's name, kept here too so a trajectory alone can be listed.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_off: Vec<String>,
+    pub work_seconds: f64,
 }
 
 /// One resume of a session.
@@ -53,4 +61,12 @@ pub struct SessionIndexEntry {
     pub api_calls: u32,
     pub cost: f64,
     pub messages: usize,
+    /// A short name: the first line of the first prompt, then a title the model wrote.
+    pub title: String,
+    /// One sentence about the session, from the model or from the last compaction summary.
+    pub summary: String,
+    /// The MCP servers turned off for this session, which a resume turns off again.
+    pub mcp_off: Vec<String>,
+    /// The agent time so far, in seconds.
+    pub work_seconds: f64,
 }

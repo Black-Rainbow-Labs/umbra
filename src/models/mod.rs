@@ -8,4 +8,5 @@ pub mod image;
 pub mod message;
 pub mod model_response;
 pub mod session;
+pub mod settings_schema;
 pub mod trajectory;

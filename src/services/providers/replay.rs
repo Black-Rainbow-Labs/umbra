@@ -48,7 +48,13 @@ impl Provider for ReplayProvider {
     /// @param _messages - ignored
     /// @param _tools - ignored
     fn complete(&mut self, messages: &[Message], tools: &[ToolSpec]) -> Result<ModelResponse, ProviderError> {
+        if is_title_request(messages) {
+            return self.title_reply();
+        }
         record_request(messages, tools);
+        while self.replies.get(self.next).is_some_and(|e| e.get("title_reply").is_some()) {
+            self.next += 1;
+        }
         let Some(entry) = self.replies.get(self.next).cloned() else {
             return Err(ProviderError::fatal(format!("replay file {} has no reply number {}", self.file, self.next + 1)));
         };
@@ -72,6 +78,24 @@ impl Provider for ReplayProvider {
     /// The settings recorded in the trajectory.
     fn describe(&self) -> Value {
         json!({ "provider": "replay", "model_name": self.model, "replay_file": self.file })
+    }
+}
+
+/// True for the request that asks for a session's title, which a script answers with an entry
+/// of the form `{"title_reply": "..."}` wherever it is in the file, and which is not recorded.
+/// @param messages - the request's messages
+fn is_title_request(messages: &[Message]) -> bool {
+    messages.first().is_some_and(|m| m.content.starts_with("You name coding sessions"))
+}
+
+impl ReplayProvider {
+    /// Answers a title request with the script's `title_reply` entry, or fails when it has none.
+    fn title_reply(&self) -> Result<ModelResponse, ProviderError> {
+        let found = self.replies.iter().find_map(|e| e.get("title_reply").and_then(Value::as_str).map(String::from));
+        match found {
+            Some(text) => Ok(ModelResponse { content: text, finish_reason: "stop".into(), ..Default::default() }),
+            None => Err(ProviderError::fatal("the replay file has no title_reply")),
+        }
     }
 }
 

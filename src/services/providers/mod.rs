@@ -87,7 +87,7 @@ pub fn is_overflow_text(body: &str) -> bool {
 }
 
 /// One model behind one API.
-pub trait Provider {
+pub trait Provider: Send {
     /// Sends the conversation and returns the model's reply.
     /// @param messages - the whole history; `Exit` messages are never sent
     /// @param tools - the tools offered in tool mode, empty in text mode
@@ -109,7 +109,8 @@ pub trait Provider {
 /// @param config - the merged config, which holds the provider table
 /// @param model_spec - the model string from the command line or config
 pub fn create_provider(config: &UmbraConfig, model_spec: &str) -> Result<Box<dyn Provider>> {
-    let (provider_name, model) = split_model_spec(model_spec)?;
+    let resolved = resolve_model(config, model_spec);
+    let (provider_name, model) = split_model_spec(&resolved)?;
     let provider_config = config.providers.get(provider_name).ok_or_else(|| anyhow!("unknown provider '{provider_name}'. Known providers: {}", config.providers.keys().cloned().collect::<Vec<_>>().join(", ")))?;
     match provider_config.kind.as_str() {
         "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(provider_config.clone(), model)?)),
@@ -124,7 +125,8 @@ pub fn create_provider(config: &UmbraConfig, model_spec: &str) -> Result<Box<dyn
 /// @param config - the merged config, which holds the provider table
 /// @param model_spec - the `provider/model` string
 pub fn check_credentials(config: &UmbraConfig, model_spec: &str) -> Result<()> {
-    let (provider_name, _) = split_model_spec(model_spec)?;
+    let resolved = resolve_model(config, model_spec);
+    let (provider_name, _) = split_model_spec(&resolved)?;
     let Some(provider) = config.providers.get(provider_name) else {
         bail!("unknown provider '{provider_name}'. Known providers: {}", config.providers.keys().cloned().collect::<Vec<_>>().join(", "));
     };
@@ -132,6 +134,17 @@ pub fn check_credentials(config: &UmbraConfig, model_spec: &str) -> Result<()> {
         "anthropic" => credentials::anthropic_credential(provider).map(|_| ()),
         "openai" if needs_api_key(provider) && credentials::api_key(provider).is_none() => bail!("no API key for provider '{provider_name}': set {} or api_key in ~/.umbra/config.toml", provider.api_key_env),
         _ => Ok(()),
+    }
+}
+
+/// Turns a model name from `[models.<name>]` into its `provider/model` string. Any other value,
+/// `provider/model` or a bare `claude...` name, is returned unchanged.
+/// @param config - the merged config, which holds the named models
+/// @param model_spec - a model name or a `provider/model` string
+pub fn resolve_model(config: &UmbraConfig, model_spec: &str) -> String {
+    match config.models.named.get(model_spec) {
+        Some(named) if !model_spec.contains('/') => named.spec(),
+        _ => model_spec.to_string(),
     }
 }
 

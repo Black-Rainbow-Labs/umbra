@@ -60,17 +60,24 @@ fn the_bar_follows_the_context_and_counts_compactions() {
         assert!(frame.chars().count() < 150, "the bar fits the width: {frame}");
         assert!(frame.contains("/ 6k") && frame.contains('%'), "the bar shows the window and the share in use: {frame}");
     }
-    assert!(frames.iter().any(|f| f.contains("● thinking")), "{frames:#?}");
-    assert!(frames.iter().any(|f| f.contains("● running head")), "{frames:#?}");
-    assert!(frames.iter().any(|f| f.contains("left before compaction at 80%")), "{frames:#?}");
-    assert!(frames[0].contains("↻ 0 compactions"), "{}", frames[0]);
+    // task-2611 removed the phase, the room before compaction, the compaction count and the step.
+    for frame in &frames {
+        for gone in ["thinking", "running", "waiting", "left before compaction", "compactions", "step "] {
+            assert!(!frame.contains(gone), "{gone} is no longer in the bar: {frame}");
+        }
+    }
+    assert!(frames.iter().any(|f| f.contains("compacting ")), "a compaction is named in the context label: {frames:#?}");
+    assert!(frames.iter().all(|f| regex_time(f)), "every frame shows the agent time: {frames:#?}");
     let compactions = trajectory["info"]["model_stats"]["compactions"].as_u64().unwrap();
     assert!(compactions >= 1, "the run compacted");
-    let last = frames.last().unwrap();
-    let expected = if compactions == 1 { "↻ 1 compaction".to_string() } else { format!("↻ {compactions} compactions") };
-    assert!(last.contains(&expected), "the counter matches the trajectory ({compactions}): {last}");
     let final_line = stdout.trim_end().rsplit('\n').next().unwrap();
-    assert!(final_line.contains("● finished") && final_line.contains(&expected), "the last line keeps the final numbers: {final_line}");
+    assert!(final_line.contains("/ 6k") && regex_time(final_line), "the last line keeps the final numbers: {final_line}");
+}
+
+/// True when a bar shows an agent time such as `0:00` or `1:02:05`.
+/// @param bar - one drawing of the bar
+fn regex_time(bar: &str) -> bool {
+    regex::Regex::new(r"(^|\s)\d+:\d\d(\s|$)").unwrap().is_match(bar)
 }
 
 #[test]
@@ -83,7 +90,7 @@ fn the_bar_is_drawn_under_a_prompt() {
     let before = &stdout[..at];
     assert!(before.ends_with(BAR_END), "the bar is drawn just before the prompt, under the prompt's line");
     let bar = frames(&stdout[..at + "❯".len()]).pop().unwrap();
-    assert!(bar.contains("● waiting for you"), "{bar}");
+    assert!(bar.contains("/ 6k") && !bar.contains("waiting"), "{bar}");
 }
 
 #[test]
@@ -91,8 +98,8 @@ fn no_bar_without_a_terminal_or_with_the_flag() {
     let scratch = Scratch::new("status-bar-off");
     let (stdout, _) = run(&scratch, &[], &[("COLUMNS", "120")], "");
     assert!(!stdout.contains('\x1b'), "no escape codes reach a pipe");
-    assert!(!stdout.contains("● thinking"));
+    assert!(!stdout.contains("/ 6k"));
     let scratch = Scratch::new("status-bar-flag");
     let (stdout, _) = run(&scratch, &["--no-status-bar"], &[("UMBRA_STATUS_BAR", "1")], "");
-    assert!(!stdout.contains('\x1b') && !stdout.contains("● thinking"), "--no-status-bar wins");
+    assert!(!stdout.contains('\x1b') && !stdout.contains("/ 6k"), "--no-status-bar wins");
 }

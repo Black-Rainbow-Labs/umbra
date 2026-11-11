@@ -95,7 +95,7 @@ fn with_no_terminal_ctrl_c_ends_the_run_and_kills_the_command() {
     assert!(messages[3]["extra"]["exception_info"].as_str().unwrap().starts_with("The user interrupted this command (Ctrl+C) after"), "{}", messages[3]);
     std::thread::sleep(Duration::from_secs(1));
     assert!(!case.scratch.path("work/finished.txt").exists(), "the shell was killed, so the rest of the command never ran");
-    assert!(text(&output).contains("umbra --resume"), "{}", text(&output));
+    assert!(!text(&output).contains("umbra --resume"), "no resume command is printed when the run is not quiet (task-2611): {}", text(&output));
 }
 
 #[test]

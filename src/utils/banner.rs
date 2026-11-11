@@ -13,9 +13,11 @@ pub struct BannerInfo {
     pub folder: String,
     /// confirm, yolo or human.
     pub mode: String,
-    pub instruction_files: usize,
     pub skills: usize,
-    pub mcp_servers: usize,
+    /// The mcp row after its label, as colored pieces, such as `3 running` and a red `1 failed`.
+    pub mcp: Vec<(&'static str, String)>,
+    /// True in the fullscreen view, where the model row opens the model picker: it ends with `▾`.
+    pub model_menu: bool,
 }
 
 /// A 24 bit color.
@@ -125,7 +127,8 @@ pub fn render_banner_frames(info: &BannerInfo, width: usize, color: bool) -> Vec
     shown.into_iter().map(|pixels| {
         let logo = logo_block(pixels, color, truecolor, &paint);
         let mut lines = box_lines(layout_body(layout, logo, &rows, width, &paint), &paint);
-        lines.push(paint(DIM, &clip_end(HINT, width.saturating_sub(1))));
+        let hint = if info.model_menu { VIEW_HINT } else { HINT };
+        lines.push(paint(DIM, &clip_end(hint, width.saturating_sub(1))));
         lines
     }).collect()
 }
@@ -239,30 +242,29 @@ fn tagline_name(color: bool, truecolor: bool) -> String {
 /// The line under the banner that says how to steer a run.
 const HINT: &str = "  Ctrl+C interrupts · /compact shrinks the history · lines typed while it works go to the next step";
 
+/// The hint under the header in the fullscreen view.
+const VIEW_HINT: &str = "  Ctrl+C interrupts · / lists commands · Tab moves through the transcript · drag to copy";
+
 /// One text row: pieces of (color, text). The first piece is the label.
 type Row = Vec<(&'static str, String)>;
 
-/// The four text rows beside the logo: name and version, model, folder, and mode with counts.
+/// The text rows beside the logo: name and version, model, folder, mode, skills and mcp.
 /// @param info - what to show
 fn text_rows(info: &BannerInfo) -> Vec<Row> {
-    let mut counts = vec![format!("{} instruction {}", info.instruction_files, plural(info.instruction_files, "file", "files")), format!("{} {}", info.skills, plural(info.skills, "skill", "skills"))];
-    if info.mcp_servers > 0 {
-        counts.push(format!("{} MCP {}", info.mcp_servers, plural(info.mcp_servers, "server", "servers")));
+    let mut model = vec![(DIM, "model   ".to_string()), ("", info.model.clone())];
+    if info.model_menu {
+        model.push((DIM, " ▾".to_string()));
     }
+    let mut mcp = vec![(DIM, "mcp     ".to_string())];
+    mcp.extend(info.mcp.iter().cloned());
     vec![
         vec![("1", "umbra".to_string()), (DIM, format!(" v{}", info.version))],
-        vec![(DIM, "model   ".to_string()), ("", info.model.clone())],
+        model,
         vec![(DIM, "folder  ".to_string()), ("", info.folder.clone())],
-        vec![(DIM, "mode    ".to_string()), ("", info.mode.clone()), (DIM, format!(" · {}", counts.join(" · ")))],
+        vec![(DIM, "mode    ".to_string()), ("", info.mode.clone())],
+        vec![(DIM, "skills  ".to_string()), ("", info.skills.to_string())],
+        mcp,
     ]
-}
-
-/// Picks the singular or plural word.
-/// @param count - how many
-/// @param one - the singular
-/// @param many - the plural
-fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
-    if count == 1 { one } else { many }
 }
 
 /// The columns a row takes.
@@ -278,8 +280,11 @@ fn row_width(row: &Row) -> usize {
 fn paint_row(row: &Row, limit: usize, paint: &dyn Fn(&str, &str) -> String) -> (String, usize) {
     let mut out = String::new();
     let mut used = 0;
-    for (code, text) in row {
-        let left = limit.saturating_sub(used);
+    // The model row's menu marker stays when the model is cut, so the row still reads as a menu.
+    let reserve = row.last().filter(|(_, t)| t == " ▾").map_or(0, |(_, t)| t.chars().count());
+    for (index, (code, text)) in row.iter().enumerate() {
+        let last = index + 1 == row.len();
+        let left = limit.saturating_sub(used + if last { 0 } else { reserve });
         let piece = clip_end(text, left);
         used += piece.chars().count();
         out.push_str(&paint(code, &piece));
@@ -510,7 +515,7 @@ mod tests {
 
     /// A banner with typical values.
     fn info() -> BannerInfo {
-        BannerInfo { version: "0.4.1".into(), model: "anthropic/claude-sonnet-5-5".into(), folder: "~/dev/colligo".into(), mode: "confirm".into(), instruction_files: 3, skills: 12, mcp_servers: 2 }
+        BannerInfo { version: "0.4.1".into(), model: "anthropic/claude-sonnet-5-5".into(), folder: "~/dev/colligo".into(), mode: "confirm".into(), skills: 12, mcp: vec![("", "2 running".into())], model_menu: false }
     }
 
     #[test]
@@ -530,15 +535,16 @@ mod tests {
     #[test]
     fn shows_the_version_model_folder_and_counts() {
         let text = render_banner(&info(), 120, false).join("\n");
-        for wanted in ["umbra v0.4.1", "anthropic/claude-sonnet-5-5", "~/dev/colligo", "confirm · 3 instruction files · 12 skills · 2 MCP servers", "by Black Rainbow Labs", "███"] {
+        for wanted in ["umbra v0.4.1", "model   anthropic/claude-sonnet-5-5", "folder  ~/dev/colligo", "mode    confirm ", "skills  12", "mcp     2 running", "by Black Rainbow Labs", "███"] {
             assert!(text.contains(wanted), "{wanted} in\n{text}");
         }
+        assert!(!text.contains("instruction"), "the instruction file count is gone:\n{text}");
     }
 
     #[test]
     fn a_narrow_terminal_gets_no_logo() {
         let lines = render_banner(&info(), 40, false);
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 6);
         assert!(lines.iter().all(|l| l.chars().count() < 40 && !l.contains('█')), "{lines:#?}");
     }
 

@@ -120,7 +120,8 @@ fn resume_by_id_continues_the_same_session_file() {
     assert_eq!(trajectory["info"]["submission"].as_str().unwrap().trim(), "second");
     assert_eq!(trajectory["info"]["session"]["resumes"].as_array().unwrap().len(), 1);
     assert!(Path::new(&slash(&setup.work)).join("note.txt").exists());
-    assert!(text(&output).contains(&format!("umbra --resume {id}")), "the summary says how to resume");
+    assert!(!text(&output).contains("--resume"), "no resume command is printed (task-2611):
+{}", text(&output));
 }
 
 #[test]

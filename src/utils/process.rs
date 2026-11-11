@@ -38,6 +38,10 @@ pub struct ProcessJob {
     handle: windows_sys::Win32::Foundation::HANDLE,
 }
 
+// SAFETY: a job handle can be used and closed from any thread.
+#[cfg(windows)]
+unsafe impl Send for ProcessJob {}
+
 #[cfg(windows)]
 impl ProcessJob {
     /// Puts a just started child in a new job. Returns None when Windows refuses, for example

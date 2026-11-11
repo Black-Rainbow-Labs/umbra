@@ -2,13 +2,16 @@
 //! model, then runs the agent and reports the result.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 
 use super::agent_events::{AgentEvents, NoEvents};
-use super::agent_service::{is_success, now_seconds, Agent, AgentParts, Opening, RunResult, INTERRUPTED_STATUS};
+use super::agent_service::{is_success, now_seconds, Agent, AgentParts, NextSession, Opening, RunResult, INTERRUPTED_STATUS};
+use super::command_service::{command_entries, handle_line, BuiltinCommand, LineAction};
 use super::context_service::{context_vars, discovery_context, expand_slash_command, load_run_context, RunContext};
+use super::terminal_events::TerminalEvents;
 use super::environment::create_environment;
 use super::image_service::{images_in_text, load_image};
 use super::interaction_service::{prompt_with_hint, show_event, show_user_text, Interaction, Tone};
@@ -16,16 +19,20 @@ use super::mcp::McpManager;
 use super::prompt_service::platform_vars;
 use super::providers::{check_credentials, create_provider};
 use super::session_service::{find_resume_target, load_resumed, ResumedSession};
+use super::{usage_service, work_clock};
 use crate::cli::{CommonArgs, PromptArgs, RunArgs};
 use crate::models::config::{ActionFormat, ImagesConfig, Mode, UmbraConfig};
 use crate::models::image::ImageData;
 use crate::models::session::{ResumeRecord, SessionInfo};
 use crate::repositories::config_repository::{load_config, merge_values};
-use crate::repositories::session_repository::new_session_id;
+use crate::repositories::session_repository::{find_session, new_session_id};
 use crate::repositories::trajectory_repository::trajectory_path;
-use crate::utils::banner::{display_folder, render_banner_frames, render_banner_step, BannerInfo, REVEAL_STEPS, STEP_MS};
+use crate::ui::block::Block;
+use crate::ui::live::{self, HeaderInfo};
+use crate::utils::banner::{display_folder, render_banner_frames, BannerInfo, STEP_MS};
 use crate::utils::terminal_mode::terminal_height;
 use crate::utils::console::{color_enabled, emit, emit_replacing, paint, enable_status_bar, finish_status, is_verbose, set_quiet, set_verbose, start_fullscreen, stdin_is_terminal, stdout_is_terminal, terminal_width, Input};
+use crate::utils::screen::forced as fullscreen_forced;
 use crate::utils::screen;
 use crate::utils::status_bar::Phase;
 use crate::utils::interrupt;
@@ -119,6 +126,9 @@ fn apply_run_args(config: &mut UmbraConfig, args: &RunArgs) -> Result<()> {
     if args.verbose {
         config.verbose = true;
     }
+    if args.no_mouse || std::env::var("UMBRA_MOUSE").is_ok_and(|v| v == "0") {
+        config.mouse = false;
+    }
     config.status_bar &= !args.no_status_bar;
     config.compaction.enabled &= !args.no_compact;
     if let Some(window) = args.context_window {
@@ -129,12 +139,13 @@ fn apply_run_args(config: &mut UmbraConfig, args: &RunArgs) -> Result<()> {
 
 /// Runs a task from the command line, or continues a saved session, and returns the process exit
 /// code: 0 when the agent submitted, 130 when the person ended it with Ctrl+C, 1 for any other
-/// ending.
+/// ending. MCP servers start before the first prompt is read and are shared by every session the
+/// run moves to with `/clear` or `/resume`.
 /// @param args - the run options
 pub fn run_task(args: &RunArgs) -> Result<i32> {
     interrupt::install();
     let mut args = args.clone();
-    let (resumed, resume_notice) = load_resume_target(&args)?;
+    let (mut resumed, mut resume_notice) = load_resume_target(&args)?;
     if let Some(resumed) = &resumed {
         fill_from_session(&mut args, &resumed.session);
     }
@@ -143,8 +154,7 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     set_quiet(args.quiet);
     set_verbose(config.verbose && !args.quiet);
     enable_status_bar(config.status_bar);
-    let mut interaction = Interaction::new(config.mode, &config.whitelist_actions, config.confirm_exit);
-    interaction.keep_open = config.keep_open;
+    let interaction = Interaction::new(config.mode, &config.whitelist_actions, config.confirm_exit);
     if !interaction.interactive && config.mode != Mode::Yolo {
         bail!("stdin is not a terminal, so Umbra cannot ask before running commands. Pass --yolo to run without asking");
     }
@@ -153,35 +163,150 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
     let context = load_run_context(&config, &discovery_context(&config, &cwd));
     // Closes the fullscreen view on every way out of this function, errors included.
     let _view = LeaveViewOnDrop;
-    start_fullscreen(config.fullscreen && !args.no_fullscreen);
+    start_fullscreen(config.fullscreen && !args.no_fullscreen, config.mouse);
+    let off = resumed.as_ref().map(|r| r.session.mcp_off.clone()).unwrap_or_default();
+    let mcp = start_mcp(&config, &context, &off);
+    share_with_view(&config, &cwd, &context, &mcp);
+    if crate::utils::console::status_bar_on() && screen::is_active() {
+        crate::utils::console::update_status(crate::utils::status_bar::StatusInfo { model: super::providers::resolve_model(&config, &config.model), ..Default::default() });
+    }
     if !args.quiet {
         show_banner(&config, &cwd, &context);
-        if let Some(notice) = &resume_notice {
-            show_event(Tone::Info, "↺", notice);
+    }
+    loop {
+        if let Some(session) = &resumed {
+            show_resumed(session, resume_notice.as_deref(), &mcp);
+        }
+        let opening = match first_task(&args, resumed.as_ref(), config.keep_open, &context)? {
+            FirstTask::Task { typed, task } => (typed, task),
+            FirstTask::Resume(id) => {
+                (resumed, resume_notice) = resume_by_id(&id, &mut args)?;
+                continue;
+            }
+        };
+        let session = SessionRun { config: config.clone(), cwd: cwd.clone(), interaction: fresh_interaction(&config), mcp: mcp.clone() };
+        let result = run_session(&args, session, &context, resumed.take(), opening)?;
+        match result.next.clone() {
+            Some(NextSession::Clear) => {
+                crate::utils::screen::clear_transcript();
+                args.task = None;
+                args.task_words.clear();
+                args.fork = false;
+                resume_notice = None;
+                show_banner(&config, &cwd, &context);
+                work_clock::restore(0.0);
+            }
+            Some(NextSession::Resume(id)) => {
+                crate::utils::screen::clear_transcript();
+                show_banner(&config, &cwd, &context);
+                (resumed, resume_notice) = resume_by_id(&id, &mut args)?;
+            }
+            None => return Ok(finish_run(&result, args.quiet)),
         }
     }
-    let typed = task_text(&args, resumed.as_ref(), config.keep_open)?;
-    if args.task.is_some() || !args.task_words.is_empty() {
-        show_user_text("❯", &typed);
-    }
-    let task = expand_slash_command(&typed, &context);
-    let images = opening_images(&args.images, &task, &cwd, &config.images)?;
-    let (session, trajectory_path) = session_for_run(&config, &args, &cwd, &task, resumed.as_ref());
-    let mut agent = build_agent(config, &cwd, &context, interaction, AgentSession { session, trajectory_path, need_provider: true, events: Box::new(NoEvents) })?;
+}
+
+/// What a session of the run needs besides the options.
+struct SessionRun {
+    config: UmbraConfig,
+    cwd: PathBuf,
+    interaction: Interaction,
+    mcp: Arc<McpManager>,
+}
+
+/// Runs one session to its end: builds the agent for it and runs the first task and the follow
+/// ups.
+/// @param args - the run options
+/// @param run - the config, folder, interaction and MCP servers
+/// @param context - the loaded instructions, skills and commands
+/// @param resumed - the saved session, if resuming
+/// @param opening - what the person typed and the task it expands to
+fn run_session(args: &RunArgs, run: SessionRun, context: &RunContext, resumed: Option<ResumedSession>, opening: (String, String)) -> Result<RunResult> {
+    let (typed, task) = opening;
+    let images = opening_images(&args.images, &task, &run.cwd, &run.config.images)?;
+    let (session, trajectory_path) = session_for_run(&run.config, args, &run.cwd, &task, resumed.as_ref());
+    live::set_session(&session.id);
+    work_clock::restore(session.work_seconds);
+    let events: Box<dyn AgentEvents> = Box::new(TerminalEvents::default());
+    let parts = AgentSession { session, trajectory_path, need_provider: true, events, mcp: Some(run.mcp) };
+    let mut agent = build_agent(run.config, &run.cwd, context, run.interaction, parts)?;
     let opening = match resumed {
-        Some(resumed) => Opening::Resume { session: Box::new(resumed), task, images },
-        None => Opening::New { task, images },
+        Some(resumed) => Opening::Resume { session: Box::new(resumed), task, typed, images },
+        None => Opening::New { task, typed, images },
     };
-    let result = agent.run(opening)?;
+    agent.run(opening)
+}
+
+/// Ends the run: back on the main screen, the trajectory line, and the exit code.
+/// @param result - the last session's result
+/// @param quiet - print only the submission
+fn finish_run(result: &RunResult, quiet: bool) -> i32 {
     // Back on the main screen first, so the trajectory line stays in the shell.
     screen::leave();
-    report(&result, args.quiet);
+    report(result, quiet);
     finish_status(Phase::Finished);
-    Ok(match result.exit_status.as_str() {
+    match result.exit_status.as_str() {
         status if is_success(status) => 0,
         INTERRUPTED_STATUS => 130,
         _ => 1,
-    })
+    }
+}
+
+/// Starts the MCP servers in the background, or none when MCP is off.
+/// @param config - the merged config
+/// @param context - the loaded MCP definitions
+/// @param off - servers a resumed session had turned off
+fn start_mcp(config: &UmbraConfig, context: &RunContext, off: &[String]) -> Arc<McpManager> {
+    if !config.mcp.enabled || context.mcp_servers.is_empty() {
+        return Arc::new(McpManager::default());
+    }
+    McpManager::start(&context.mcp_servers, &config.mcp, &umbra_home().join("logs").join("mcp"), off)
+}
+
+/// Gives the fullscreen view what it reads: the config, the MCP servers, the commands the popup
+/// lists, and the usage service for the model.
+/// @param config - the merged config
+/// @param cwd - the working folder
+/// @param context - the loaded commands and skills
+/// @param mcp - the MCP servers
+fn share_with_view(config: &UmbraConfig, cwd: &Path, context: &RunContext, mcp: &Arc<McpManager>) {
+    live::set_config(config.clone());
+    live::set_mcp(Some(mcp.clone()));
+    live::set_commands(command_entries(context));
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned());
+    let mode = serde_json::to_value(config.mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+    live::set_header(HeaderInfo { version: env!("CARGO_PKG_VERSION").into(), model: super::providers::resolve_model(config, &config.model), folder: display_folder(&cwd.to_string_lossy(), home.as_deref()), cwd: cwd.to_path_buf(), mode, skills: context.skills.len(), mcp_enabled: config.mcp.enabled, reveal_from: None });
+    usage_service::start(config, &config.model);
+}
+
+/// Loads a saved session by id for `/resume`, and its notice.
+/// @param id - the session id or the start of it
+/// @param args - the run options; a resumed session keeps the run's folder and model options
+fn resume_by_id(id: &str, args: &mut RunArgs) -> Result<(Option<ResumedSession>, Option<String>)> {
+    let entry = find_session(id)?;
+    args.resume = Some(entry.id.clone());
+    args.task = None;
+    args.task_words.clear();
+    load_resume_target(args)
+}
+
+/// Shows a resumed session in the fullscreen view: its prompts, replies and commands, then the
+/// notice that says what was loaded. Turns off the MCP servers it had turned off.
+/// @param session - the saved session
+/// @param notice - the notice, if any
+/// @param mcp - the MCP servers
+fn show_resumed(session: &ResumedSession, notice: Option<&str>, mcp: &Arc<McpManager>) {
+    for name in &session.session.mcp_off {
+        if mcp.snapshot().iter().any(|(n, s)| n == name && !matches!(s, super::mcp::ServerState::Off)) {
+            mcp.set_enabled(name, false);
+        }
+    }
+    if crate::utils::screen::is_active() {
+        crate::utils::screen::with_transcript(|t| crate::ui::rebuild::rebuild(t, &session.messages));
+    }
+    if let Some(notice) = notice {
+        show_event(Tone::Info, "↺", notice);
+    }
 }
 
 /// Loads the session named by `--resume` or `--continue`, if either was given, with a line that
@@ -206,53 +331,40 @@ fn load_resume_target(args: &RunArgs) -> Result<(Option<ResumedSession>, Option<
     Ok((Some(resumed), Some(notice)))
 }
 
-/// Prints the umbra banner: the logo, version, model, folder, mode and what was loaded. Only in a
-/// terminal, unless `UMBRA_BANNER=1` asks for it in a pipe; `UMBRA_BANNER=0` or `banner = false`
-/// turns it off. In a terminal the logo's stripes appear one at a time, unless
-/// `UMBRA_BANNER_ANIMATION=0` turns that off.
+/// Prints the umbra banner: the logo, version, model, folder, mode, skills and MCP servers. Only
+/// in a terminal, unless `UMBRA_BANNER=1` asks for it in a pipe; `UMBRA_BANNER=0` or
+/// `banner = false` turns it off. In a terminal the logo's stripes appear one at a time, unless
+/// `UMBRA_BANNER_ANIMATION=0` turns that off. In the fullscreen view the banner is the header
+/// block, drawn from live state, and the reveal runs on the redraw ticker.
 /// @param config - the merged config
 /// @param cwd - the working folder
-/// @param context - the loaded instructions, skills and MCP definitions
+/// @param context - the loaded skills and MCP definitions
 fn show_banner(config: &UmbraConfig, cwd: &Path, context: &RunContext) {
     let wanted = match std::env::var("UMBRA_BANNER").ok().as_deref() {
         Some("0") => false,
         Some("1") => true,
-        _ => config.banner && stdout_is_terminal(),
+        _ => config.banner && (stdout_is_terminal() || fullscreen_forced()),
     };
     if !wanted {
         return;
     }
-    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned());
-    let mode = serde_json::to_value(config.mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-    let mcp_servers = if config.mcp.enabled { context.mcp_servers.len() } else { 0 };
-    let info = BannerInfo { version: env!("CARGO_PKG_VERSION").into(), model: config.model.clone(), folder: display_folder(&cwd.to_string_lossy(), home.as_deref()), mode, instruction_files: context.instructions.len(), skills: context.skills.len(), mcp_servers };
     let color = color_enabled();
     let animate = color && stdout_is_terminal() && std::env::var("UMBRA_BANNER_ANIMATION").map_or(true, |v| v != "0");
     if screen::is_active() {
-        show_banner_in_view(info, color, animate);
+        live::update_header(|h| h.reveal_from = animate.then(std::time::Instant::now));
+        screen::push_block(Block::Header);
         return;
     }
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned());
+    let mode = serde_json::to_value(config.mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+    let mcp = match (config.mcp.enabled, context.mcp_servers.len()) {
+        (false, _) => "off".to_string(),
+        (true, 0) => "none".to_string(),
+        (true, 1) => "1 server".to_string(),
+        (true, n) => format!("{n} servers"),
+    };
+    let info = BannerInfo { version: env!("CARGO_PKG_VERSION").into(), model: config.model.clone(), folder: display_folder(&cwd.to_string_lossy(), home.as_deref()), mode, skills: context.skills.len(), mcp: vec![("", mcp)], model_menu: false };
     play_banner(&render_banner_frames(&info, terminal_width(), color), animate);
-}
-
-/// Adds the banner to the fullscreen view as a block laid out again for each width, so a split
-/// pane redraws the banner instead of wrapping it. When `animate` is set, the block starts at the
-/// first step of the reveal and moves one step on after each pause.
-/// @param info - what the banner shows
-/// @param color - true to add ANSI colors
-/// @param animate - true to play the stripe reveal
-fn show_banner_in_view(info: BannerInfo, color: bool, animate: bool) {
-    let step = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(if animate { 0 } else { REVEAL_STEPS }));
-    let shown = step.clone();
-    screen::push_layout(std::sync::Arc::new(move |width| render_banner_step(&info, width, color, shown.load(std::sync::atomic::Ordering::Relaxed))));
-    if !animate {
-        return;
-    }
-    for next in 1..=REVEAL_STEPS {
-        std::thread::sleep(std::time::Duration::from_millis(STEP_MS));
-        step.store(next, std::sync::atomic::Ordering::Relaxed);
-        screen::redraw();
-    }
 }
 
 /// Shows the banner's reveal on the main screen: the first step, then each next step drawn over it
@@ -322,7 +434,7 @@ fn opening_images(paths: &[PathBuf], task: &str, cwd: &Path, settings: &ImagesCo
 fn session_for_run(config: &UmbraConfig, args: &RunArgs, cwd: &Path, task: &str, resumed: Option<&ResumedSession>) -> (SessionInfo, PathBuf) {
     let cwd_text = cwd.to_string_lossy().replace('\\', "/");
     let Some(resumed) = resumed else {
-        let session = SessionInfo { id: new_session_id(), cwd: cwd_text, model: config.model.clone(), task: task.chars().take(200).collect(), started_at: now_seconds(), resumes: Vec::new() };
+        let session = SessionInfo { id: new_session_id(), cwd: cwd_text, model: config.model.clone(), task: task.chars().take(200).collect(), started_at: now_seconds(), ..Default::default() };
         let path = trajectory_path(&config.output, &session.id);
         return (session, path);
     };
@@ -357,7 +469,7 @@ pub fn print_prompt(args: &PromptArgs) -> Result<()> {
     let context = load_run_context(&config, &discovery_context(&config, &cwd));
     let task = expand_slash_command(&args.task_words.join(" "), &context);
     let interaction = Interaction::new(Mode::Yolo, &[], false);
-    let session = AgentSession { session: SessionInfo::default(), trajectory_path: PathBuf::new(), need_provider: false, events: Box::new(NoEvents) };
+    let session = AgentSession { session: SessionInfo::default(), trajectory_path: PathBuf::new(), need_provider: false, events: Box::new(NoEvents), mcp: None };
     let agent = build_agent(config, &cwd, &context, interaction, session)?;
     let (system, instance) = agent.render_prompts(&task)?;
     println!("===== system =====\n{system}\n\n===== user =====\n{instance}");
@@ -372,6 +484,9 @@ pub struct AgentSession {
     pub need_provider: bool,
     /// What the front end is told as the run goes.
     pub events: Box<dyn AgentEvents>,
+    /// MCP servers already started, or None to start them here. A run with no terminal waits
+    /// for them either way.
+    pub mcp: Option<Arc<McpManager>>,
 }
 
 /// Builds the agent: the model, the environment, the MCP servers and the template variables.
@@ -383,7 +498,9 @@ pub struct AgentSession {
 pub fn build_agent(config: UmbraConfig, cwd: &Path, context: &RunContext, interaction: Interaction, run: AgentSession) -> Result<Agent> {
     let provider = if run.need_provider { create_provider(&config, &config.model)? } else { Box::new(NoProvider) as Box<dyn super::providers::Provider> };
     let environment = create_environment(&config.environment, cwd)?;
-    let mut mcp = connect_mcp(&config, context);
+    // ACP never asks stdin: on Windows that waits while the reader thread reads the same pipe.
+    let at_terminal = interaction.interactive && (screen::is_active() || (std::io::IsTerminal::is_terminal(&std::io::stdin()) && std::io::IsTerminal::is_terminal(&std::io::stdout())));
+    let mcp = connect_mcp(&config, context, run.mcp, at_terminal);
     mcp.set_image_settings(config.images.clone());
     let mut vars = platform_vars();
     merge_values(&mut vars, environment.template_vars());
@@ -391,49 +508,31 @@ pub fn build_agent(config: UmbraConfig, cwd: &Path, context: &RunContext, intera
     vars["mcp_instructions"] = json!(mcp.instructions().into_iter().map(|(name, instructions)| json!({ "name": name, "instructions": instructions })).collect::<Vec<_>>());
     vars["model_name"] = json!(provider.model_name());
     let config_record = json!({ "agent": { "mode": config.mode, "action_format": config.action_format, "step_limit": config.step_limit, "cost_limit": config.cost_limit, "compaction": config.compaction }, "model": provider.describe(), "environment": environment.describe(), "mcp_servers": mcp.connected(), "skills": context.skills.len(), "instruction_files": context.instructions.iter().map(|i| i.path.display().to_string()).collect::<Vec<_>>() });
-    Ok(Agent::new(AgentParts { config, provider, environment, mcp, interaction, vars, trajectory_path: run.trajectory_path, config_record, cwd: cwd.to_path_buf(), session: run.session, events: run.events }))
+    Ok(Agent::new(AgentParts { config, provider, environment, mcp, interaction, context: context.clone(), vars, trajectory_path: run.trajectory_path, config_record, cwd: cwd.to_path_buf(), session: run.session, events: run.events }))
 }
 
-/// Starts the MCP servers and says which ones did not start.
+/// The MCP servers for an agent: the ones already started, or new ones. A run with no terminal
+/// (a pipe, `-q`, ACP) waits until every server has answered or the start timeout passed, so its
+/// first model call has every tool, and says which servers did not start. A run with a terminal
+/// never waits.
 /// @param config - the merged config
 /// @param context - the loaded MCP definitions
-fn connect_mcp(config: &UmbraConfig, context: &RunContext) -> McpManager {
-    if !config.mcp.enabled || context.mcp_servers.is_empty() {
-        return McpManager::default();
+/// @param started - servers started earlier, if any
+/// @param at_terminal - true in the fullscreen view or with stdin and stdout on a terminal
+fn connect_mcp(config: &UmbraConfig, context: &RunContext, started: Option<Arc<McpManager>>, at_terminal: bool) -> Arc<McpManager> {
+    let manager = match started {
+        Some(manager) => manager,
+        None if !config.mcp.enabled || context.mcp_servers.is_empty() => return Arc::new(McpManager::default()),
+        None => McpManager::start(&context.mcp_servers, &config.mcp, &umbra_home().join("logs").join("mcp"), &[]),
+    };
+    if at_terminal {
+        return manager;
     }
-    let manager = McpManager::connect_all(&context.mcp_servers, &config.mcp, &umbra_home().join("logs").join("mcp"));
-    for failure in &manager.failures {
+    manager.wait_settled(std::time::Instant::now() + std::time::Duration::from_secs(config.mcp.startup_timeout_seconds.max(1) + 2));
+    for failure in manager.failures() {
         show_event(Tone::Warning, "", &format!("MCP server {} was not started: {}", failure.name, failure.error.lines().next().unwrap_or("")));
     }
     manager
-}
-
-/// Gets the task from the options, or asks for it in a terminal. A resumed session asks for
-/// the next task. With keep_open an empty line asks again rather than ending the run.
-/// @param args - the run options
-/// @param resumed - the saved session, if resuming
-/// @param keep_open - ask again after an empty line
-fn task_text(args: &RunArgs, resumed: Option<&ResumedSession>, keep_open: bool) -> Result<String> {
-    if let Some(task) = &args.task {
-        return Ok(task.clone());
-    }
-    if !args.task_words.is_empty() {
-        return Ok(args.task_words.join(" "));
-    }
-    let hint = match resumed {
-        Some(r) => format!("  Resuming session {} ({} messages). What next?", r.session.id, r.messages.len()),
-        None => "  What do you want to do?".to_string(),
-    };
-    if !stdin_is_terminal() {
-        bail!("no task given. Pass it as an argument or with -t");
-    }
-    loop {
-        match prompt_with_hint(&hint) {
-            Input::Line(task) if !task.trim().is_empty() => return Ok(task),
-            Input::Line(_) | Input::Interrupted if keep_open => continue,
-            _ => bail!("no task given. Pass it as an argument or with -t"),
-        }
-    }
 }
 
 /// Prints where the trajectory was saved, and the run's totals in verbose mode. Each turn's
@@ -484,5 +583,58 @@ impl super::providers::Provider for NoProvider {
     /// Nothing to record.
     fn describe(&self) -> serde_json::Value {
         json!({ "provider": "none" })
+    }
+}
+
+/// The interactive settings for a new session of the run.
+/// @param config - the merged config
+fn fresh_interaction(config: &UmbraConfig) -> Interaction {
+    let mut interaction = Interaction::new(config.mode, &config.whitelist_actions, config.confirm_exit);
+    interaction.keep_open = config.keep_open;
+    interaction
+}
+
+/// The first prompt of a session: a task, or a session to resume instead.
+enum FirstTask {
+    /// What the person typed and the task it expands to.
+    Task { typed: String, task: String },
+    /// `/resume <id>` at the first prompt.
+    Resume(String),
+}
+
+/// Gets the first task from the options, or asks for it in a terminal. A resumed session asks
+/// for the next task. With keep_open an empty line asks again rather than ending the run. A slash
+/// command or skill is expanded; a built in command typed here runs, or says where it works.
+/// @param args - the run options
+/// @param resumed - the saved session, if resuming
+/// @param keep_open - ask again after an empty line
+/// @param context - the loaded commands and skills
+fn first_task(args: &RunArgs, resumed: Option<&ResumedSession>, keep_open: bool, context: &RunContext) -> Result<FirstTask> {
+    let given = args.task.clone().or_else(|| (!args.task_words.is_empty()).then(|| args.task_words.join(" ")));
+    if let Some(typed) = given {
+        show_user_text("❯", &typed);
+        let task = expand_slash_command(&typed, context);
+        return Ok(FirstTask::Task { typed, task });
+    }
+    let hint = match resumed {
+        Some(r) => format!("  Resuming session {} ({} messages). What next?", r.session.id, r.messages.len()),
+        None => "  What do you want to do?".to_string(),
+    };
+    if !stdin_is_terminal() {
+        bail!("no task given. Pass it as an argument or with -t");
+    }
+    loop {
+        let typed = match prompt_with_hint(&hint) {
+            Input::Line(task) if !task.trim().is_empty() => task,
+            Input::Line(_) | Input::Interrupted if keep_open => continue,
+            _ => bail!("no task given. Pass it as an argument or with -t"),
+        };
+        match handle_line(&typed, context) {
+            LineAction::SendToModel(task) => return Ok(FirstTask::Task { typed, task }),
+            LineAction::Builtin(BuiltinCommand::Resume(Some(id))) => return Ok(FirstTask::Resume(id)),
+            LineAction::Builtin(BuiltinCommand::Quit) => bail!("no task given"),
+            LineAction::Builtin(BuiltinCommand::Clear | BuiltinCommand::Compact(_)) => show_event(Tone::Info, "·", "nothing to clear or compact yet"),
+            LineAction::Builtin(_) => show_event(Tone::Info, "·", "that command opens in the fullscreen view"),
+        }
     }
 }

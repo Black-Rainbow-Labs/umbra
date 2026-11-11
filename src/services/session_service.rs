@@ -78,7 +78,7 @@ pub fn describe_session(session: &SessionIndexEntry) -> String {
 
 /// How long ago a time was, in the largest whole unit.
 /// @param seconds - seconds since the Unix epoch
-fn time_ago(seconds: f64) -> String {
+pub fn time_ago(seconds: f64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
     let age = (now - seconds).max(0.0) as u64;
     match age {

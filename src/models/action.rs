@@ -41,6 +41,12 @@ pub struct Observation {
     /// Images the action returned. Only MCP tools return them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageData>,
+    /// When the action started, in seconds since the Unix epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<f64>,
+    /// How long the action took, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 impl Observation {
@@ -48,6 +54,6 @@ impl Observation {
     /// @param output - any partial output that was captured
     /// @param error - the error description shown to the model
     pub fn failed(output: impl Into<String>, error: impl Into<String>) -> Self {
-        Observation { output: output.into(), returncode: -1, exception_info: error.into(), images: Vec::new() }
+        Observation { output: output.into(), returncode: -1, exception_info: error.into(), ..Default::default() }
     }
 }

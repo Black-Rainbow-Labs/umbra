@@ -31,6 +31,43 @@ pub enum Key {
     CtrlD,
     /// Ctrl+U, clear the input line.
     CtrlU,
+    /// Ctrl+A, the start of the input line.
+    CtrlA,
+    /// Ctrl+E, the end of the input line.
+    CtrlE,
+    /// Ctrl+K, delete to the end of the input line.
+    CtrlK,
+    /// Ctrl+W, delete the word before the cursor.
+    CtrlW,
+    /// Alt+Left, one word left.
+    WordLeft,
+    /// Alt+Right, one word right.
+    WordRight,
+    /// Tab: moves focus, or completes a command.
+    Tab,
+    /// Shift+Tab: moves focus the other way.
+    BackTab,
+    /// A mouse report, with the cell counted from 0.
+    Mouse(Mouse),
+}
+
+/// What the mouse did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseKind {
+    Press,
+    Drag,
+    Release,
+}
+
+/// One mouse report: a press, a drag or a release of a button, at a cell counted from 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mouse {
+    pub kind: MouseKind,
+    /// 0 left, 1 middle, 2 right.
+    pub button: u8,
+    pub col: usize,
+    pub row: usize,
+    pub shift: bool,
 }
 
 /// The bytes that start and end a bracketed paste.
@@ -73,6 +110,12 @@ impl KeyDecoder {
                 }
                 Decoded::Incomplete => break,
             }
+        }
+        // A lone ESC at the end of a read is the Esc key: a terminal sends an escape sequence in
+        // one write, so waiting for more would leave Esc doing nothing until the next key.
+        if self.paste.is_none() && self.pending == [0x1b] {
+            self.pending.clear();
+            keys.push(Key::Escape);
         }
         keys
     }
@@ -133,7 +176,11 @@ fn decode_one(bytes: &[u8]) -> Decoded {
         0x7f | 0x08 => Decoded::Key(Key::Backspace, 1),
         0x04 => Decoded::Key(Key::CtrlD, 1),
         0x15 => Decoded::Key(Key::CtrlU, 1),
-        b'\t' => Decoded::Key(Key::Text("    ".into()), 1),
+        0x01 => Decoded::Key(Key::CtrlA, 1),
+        0x05 => Decoded::Key(Key::CtrlE, 1),
+        0x0b => Decoded::Key(Key::CtrlK, 1),
+        0x17 => Decoded::Key(Key::CtrlW, 1),
+        b'\t' => Decoded::Key(Key::Tab, 1),
         0x00..=0x1f => Decoded::Skip(1),
         _ => decode_utf8(bytes),
     }
@@ -173,6 +220,8 @@ fn decode_escape(bytes: &[u8]) -> Decoded {
             },
         },
         0x1b => Decoded::Key(Key::Escape, 1),
+        b'b' => Decoded::Key(Key::WordLeft, 2),
+        b'f' => Decoded::Key(Key::WordRight, 2),
         _ => Decoded::Key(Key::Escape, 1),
     }
 }
@@ -217,8 +266,13 @@ fn csi_key(params: &str, final_byte: u8) -> Option<Key> {
     }
     let mut parts = params.split(';');
     let first = parts.next().unwrap_or("");
-    let ctrl = parts.next().is_some_and(|m| m == "5");
+    let modifier = parts.next().unwrap_or("");
+    let ctrl = modifier == "5";
+    let alt = modifier == "3" || modifier == "9";
     Some(match (final_byte, first) {
+        (b'Z', _) => Key::BackTab,
+        (b'D', _) if alt || ctrl => Key::WordLeft,
+        (b'C', _) if alt || ctrl => Key::WordRight,
         (b'A', _) => Key::Up,
         (b'B', _) => Key::Down,
         (b'C', _) => Key::Right,
@@ -238,19 +292,33 @@ fn csi_key(params: &str, final_byte: u8) -> Option<Key> {
     })
 }
 
-/// The wheel key in an SGR mouse report (`ESC [ < button ; x ; y M`). Clicks and moves are
-/// dropped.
+/// The key for an SGR mouse report (`ESC [ < button ; x ; y M`, `m` for a release): the wheel,
+/// or a press, drag or release with its cell. Motion with no button held is dropped.
 /// @param params - the report after the `<`
-/// @param final_byte - `M` for a press, `m` for a release
+/// @param final_byte - `M` for a press or drag, `m` for a release
 fn mouse_key(params: &str, final_byte: u8) -> Option<Key> {
-    if final_byte != b'M' {
+    let mut fields = params.split(';').map(|f| f.parse::<usize>().ok());
+    let code = fields.next()??;
+    let col = fields.next()??.saturating_sub(1);
+    let row = fields.next()??.saturating_sub(1);
+    let base = code & !(4 | 8 | 16);
+    if final_byte == b'M' && base == 64 {
+        return Some(Key::WheelUp);
+    }
+    if final_byte == b'M' && base == 65 {
+        return Some(Key::WheelDown);
+    }
+    let drag = base & 32 != 0;
+    let button = (base & 3) as u8;
+    if button == 3 && final_byte == b'M' {
         return None;
     }
-    match params.split(';').next()?.parse::<u32>().ok()? & !(4 | 8 | 16) {
-        64 => Some(Key::WheelUp),
-        65 => Some(Key::WheelDown),
-        _ => None,
-    }
+    let kind = match (final_byte, drag) {
+        (b'm', _) => MouseKind::Release,
+        (_, true) => MouseKind::Drag,
+        _ => MouseKind::Press,
+    };
+    Some(Key::Mouse(Mouse { kind, button, col, row, shift: code & 4 != 0 }))
 }
 
 /// The position of `needle` in `haystack`.
@@ -280,15 +348,26 @@ mod tests {
         let bytes = "é".as_bytes();
         assert!(decoder.feed(&bytes[..1]).is_empty());
         assert_eq!(decoder.feed(&bytes[1..]), vec![Key::Text("é".into())]);
-        assert!(decoder.feed(b"\x1b").is_empty());
-        assert_eq!(decoder.feed(b"x"), vec![Key::Escape, Key::Text("x".into())]);
+        assert_eq!(decoder.feed(b"\x1b"), vec![Key::Escape], "a lone ESC at the end of a read is the Esc key");
+        assert_eq!(decoder.feed(b"x"), vec![Key::Text("x".into())]);
+        assert!(decoder.feed(b"\x1b[").is_empty(), "the start of a sequence still waits");
+        assert_eq!(decoder.feed(b"A"), vec![Key::Up]);
     }
 
     #[test]
     fn reads_the_scroll_keys_and_the_wheel() {
         let mut decoder = KeyDecoder::default();
-        let keys = decoder.feed(b"\x1b[6~\x1b[1;5F\x1b[1;5H\x1b[F\x1bOH\x1b[<64;10;5M\x1b[<65;10;5M\x1b[<0;3;3M\x1b[<0;3;3m\x1b[3~");
+        let keys = decoder.feed(b"\x1b[6~\x1b[1;5F\x1b[1;5H\x1b[F\x1bOH\x1b[<64;10;5M\x1b[<65;10;5M\x1b[3~");
         assert_eq!(keys, vec![Key::PageDown, Key::Bottom, Key::Top, Key::End, Key::Home, Key::WheelUp, Key::WheelDown, Key::Delete]);
+    }
+
+    #[test]
+    fn reads_presses_drags_and_releases_with_their_cells() {
+        let mut decoder = KeyDecoder::default();
+        let keys = decoder.feed(b"\x1b[<0;3;4M\x1b[<32;5;4M\x1b[<0;5;4m\x1b[<35;9;9M");
+        let mouse = |kind, col, row| Key::Mouse(Mouse { kind, button: 0, col, row, shift: false });
+        assert_eq!(keys, vec![mouse(MouseKind::Press, 2, 3), mouse(MouseKind::Drag, 4, 3), mouse(MouseKind::Release, 4, 3)]);
+        assert_eq!(decoder.feed(b"\t\x1b[Z\x01\x05\x0b\x17\x1b[1;3D\x1bf"), vec![Key::Tab, Key::BackTab, Key::CtrlA, Key::CtrlE, Key::CtrlK, Key::CtrlW, Key::WordLeft, Key::WordRight]);
     }
 
     #[test]

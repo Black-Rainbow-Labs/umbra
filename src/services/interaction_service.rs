@@ -6,8 +6,9 @@ use regex::Regex;
 use crate::models::action::{Action, Observation};
 use crate::models::config::Mode;
 use super::agent_service::REPLIED_STATUS;
-use crate::utils::status_bar::short_duration;
+use crate::ui::block::Block;
 use crate::utils::console::{clip, emit, is_quiet, is_verbose, paint, prompt_line, read_line, stdin_is_terminal, stdout_is_terminal, terminal_width, Input};
+use crate::utils::screen;
 
 /// What the person decided about a set of actions.
 pub enum Decision {
@@ -89,6 +90,7 @@ impl Interaction {
             return Decision::Run;
         }
         loop {
+            show_pending(actions);
             let answer = match prompt_line("Run? [Enter] yes, /y yolo, /u human mode, /h help, or type why not: ") {
                 Input::Line(line) => line,
                 Input::Eof => String::new(),
@@ -227,10 +229,26 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+/// Shows the commands waiting for approval above the input in the fullscreen view, in full.
+/// @param actions - the actions the model wants to run
+fn show_pending(actions: &[Action]) {
+    if !screen::is_active() {
+        return;
+    }
+    let lines = actions.iter().flat_map(|action| {
+        let text = match action {
+            Action::Bash { command, .. } => format!("$ {}", command.trim()),
+            Action::Mcp { .. } => format!("→ {}", action.describe()),
+        };
+        crate::ui::markdown::sanitize(&text).lines().map(|l| format!("  {l}")).collect::<Vec<_>>()
+    }).collect();
+    screen::set_pending(lines);
+}
+
 /// Prints the comment prompt's commands.
 /// @param mode - the current mode
 fn print_comment_help(mode: Mode) {
-    emit(&format!("  Current mode: {}\n  text            send it to the model and carry on\n  Enter           carry on\n  /y              switch to yolo mode (run commands without asking)\n  /c              switch to confirm mode (ask before running commands)\n  /u              switch to human mode (you type the commands)\n  /compact [focus] compact the history now\n  /q or Ctrl+C    end the run; it can be resumed with umbra --resume", mode_name(mode)));
+    emit(&format!("  Current mode: {}\n  text            send it to the model and carry on\n  Enter           carry on\n  /y              switch to yolo mode (run commands without asking)\n  /c              switch to confirm mode (ask before running commands)\n  /u              switch to human mode (you type the commands)\n  /compact [focus] compact the history now\n  /q or Ctrl+C    end the run; umbra resume continues it later", mode_name(mode)));
 }
 
 /// Prints the confirm mode commands.
@@ -272,6 +290,11 @@ pub fn show_assistant(step: u32, cost: f64, content: &str, actions: &[Action]) {
     if is_quiet() {
         return;
     }
+    if screen::is_active() {
+        // The actions become runs of a command group through the view's event hook.
+        show_reply_text(content);
+        return;
+    }
     if is_verbose() {
         emit(&paint(DIM, &format!("\n  step {step} · ${cost:.4}")));
     }
@@ -289,6 +312,12 @@ pub fn show_reply_text(content: &str) {
         return;
     }
     let text = content.trim();
+    if screen::is_active() {
+        if !text.is_empty() {
+            screen::push_block(Block::Reply { markdown: clip(text, 20_000) });
+        }
+        return;
+    }
     if !is_verbose() {
         emit("");
     }
@@ -319,7 +348,7 @@ fn show_action(action: &Action) {
 /// shown, with a count of the rest. An exit code other than 0 is shown in red.
 /// @param observation - the result
 pub fn show_observation(observation: &Observation) {
-    if is_quiet() {
+    if is_quiet() || screen::is_active() {
         return;
     }
     let output = observation.output.trim_end();
@@ -429,6 +458,10 @@ pub fn show_event(tone: Tone, marker: &str, text: &str) {
         return;
     }
     let text = clip(text.trim(), 2000);
+    if screen::is_active() {
+        screen::push_block(Block::Notice { tone, marker: marker.to_string(), text });
+        return;
+    }
     let line = match tone {
         Tone::Info => paint(DIM, &format!("  {marker} {}", indent_after_first(&wrap(&text, 4), "    "))),
         Tone::Warning => format!("\n{}", paint(YELLOW, &format!("▲ {}", indent_after_first(&wrap(&text, 2), "  ")))),
@@ -445,42 +478,48 @@ pub fn show_user_text(marker: &str, text: &str) {
     if is_quiet() {
         return;
     }
+    if screen::is_active() {
+        screen::push_block(Block::UserPrompt { marker: marker.to_string(), text: clip(text.trim(), 2000) });
+        return;
+    }
     emit(&format!("\n{} {}", paint("1;33", marker), indent_after_first(&wrap(&clip(text.trim(), 2000), 2), "  ")));
 }
 
-/// The numbers shown at the end of a turn.
+/// How a turn ended, for the terminal.
 pub struct TurnSummary<'a> {
     pub status: &'a str,
     pub submission: &'a str,
-    pub steps: u32,
-    pub cost: f64,
-    pub elapsed_secs: u64,
-    pub session_id: &'a str,
 }
 
-/// Prints how a turn ended: `✔ Done` or why it stopped, the steps, cost and time, the final
-/// output, and how to resume the session.
-/// @param summary - the turn's ending and numbers
+/// Prints how a turn ended. A turn that finished its work prints only the final output of the
+/// submit style; the reply style's answer is already on screen. Any other ending prints one line
+/// saying why the agent stopped. The cost and the time are in the status bar, and no resume
+/// command is printed.
+/// @param summary - the turn's ending
 pub fn show_turn_end(summary: &TurnSummary) {
     if is_quiet() {
         return;
     }
-    // The fullscreen view prints the last summary again on the main screen when it closes.
-    crate::utils::screen::mark_epilogue();
     let (code, headline, show_output) = turn_headline(summary.status, summary.submission);
-    let mut numbers = vec![format!("{} {}", summary.steps, if summary.steps == 1 { "step" } else { "steps" })];
-    if summary.cost > 0.0 {
-        numbers.push(format!("${:.4}", summary.cost));
+    let submission = summary.submission.trim();
+    let succeeded = summary.status == "Submitted" || summary.status == REPLIED_STATUS;
+    if !succeeded {
+        let tone = if summary.status == "Interrupted" { Tone::Warning } else if code == DIM { Tone::Info } else { Tone::Failure };
+        if screen::is_active() {
+            screen::push_block(Block::Notice { tone, marker: "■".into(), text: headline.trim_start_matches(['✖', '▲', '■', ' ']).to_string() });
+        } else {
+            emit(&format!("\n{}", paint(code, &headline)));
+        }
     }
-    numbers.push(short_duration(summary.elapsed_secs));
-    emit(&format!("\n{}{}", paint(code, &headline), paint(DIM, &format!(" · {}", numbers.join(" · ")))));
-    if show_output && !summary.submission.trim().is_empty() {
-        emit(&format!("  {}", indent_after_first(&wrap(&clip(summary.submission.trim(), 4000), 2), "  ")));
+    if show_output && !submission.is_empty() {
+        if succeeded {
+            show_reply_text(submission);
+        } else if screen::is_active() {
+            screen::push_block(Block::Text(clip(submission, 4000)));
+        } else {
+            emit(&format!("  {}", indent_after_first(&wrap(&clip(submission, 4000), 2), "  ")));
+        }
     }
-    if !summary.session_id.is_empty() {
-        emit(&format!("  {} umbra --resume {}", paint(DIM, "resume with"), summary.session_id));
-    }
-    crate::utils::screen::end_epilogue();
 }
 
 /// The color, the headline and whether to show the final output, for a turn's exit status.
@@ -504,7 +543,7 @@ fn turn_headline(status: &str, submission: &str) -> (&'static str, String, bool)
 /// Prints a dim hint line, then a `❯` prompt, and reads one line.
 /// @param hint - the hint above the prompt
 pub fn prompt_with_hint(hint: &str) -> Input {
-    if !hint.is_empty() {
+    if !hint.is_empty() && !screen::is_active() {
         emit(&format!("\n{}", paint(DIM, hint)));
     }
     prompt_line("❯ ")

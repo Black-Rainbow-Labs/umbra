@@ -1,0 +1,12 @@
+• one
+• two with a long line of text that must wrap and align under the item text
+  • nested a
+  • nested b
+    1. deep first
+    2. deep second
+☐ todo
+☑ done
+
+8. eight
+9. nine
+10. ten

@@ -1,9 +1,10 @@
-//! The status bar drawn under a run's output: what the agent is doing, how full the context window
-//! is, how much room is left before compaction, and how many compactions the session has had.
-//! This file only turns the numbers into one line of text that fits the terminal. Drawing it and
-//! keeping it under the output is done by `console`.
+//! The status bar drawn under a run's output: how full the context window is, the agent time, the
+//! cost, the model, the weekly usage of a Claude login and, at the right edge, a box that counts
+//! the MCP servers that failed. This file only turns the numbers into one line of text that fits
+//! the terminal. Drawing it is done by `console` and by the fullscreen view.
 
-/// What the agent is doing while the bar is shown.
+/// What the agent is doing while the bar is shown. The bar itself only shows a compaction; the
+/// rest is used by the inline view and by the spinner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
     /// The run is being set up.
@@ -20,6 +21,15 @@ pub enum Phase {
     Finished,
 }
 
+/// The weekly usage of a subscription login, as the bar shows it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsageView {
+    /// From 0 to 100.
+    pub percent: f32,
+    /// True when the last poll failed and this is an older value, drawn dim.
+    pub stale: bool,
+}
+
 /// The numbers the bar shows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusInfo {
@@ -32,14 +42,33 @@ pub struct StatusInfo {
     pub window: u64,
     /// The request size that starts a compaction. None when compaction is off.
     pub trigger: Option<u64>,
-    /// The compactions in this session, of both kinds.
-    pub compactions: u32,
-    /// How many of those were summaries.
-    pub summaries: u32,
-    /// The model calls in this session.
-    pub step: u32,
     pub cost: f64,
-    pub elapsed_secs: u64,
+    /// The agent time in seconds.
+    pub work_secs: u64,
+    /// True while the agent works: the agent time has a spinner in front of it.
+    pub working: bool,
+    /// The spinner character for this frame.
+    pub spinner: char,
+    /// The weekly usage, when the session uses a Claude login.
+    pub usage: Option<UsageView>,
+    /// How many MCP servers failed to start.
+    pub mcp_errors: usize,
+    /// A short note, such as `copied 12 characters`, shown before the error box.
+    pub note: Option<String>,
+}
+
+impl Default for StatusInfo {
+    /// An empty bar.
+    fn default() -> Self {
+        StatusInfo { phase: Phase::Starting, model: String::new(), used: 0, window: 0, trigger: None, cost: 0.0, work_secs: 0, working: false, spinner: '⠋', usage: None, mcp_errors: 0, note: None }
+    }
+}
+
+/// A part of the bar that a click acts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusPart {
+    Usage,
+    McpErrors,
 }
 
 /// ANSI codes used by the bar.
@@ -48,7 +77,6 @@ const GREEN: &str = "32";
 const YELLOW: &str = "33";
 const RED: &str = "31";
 const CYAN: &str = "36";
-const MAGENTA: &str = "35";
 const PLAIN: &str = "";
 
 /// The partial block characters, from one eighth of a cell to seven eighths.
@@ -76,18 +104,68 @@ fn segment(variants: Vec<(u8, Vec<Piece>)>) -> Segment {
 /// @param width - the terminal width in columns
 /// @param color - true to add ANSI colors
 pub fn render_status(info: &StatusInfo, width: usize, color: bool) -> String {
-    let segments = vec![phase_segment(&info.phase), context_segment(info), room_segment(info), compaction_segment(info), step_segment(info), cost_segment(info), elapsed_segment(info), model_segment(info)];
-    let chosen = fit(&segments, width.saturating_sub(1));
+    render_status_parts(info, width, color).0
+}
+
+/// Builds the bar and says which columns the clickable parts take, counted in characters.
+/// @param info - the numbers to show
+/// @param width - the terminal width in columns
+/// @param color - true to add ANSI colors
+pub fn render_status_parts(info: &StatusInfo, width: usize, color: bool) -> (String, Vec<(usize, usize, StatusPart)>) {
+    let right = right_pieces(info);
+    let right_width = pieces_width(&right);
+    let room = width.saturating_sub(1).saturating_sub(right_width + usize::from(right_width > 0));
+    let segments = vec![context_segment(info), time_segment(info), cost_segment(info), model_segment(info), usage_segment(info)];
+    let chosen = fit(&segments, room);
     let mut line = vec![(PLAIN, " ".to_string())];
+    let mut parts = Vec::new();
     let mut first = true;
-    for pieces in chosen.into_iter().filter(|p| !p.is_empty()) {
+    for (index, pieces) in chosen.into_iter().enumerate() {
+        if pieces.is_empty() {
+            continue;
+        }
         if !first {
             line.push((DIM, " │ ".into()));
         }
         first = false;
+        let at = pieces_width(&line);
+        let used = pieces_width(&pieces);
         line.extend(pieces);
+        if index == 4 {
+            parts.push((at, at + used, StatusPart::Usage));
+        }
     }
-    paint_pieces(&line, color)
+    if right_width > 0 {
+        let at = width.saturating_sub(1 + right_width).max(pieces_width(&line) + 1);
+        line.push((PLAIN, " ".repeat(at - pieces_width(&line))));
+        if info.mcp_errors > 0 {
+            parts.push((at + right_width - error_box(info).chars().count(), at + right_width, StatusPart::McpErrors));
+        }
+        line.extend(right);
+    }
+    (paint_pieces(&line, color), parts)
+}
+
+/// The right aligned group: the note, then the MCP error box.
+/// @param info - the numbers to show
+fn right_pieces(info: &StatusInfo) -> Vec<Piece> {
+    let mut pieces = Vec::new();
+    if let Some(note) = &info.note {
+        pieces.push((DIM, note.clone()));
+        if info.mcp_errors > 0 {
+            pieces.push((DIM, " │ ".into()));
+        }
+    }
+    if info.mcp_errors > 0 {
+        pieces.push((RED, error_box(info)));
+    }
+    pieces
+}
+
+/// The MCP error box's text: `▲ 1 MCP error`.
+/// @param info - the numbers to show
+fn error_box(info: &StatusInfo) -> String {
+    format!("▲ {} MCP {}", info.mcp_errors, if info.mcp_errors == 1 { "error" } else { "errors" })
 }
 
 /// Picks a variant of each segment so the line fits. Starts from the longest forms and shrinks the
@@ -127,80 +205,34 @@ fn paint_pieces(pieces: &[Piece], color: bool) -> String {
     pieces.iter().filter(|(_, text)| !text.is_empty()).map(|(code, text)| if color && !code.is_empty() { format!("\x1b[{code}m{text}\x1b[0m") } else { text.clone() }).collect()
 }
 
-/// The dot and word for what the agent is doing.
-/// @param phase - the current phase
-fn phase_segment(phase: &Phase) -> Segment {
-    let (code, word) = match phase {
-        Phase::Starting => (DIM, "starting".to_string()),
-        Phase::Thinking => (CYAN, "thinking".to_string()),
-        Phase::Running(what) if what.is_empty() => (MAGENTA, "running".to_string()),
-        Phase::Running(what) => (MAGENTA, format!("running {what}")),
-        Phase::Compacting => (YELLOW, "compacting".to_string()),
-        Phase::Waiting => (GREEN, "waiting for you".to_string()),
-        Phase::Finished => (DIM, "finished".to_string()),
-    };
-    let short = word.split(' ').next().unwrap_or("").to_string();
-    segment(vec![(6, vec![(code, format!("● {word}"))]), (9, vec![(code, format!("● {short}"))]), (0, vec![(code, "●".into())])])
-}
-
-/// The context bar, the share of the window in use, and the token counts.
+/// The context bar, the share of the window in use, and the token counts. During a compaction
+/// the label reads `compacting`.
 /// @param info - the numbers to show
 fn context_segment(info: &StatusInfo) -> Segment {
+    if info.window == 0 {
+        return segment(vec![(0, vec![])]);
+    }
     let code = fill_color(info);
     let share = (code, format!("{:>3}%", percent_used(info)));
     let tokens = (PLAIN, format!("{} / {}", short_tokens(info.used), short_tokens(info.window)));
-    let label = (DIM, "context ".to_string());
-    let mut full = vec![label];
+    let label = if info.phase == Phase::Compacting { (YELLOW, "compacting ".to_string()) } else { (DIM, "context ".to_string()) };
+    let mut full = vec![label.clone()];
     full.extend(bar(info, 24));
     full.extend([(PLAIN, " ".into()), share.clone(), (DIM, " · ".into()), tokens.clone()]);
-    let mut medium = bar(info, 16);
+    let mut medium = vec![label];
+    medium.extend(bar(info, 16));
     medium.extend([(PLAIN, " ".into()), share.clone(), (PLAIN, " ".into()), tokens]);
     let mut small = bar(info, 10);
     small.extend([(PLAIN, " ".into()), share.clone()]);
-    segment(vec![(7, full), (9, medium), (10, small), (0, vec![share])])
+    segment(vec![(7, full), (8, medium), (9, small), (10, vec![share])])
 }
 
-/// The room left before compaction starts.
+/// The agent time, with a spinner in front while the agent works. It is never left out.
 /// @param info - the numbers to show
-fn room_segment(info: &StatusInfo) -> Segment {
-    let Some(trigger) = info.trigger else {
-        return segment(vec![(8, vec![(DIM, "compaction off".into())]), (0, vec![])]);
-    };
-    if info.phase == Phase::Compacting {
-        return segment(vec![(8, vec![(YELLOW, "compacting now".into())]), (0, vec![])]);
-    }
-    if info.used >= trigger {
-        return segment(vec![(5, vec![(RED, "compacts before the next call".into())]), (8, vec![(RED, "compacting next".into())]), (0, vec![])]);
-    }
-    let left = short_tokens(trigger - info.used);
-    let at = (trigger as f64 / info.window.max(1) as f64 * 100.0).round() as u64;
-    let code = fill_color(info);
-    segment(vec![
-        (5, vec![(code, left.clone()), (PLAIN, format!(" left before compaction at {at}%"))]),
-        (8, vec![(code, left.clone()), (PLAIN, " until compaction".into())]),
-        (8, vec![(code, left), (DIM, " left".into())]),
-        (0, vec![]),
-    ])
-}
-
-/// The session's compaction count.
-/// @param info - the numbers to show
-fn compaction_segment(info: &StatusInfo) -> Segment {
-    let count = info.compactions;
-    let code = if count == 0 { DIM } else { YELLOW };
-    let noun = if count == 1 { "compaction" } else { "compactions" };
-    let detail = match info.summaries {
-        0 => String::new(),
-        1 => " (1 summary)".to_string(),
-        s => format!(" ({s} summaries)"),
-    };
-    segment(vec![(4, vec![(code, format!("↻ {count} {noun}")), (DIM, detail)]), (8, vec![(code, format!("↻ {count} {noun}"))]), (0, vec![(code, format!("↻ {count}"))])])
-}
-
-/// The model call count.
-/// @param info - the numbers to show
-fn step_segment(info: &StatusInfo) -> Segment {
-    segment(vec![(4, vec![(DIM, "step ".into()), (PLAIN, info.step.to_string())]), (0, vec![])])
+fn time_segment(info: &StatusInfo) -> Segment {
+    let time = crate::services::work_clock::clock_text(std::time::Duration::from_secs(info.work_secs));
+    let pieces = if info.working { vec![(CYAN, format!("{} ", info.spinner)), (PLAIN, time)] } else { vec![(DIM, time)] };
+    segment(vec![(255, pieces)])
 }
 
 /// The session's cost, left out when nothing was spent, as with a local model.
@@ -212,12 +244,6 @@ fn cost_segment(info: &StatusInfo) -> Segment {
     segment(vec![(3, vec![(PLAIN, format!("${:.2}", info.cost))]), (0, vec![])])
 }
 
-/// The time since the run started.
-/// @param info - the numbers to show
-fn elapsed_segment(info: &StatusInfo) -> Segment {
-    segment(vec![(2, vec![(DIM, short_duration(info.elapsed_secs))]), (0, vec![])])
-}
-
 /// The model name.
 /// @param info - the numbers to show
 fn model_segment(info: &StatusInfo) -> Segment {
@@ -225,7 +251,20 @@ fn model_segment(info: &StatusInfo) -> Segment {
     if name.is_empty() {
         return segment(vec![(0, vec![])]);
     }
-    segment(vec![(1, vec![(DIM, name)]), (0, vec![])])
+    segment(vec![(4, vec![(DIM, name)]), (0, vec![])])
+}
+
+/// The weekly usage: a short bar and the percent, green below 70%, yellow below 90%, red from
+/// 90%, dim when the value is old. It shortens to the percent alone before anything else does.
+/// @param info - the numbers to show
+fn usage_segment(info: &StatusInfo) -> Segment {
+    let Some(usage) = info.usage else { return segment(vec![(0, vec![])]) };
+    let code = if usage.stale { DIM } else if usage.percent < 70.0 { GREEN } else if usage.percent < 90.0 { YELLOW } else { RED };
+    let cells = 6;
+    let filled = ((usage.percent.clamp(0.0, 100.0) / 100.0) * cells as f32).round() as usize;
+    let percent = format!("{:.0}%", usage.percent);
+    let full = vec![(DIM, "week ".to_string()), (code, "█".repeat(filled)), (DIM, "░".repeat(cells - filled)), (code, format!(" {percent}"))];
+    segment(vec![(1, full), (6, vec![(DIM, "week ".to_string()), (code, percent)]), (0, vec![])])
 }
 
 /// Draws the bar itself: filled cells up to the share in use, with eighth blocks for the last
@@ -320,54 +359,58 @@ mod tests {
 
     /// A bar a third of the way to a 128k window, with compaction at 80%.
     fn sample() -> StatusInfo {
-        StatusInfo { phase: Phase::Thinking, model: "local/qwen-3.8".into(), used: 42_600, window: 128_000, trigger: Some(102_400), compactions: 2, summaries: 1, step: 14, cost: 0.0, elapsed_secs: 724 }
+        StatusInfo { phase: Phase::Thinking, model: "local/qwen-3.8".into(), used: 42_600, window: 128_000, trigger: Some(102_400), work_secs: 187, working: true, ..Default::default() }
     }
 
     #[test]
-    fn a_wide_terminal_shows_every_part() {
-        let line = render_status(&sample(), 200, false);
-        assert!(line.contains("● thinking"), "{line}");
-        assert!(line.contains("context ████████"), "{line}");
-        assert!(line.contains(" 33% · 42.6k / 128k"), "{line}");
-        assert!(line.contains("59.8k left before compaction at 80%"), "{line}");
-        assert!(line.contains("↻ 2 compactions (1 summary)"), "{line}");
-        assert!(line.contains("step 14"), "{line}");
-        assert!(line.contains("12m04s"), "{line}");
-        assert!(line.contains("qwen-3.8"), "{line}");
-        assert!(!line.contains('$'), "a free model shows no cost: {line}");
-    }
-
-    #[test]
-    fn the_line_always_fits_and_keeps_the_percent() {
-        for width in [20, 40, 60, 80, 100, 120, 160] {
-            let line = render_status(&sample(), width, false);
-            let used = line.chars().count();
-            assert!(used < width || width < 30, "width {width}: {used} columns: {line}");
-            assert!(line.contains("33%"), "width {width}: {line}");
-        }
-        assert!(render_status(&sample(), 120, false).contains("● thinking │"), "the long phrases shorten before the phase word");
-        let narrow = render_status(&sample(), 60, false);
-        assert!(narrow.contains("↻ 2"), "the compaction count outlasts the step and model: {narrow}");
-        assert!(!narrow.contains("qwen"), "{narrow}");
-    }
-
-    /// Prints the bar at several widths, in color. Run with `--ignored --nocapture` to look at it.
-    #[test]
-    #[ignore]
-    fn shows_examples() {
+    fn a_wide_terminal_shows_every_part_and_no_removed_one() {
         let mut info = sample();
-        for width in [200, 150, 120, 100, 80, 60, 40] {
-            println!("{width:>3} |{}", render_status(&info, width, true));
+        info.cost = 0.43;
+        info.usage = Some(UsageView { percent: 23.0, stale: false });
+        info.mcp_errors = 1;
+        let line = render_status(&info, 200, false);
+        for wanted in ["context ████████", " 33% · 42.6k / 128k", "⠋ 3:07", "$0.43", "qwen-3.8", "week █░░░░░ 23%"] {
+            assert!(line.contains(wanted), "{wanted}: {line}");
         }
-        info.used = 96_000;
-        info.cost = 0.4321;
-        info.phase = Phase::Running("cargo +1".into());
-        println!("    |{}", render_status(&info, 200, true));
-        info.used = 3_000;
-        info.compactions = 0;
-        info.summaries = 0;
-        info.phase = Phase::Waiting;
-        println!("    |{}", render_status(&info, 200, true));
+        assert!(line.ends_with("▲ 1 MCP error"), "the error box is at the right edge: {line}");
+        assert_eq!(line.chars().count(), 199, "{line}");
+        for gone in ["thinking", "waiting", "left before compaction", "compactions", "step"] {
+            assert!(!line.contains(gone), "{gone}: {line}");
+        }
+    }
+
+    #[test]
+    fn the_line_always_fits_and_keeps_the_time_and_the_error_box() {
+        let mut info = sample();
+        info.mcp_errors = 2;
+        info.usage = Some(UsageView { percent: 91.0, stale: false });
+        for width in [40, 60, 80, 100, 120, 160] {
+            let line = render_status(&info, width, false);
+            let used = line.chars().count();
+            assert!(used < width, "width {width}: {used} columns: {line}");
+            assert!(line.contains("3:07") && line.contains("▲ 2 MCP errors"), "width {width}: {line}");
+        }
+        let narrow = render_status(&info, 80, false);
+        assert!(narrow.contains("week 91%") || !narrow.contains("week"), "usage shortens to the percent first: {narrow}");
+        let idle = StatusInfo { working: false, ..sample() };
+        assert!(!render_status(&idle, 120, false).contains('⠋'));
+    }
+
+    #[test]
+    fn the_clickable_parts_report_their_columns() {
+        let mut info = sample();
+        info.mcp_errors = 1;
+        info.usage = Some(UsageView { percent: 50.0, stale: false });
+        let (line, parts) = render_status_parts(&info, 120, false);
+        let chars: Vec<char> = line.chars().collect();
+        assert_eq!(parts.len(), 2, "{line}");
+        for (from, to, part) in parts {
+            let text: String = chars[from..to].iter().collect();
+            match part {
+                StatusPart::McpErrors => assert_eq!(text, "▲ 1 MCP error"),
+                StatusPart::Usage => assert!(text.starts_with("week"), "{text}"),
+            }
+        }
     }
 
     #[test]
@@ -385,21 +428,15 @@ mod tests {
     }
 
     #[test]
-    fn colors_follow_the_distance_to_compaction() {
+    fn colors_follow_the_distance_to_compaction_and_a_compaction_is_named() {
         let mut info = sample();
         assert_eq!(fill_color(&info), GREEN);
         info.used = 80_000;
         assert_eq!(fill_color(&info), YELLOW);
         info.used = 100_000;
         assert_eq!(fill_color(&info), RED);
-        info.used = 110_000;
-        assert!(render_status(&info, 200, false).contains("compacts before the next call"));
         info.phase = Phase::Compacting;
-        assert!(render_status(&info, 200, false).contains("● compacting │ context"));
-        assert!(render_status(&info, 200, false).contains("│ compacting now │"));
-        info.phase = Phase::Thinking;
-        info.trigger = None;
-        assert!(render_status(&info, 200, false).contains("compaction off"));
+        assert!(render_status(&info, 200, false).contains(" compacting ███"));
     }
 
     #[test]
@@ -411,11 +448,5 @@ mod tests {
         assert_eq!(short_tokens(1_250_000), "1.2M");
         assert_eq!(short_duration(42), "42s");
         assert_eq!(short_duration(3_900), "1h05m");
-        let mut info = sample();
-        info.compactions = 0;
-        assert!(render_status(&info, 200, false).contains("↻ 0 compactions"));
-        info.compactions = 1;
-        info.summaries = 0;
-        assert!(render_status(&info, 200, false).contains("↻ 1 compaction │"));
     }
 }

@@ -127,7 +127,7 @@ fn wait_for_output(mut child: Child, timeout: Duration, command: &str) -> Observ
     let mut output = stdout.recv_timeout(grace).unwrap_or_default();
     output.push_str(&stderr.recv_timeout(grace).unwrap_or_default());
     match ending {
-        Ending::Exited(code) => Observation { output, returncode: code.unwrap_or(-1), exception_info: String::new(), images: Vec::new() },
+        Ending::Exited(code) => Observation { output, returncode: code.unwrap_or(-1), exception_info: String::new(), images: Vec::new(), ..Default::default() },
         Ending::TimedOut => Observation::failed(output, format!("An error occurred while executing the command: Command '{command}' timed out after {} seconds", timeout.as_secs())),
         Ending::Interrupted(seconds) => Observation::failed(output, format!("{INTERRUPTED_COMMAND} after {seconds:.1} seconds")),
     }

@@ -68,16 +68,16 @@ pub fn list_mcp(args: &McpArgs) -> Result<()> {
     if !args.connect {
         return print_mcp_definitions(&context.mcp_servers, args.inspect.json);
     }
-    let mut manager = McpManager::connect_all(&context.mcp_servers, &config.mcp, &umbra_home().join("logs").join("mcp"));
+    let manager = McpManager::connect_all(&context.mcp_servers, &config.mcp, &umbra_home().join("logs").join("mcp"));
     let tools = manager.tools();
     if args.inspect.json {
-        let failures: Vec<_> = manager.failures.iter().map(|f| json!({ "name": f.name, "error": f.error })).collect();
+        let failures: Vec<_> = manager.failures().iter().map(|f| json!({ "name": f.name, "error": f.error })).collect();
         println!("{}", serde_json::to_string_pretty(&json!({ "connected": manager.connected(), "failures": failures, "tools": tools }))?);
     } else {
         for (name, version, count) in manager.connected() {
             println!("{name:<20} connected, protocol {version}, {count} tools");
         }
-        for failure in &manager.failures {
+        for failure in &manager.failures() {
             println!("{:<20} FAILED: {}", failure.name, first_line(&failure.error, 160));
         }
         println!();

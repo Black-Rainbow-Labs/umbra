@@ -5,10 +5,10 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use super::providers::{check_credentials, create_provider};
+use super::providers::{check_credentials, split_model_spec};
 use super::run_service::prepare_config;
+use super::settings_service::test_provider;
 use crate::cli::{CommonArgs, SetupArgs};
-use crate::models::message::Message;
 use crate::utils::console::read_line;
 use crate::utils::paths::umbra_home;
 
@@ -50,18 +50,10 @@ pub fn run_setup(args: &SetupArgs) -> Result<i32> {
     if args.no_test {
         return Ok(0);
     }
-    println!("Asking {model} to say hello...");
-    let mut provider = create_provider(&config, &model)?;
-    match provider.complete(&[Message::system("Answer in one short sentence."), Message::user("Say hello.")], &[]) {
-        Ok(reply) => {
-            println!("{model} answered: {}", reply.content.trim().lines().next().unwrap_or(""));
-            Ok(0)
-        }
-        Err(error) => {
-            println!("{model} did not answer: {}", error.message.lines().next().unwrap_or(""));
-            Ok(1)
-        }
-    }
+    println!("Testing {model}...");
+    let (provider_name, model_name) = split_model_spec(&model)?;
+    let steps = test_provider(&config, provider_name, model_name, &mut |step| println!("  {} {}: {}", if step.ok { "[ok]    " } else { "[failed]" }, step.name, step.text));
+    Ok(if steps.iter().all(|step| step.ok) { 0 } else { 1 })
 }
 
 /// Asks which provider and which model, with a default model for each provider.

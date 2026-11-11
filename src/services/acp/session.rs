@@ -299,7 +299,7 @@ fn build_session(server: &Arc<ServerShared>, shared: &Arc<SessionShared>, cwd: &
     let (session, path) = session_record(&config, &shared.id, cwd, resumed.as_ref());
     let interaction = Interaction::detached(Mode::Yolo);
     let events = AcpEvents::new(server.wire.clone(), shared.clone(), server.shows, &config.whitelist_actions, cwd.to_path_buf());
-    let run = AgentSession { session, trajectory_path: path, need_provider: true, events: Box::new(events) };
+    let run = AgentSession { session, trajectory_path: path, need_provider: true, events: Box::new(events), mcp: None };
     let mut agent = build_agent(config.clone(), cwd, &context, interaction, run).map_err(|e| RpcError::new(INTERNAL_ERROR, format!("{e:#}")))?;
     let opened = resumed.is_some();
     if let Some(resumed) = resumed {
@@ -337,7 +337,7 @@ fn session_config(args: &AcpArgs, cwd: &Path, resumed: Option<&ResumedSession>, 
     let mode = start_mode(args, config.mode).map_err(|e| RpcError::new(INVALID_PARAMS, e))?;
     *shared.mode.lock().unwrap_or_else(|e| e.into_inner()) = mode;
     *shared.model.lock().unwrap_or_else(|e| e.into_inner()) = config.model.clone();
-    *shared.models.lock().unwrap_or_else(|e| e.into_inner()) = config.models.clone();
+    *shared.models.lock().unwrap_or_else(|e| e.into_inner()) = config.models.specs();
     Ok(config)
 }
 
@@ -367,7 +367,7 @@ pub fn start_mode(args: &AcpArgs, configured: Mode) -> Result<Mode, String> {
 fn session_record(config: &UmbraConfig, id: &str, cwd: &Path, resumed: Option<&ResumedSession>) -> (SessionInfo, PathBuf) {
     let cwd_text = cwd.to_string_lossy().replace('\\', "/");
     let Some(resumed) = resumed else {
-        let session = SessionInfo { id: id.to_string(), cwd: cwd_text, model: config.model.clone(), task: String::new(), started_at: now_seconds(), resumes: Vec::new() };
+        let session = SessionInfo { id: id.to_string(), cwd: cwd_text, model: config.model.clone(), task: String::new(), started_at: now_seconds(), ..Default::default() };
         return (session, trajectory_path(&config.output, id));
     };
     let mut session = resumed.session.clone();

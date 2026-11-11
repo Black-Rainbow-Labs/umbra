@@ -6,6 +6,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -13,6 +14,10 @@ use serde_json::{json, Value};
 
 use super::action_parser::{parse_text_reply, parse_tool_reply, Parsed};
 use super::agent_events::AgentEvents;
+use super::command_service::{handle_line, BuiltinCommand, LineAction};
+use super::context_service::RunContext;
+use super::session_title_service::{initial_title, request_title, summary_from_compaction};
+use super::{usage_service, work_clock};
 use super::compaction_service::{apply_mask, budget_for, estimate_history_tokens, estimate_request_tokens, estimate_tools_tokens, find_cut, mask_record, plan_mask, resolve_window, summarizable_tokens, summarize, summary_record, ReportedSize, SummaryInputs};
 use super::environment::{submission_from, Environment};
 use super::image_service::images_in_text;
@@ -38,6 +43,7 @@ use crate::utils::console;
 use crate::utils::interrupt;
 use crate::utils::paths::absolute_path;
 use crate::utils::status_bar::{short_tokens, Phase, StatusInfo};
+use crate::ui::live::{self, UiRequest};
 
 /// How a run ended.
 #[derive(Debug, Clone)]
@@ -48,12 +54,25 @@ pub struct RunResult {
     pub trajectory_path: PathBuf,
     pub stats: ModelStats,
     pub session_id: String,
+    /// What the person asked for next with `/clear` or `/resume`, when the run ended for it.
+    pub next: Option<NextSession>,
+}
+
+/// The session a run hands over to when it ends for `/clear` or `/resume`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NextSession {
+    /// A new session with an empty history.
+    Clear,
+    /// The saved session with this id.
+    Resume(String),
 }
 
 /// How a run starts: a new task, or a saved session with the next task.
 pub enum Opening {
-    New { task: String, images: Vec<ImageData> },
-    Resume { session: Box<ResumedSession>, task: String, images: Vec<ImageData> },
+    /// `task` is what the model gets; `typed` is what the person typed, such as `/review x` for a
+    /// custom command, kept as `user_text`.
+    New { task: String, typed: String, images: Vec<ImageData> },
+    Resume { session: Box<ResumedSession>, task: String, typed: String, images: Vec<ImageData> },
 }
 
 /// The exit status of a run the person ended with Ctrl+C.
@@ -83,8 +102,10 @@ pub struct AgentParts {
     pub config: UmbraConfig,
     pub provider: Box<dyn Provider>,
     pub environment: Box<dyn Environment>,
-    pub mcp: McpManager,
+    pub mcp: Arc<McpManager>,
     pub interaction: Interaction,
+    /// The custom commands and skills, so a slash command works on every prompt.
+    pub context: RunContext,
     /// Variables for the templates: platform, environment, context and config values.
     pub vars: Value,
     pub trajectory_path: PathBuf,
@@ -125,6 +146,16 @@ pub struct Agent {
     compaction: CompactionState,
     /// The model calls and cost already spent when this run started; the limits count from here.
     baseline: (u32, f64),
+    /// The MCP manager's version when the tools were last read.
+    mcp_version: u64,
+    /// Set by `/clear` or `/resume` at the follow up prompt.
+    next: Option<NextSession>,
+    /// Set by `/quit` typed while the agent works: the run ends before the next step.
+    quit_requested: bool,
+    /// The background request for the session's title, after the first turn.
+    title_job: Option<std::thread::JoinHandle<Option<(String, String, f64)>>>,
+    /// True once the first turn has ended, so the title is asked for once.
+    titled: bool,
 }
 
 /// What the agent tracks for compaction.
@@ -148,13 +179,14 @@ impl Agent {
     /// @param parts - the provider, environment, MCP servers and settings
     pub fn new(mut parts: AgentParts) -> Self {
         let templates = Templates::resolve(&parts.config.templates, parts.config.action_format, parts.config.finish);
-        let mcp_tools = parts.mcp.tools();
+        let mcp_tools = parts.mcp.ready_tools();
+        let mcp_version = parts.mcp.version();
         let window = resolve_window(&parts.config.compaction, parts.provider.as_mut());
         let mcp_tokens = estimate_tools_tokens(&tool_specs(&mcp_tools)[1..]);
         let mcp = &parts.config.mcp;
         let deferred = !mcp_tools.is_empty() && should_defer(mcp.defer_tools, mcp_tokens, window, mcp.defer_ratio);
         let compaction = CompactionState { window: Some(window), ..Default::default() };
-        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0) };
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, title_job: None, titled: false };
         agent.rebuild_tools();
         agent
     }
@@ -173,6 +205,61 @@ impl Agent {
             tool_specs(&self.mcp_tools)
         };
         self.compaction.tools_tokens = estimate_tools_tokens(&self.tools);
+    }
+
+    /// Reads the tools again when an MCP server became ready, failed or was turned on or off since
+    /// the last model call. A server that became ready is announced, and deferral is decided again
+    /// for the new set of tools.
+    fn refresh_mcp(&mut self) {
+        let version = self.parts.mcp.version();
+        if version == self.mcp_version {
+            return;
+        }
+        self.mcp_version = version;
+        let tools = self.parts.mcp.ready_tools();
+        let before: BTreeSet<String> = self.mcp_tools.iter().map(|t| t.server.clone()).collect();
+        for (server, _, count) in self.parts.mcp.connected() {
+            if !before.contains(&server) && self.parts.interaction.interactive {
+                self.notice(Tone::Info, "mcp", &format!("mcp {server} ready, {count} {}", if count == 1 { "tool" } else { "tools" }));
+            }
+        }
+        let window = self.context_window();
+        let mcp = &self.parts.config.mcp;
+        let tokens = estimate_tools_tokens(&tool_specs(&tools)[1..]);
+        self.deferred = !tools.is_empty() && should_defer(mcp.defer_tools, tokens, window, mcp.defer_ratio);
+        self.mcp_tools = tools;
+        self.rebuild_tools();
+        self.compaction.reported = None;
+    }
+
+    /// Applies what the fullscreen view asked for since the last step: another model, another
+    /// mode, or the end of the session.
+    fn apply_ui_requests(&mut self) {
+        if !self.parts.interaction.interactive {
+            return;
+        }
+        for request in live::take_requests() {
+            match request {
+                UiRequest::SetModel(spec) => self.switch_model(&spec),
+                UiRequest::SetMode(mode) => self.parts.interaction.mode = mode,
+                UiRequest::Quit => self.quit_requested = true,
+            }
+        }
+    }
+
+    /// Switches to another model from the next model call, after checking it can be used.
+    /// @param spec - a model name from `[models]` or a `provider/model` string
+    pub fn switch_model(&mut self, spec: &str) {
+        let resolved = super::providers::resolve_model(&self.parts.config, spec);
+        let checked = super::providers::check_credentials(&self.parts.config, spec).and_then(|_| super::providers::create_provider(&self.parts.config, spec));
+        match checked {
+            Ok(provider) => {
+                self.set_provider(provider, &resolved);
+                usage_service::start(&self.parts.config, &resolved);
+                live::update_header(|h| h.model = resolved.clone());
+            }
+            Err(error) => self.notice(Tone::Failure, "model", &format!("could not switch to {spec}: {error:#}")),
+        }
     }
 
     /// Loads deferred tools by their full names, so their definitions go with every later request.
@@ -204,7 +291,7 @@ impl Agent {
         let output = describe_found(&found.iter().map(|&i| &self.mcp_tools[i]).collect::<Vec<_>>(), query);
         let names = found.iter().map(|&i| self.mcp_tools[i].qualified_name()).collect();
         self.load_tools(names, true);
-        Observation { output, returncode: if found.is_empty() { 1 } else { 0 }, exception_info: String::new(), images: Vec::new() }
+        Observation { output, returncode: if found.is_empty() { 1 } else { 0 }, exception_info: String::new(), ..Default::default() }
     }
 
     /// The tools a reply may call: every MCP tool, and `tool_search` when tools are deferred.
@@ -251,10 +338,10 @@ impl Agent {
     /// @param opening - a new task, or a saved session and the next task
     pub fn run(&mut self, opening: Opening) -> Result<RunResult> {
         match opening {
-            Opening::New { task, images } => self.open_new(&task, images)?,
-            Opening::Resume { session, task, images } => {
+            Opening::New { task, typed, images } => self.open_new_typed(&task, &typed, images)?,
+            Opening::Resume { session, task, typed, images } => {
                 self.open_resumed(*session);
-                self.add_task(&task, images);
+                self.add_task_typed(&task, &typed, images);
             }
         }
         self.save();
@@ -265,7 +352,12 @@ impl Agent {
             console::start_reading_stdin();
         }
         loop {
+            if self.parts.interaction.interactive {
+                work_clock::start();
+            }
             let end = self.run_turn();
+            work_clock::stop();
+            self.after_turn(&end);
             self.show_turn_end(&end);
             if is_success(&end.status) && self.follow_up() {
                 continue;
@@ -273,8 +365,43 @@ impl Agent {
             self.end_turn(&end);
             break;
         }
+        self.finish_title_job(true);
+        self.save();
         self.close();
-        Ok(RunResult { exit_status: self.exit.0.clone(), submission: self.exit.1.clone(), trajectory_path: self.parts.trajectory_path.clone(), stats: self.stats.clone(), session_id: self.parts.session.id.clone() })
+        Ok(RunResult { exit_status: self.exit.0.clone(), submission: self.exit.1.clone(), trajectory_path: self.parts.trajectory_path.clone(), stats: self.stats.clone(), session_id: self.parts.session.id.clone(), next: self.next.clone() })
+    }
+
+    /// After a turn: the usage is polled again, and after the first turn of a session in a
+    /// terminal a background request asks the model for the session's title and summary.
+    /// @param end - how the turn ended
+    fn after_turn(&mut self, end: &TurnEnd) {
+        usage_service::turn_ended();
+        if self.titled || !self.parts.interaction.interactive {
+            return;
+        }
+        self.titled = true;
+        if !self.parts.config.sessions.auto_title || !self.parts.session.summary.is_empty() {
+            return;
+        }
+        let prompt = self.messages.iter().find_map(|m| m.extra["user_text"].as_str().map(String::from)).unwrap_or_default();
+        let reply = if end.submission.is_empty() { self.messages.iter().rev().find(|m| m.role == Role::Assistant).map(|m| m.content.clone()).unwrap_or_default() } else { end.submission.clone() };
+        let Ok(mut provider) = super::providers::create_provider(&self.parts.config, &self.parts.config.model) else { return };
+        self.title_job = Some(std::thread::spawn(move || request_title(provider.as_mut(), &prompt, &reply)));
+    }
+
+    /// Takes the title request's answer when it has arrived, or waits for it when `wait` is set.
+    /// A failed request leaves the title from the first prompt.
+    /// @param wait - true to wait for the request to finish
+    fn finish_title_job(&mut self, wait: bool) {
+        if !self.title_job.as_ref().is_some_and(|job| wait || job.is_finished()) {
+            return;
+        }
+        let Some(job) = self.title_job.take() else { return };
+        if let Ok(Some((title, summary, cost))) = job.join() {
+            self.parts.session.title = title;
+            self.parts.session.summary = summary;
+            self.stats.instance_cost += cost;
+        }
     }
 
     /// Starts a new session: renders the system prompt and the first message. The person's own
@@ -282,8 +409,20 @@ impl Agent {
     /// @param task - the task text
     /// @param images - the images attached to the task
     pub fn open_new(&mut self, task: &str, images: Vec<ImageData>) -> Result<()> {
+        self.open_new_typed(task, task, images)
+    }
+
+    /// Starts a new session whose first task was expanded from what the person typed, such as a
+    /// custom command. The typed text is kept as `user_text` and names the session.
+    /// @param task - the task text the model gets
+    /// @param typed - what the person typed
+    /// @param images - the images attached to the task
+    pub fn open_new_typed(&mut self, task: &str, typed: &str, images: Vec<ImageData>) -> Result<()> {
         let (system, instance) = self.render_prompts(task)?;
-        self.messages = vec![Message::system(system), Message::user(instance).with_images(images).with_extra(json!({ "user_text": task }))];
+        self.messages = vec![Message::system(system), Message::user(instance).with_images(images).with_extra(json!({ "user_text": typed }))];
+        if self.parts.session.title.is_empty() {
+            self.parts.session.title = initial_title(typed);
+        }
         Ok(())
     }
 
@@ -302,10 +441,21 @@ impl Agent {
     /// @param task - the task text
     /// @param images - the images attached to it
     pub fn add_task(&mut self, task: &str, images: Vec<ImageData>) {
+        self.add_task_typed(task, task, images);
+    }
+
+    /// Gives the model its next task, expanded from what the person typed.
+    /// @param task - the task text the model gets
+    /// @param typed - what the person typed, kept as `user_text`
+    /// @param images - the images attached to it
+    pub fn add_task_typed(&mut self, task: &str, typed: &str, images: Vec<ImageData>) {
         while self.messages.last().is_some_and(|m| m.role == Role::Exit) {
             self.messages.pop();
         }
-        self.messages.push(new_task_message(task, self.parts.config.finish).with_images(images));
+        if self.parts.session.title.is_empty() && !typed.trim().is_empty() {
+            self.parts.session.title = initial_title(typed);
+        }
+        self.messages.push(new_task_message(task, typed, self.parts.config.finish).with_images(images));
     }
 
     /// Makes the step, cost and time limits count from now, for a front end that runs one turn
@@ -344,12 +494,12 @@ impl Agent {
     /// @param end - how the turn ended
     fn show_turn_end(&mut self, end: &TurnEnd) {
         self.show_status(Phase::Waiting);
-        let session_id = self.parts.session.id.clone();
-        show_turn_end(&TurnSummary { status: &end.status, submission: &end.submission, steps: self.stats.api_calls, cost: self.stats.instance_cost, elapsed_secs: self.started.elapsed().as_secs(), session_id: &session_id });
+        show_turn_end(&TurnSummary { status: &end.status, submission: &end.submission });
     }
 
     /// Stops the environment and the MCP servers.
     pub fn close(&mut self) {
+        work_clock::stop();
         self.parts.environment.close();
         self.parts.mcp.close();
     }
@@ -382,16 +532,63 @@ impl Agent {
     /// the same conversation. `/compact` compacts and asks again. Returns true when there is one.
     fn follow_up(&mut self) -> bool {
         self.show_status(Phase::Waiting);
-        while let Some(task) = self.parts.interaction.follow_up_task() {
-            if let Some(focus) = compact_command(&task) {
-                self.compact_by_summary(CompactionReason::Manual, focus);
-                continue;
-            }
-            let images = self.typed_images(&task);
-            self.add_task(&task, images);
+        while let Some(line) = self.parts.interaction.follow_up_task() {
+            self.apply_ui_requests();
+            let task = match handle_line(&line, &self.parts.context) {
+                LineAction::SendToModel(task) => task,
+                LineAction::Builtin(command) => match self.idle_command(command) {
+                    Some(true) => return false,
+                    _ => continue,
+                },
+            };
+            let images = self.typed_images(&line);
+            self.add_task_typed(&task, &line, images);
             return true;
         }
         false
+    }
+
+    /// Runs a built in command typed at the follow up prompt. Returns Some(true) when the run
+    /// ends for it, Some(false) when it was handled. The commands that only open something on
+    /// screen are run by the fullscreen view; in the inline view they say so.
+    /// @param command - the command
+    fn idle_command(&mut self, command: BuiltinCommand) -> Option<bool> {
+        match command {
+            BuiltinCommand::Compact(focus) => {
+                self.compact_by_summary(CompactionReason::Manual, &focus);
+            }
+            BuiltinCommand::Clear => {
+                self.next = Some(NextSession::Clear);
+                return Some(true);
+            }
+            BuiltinCommand::Resume(Some(id)) => {
+                self.next = Some(NextSession::Resume(id));
+                return Some(true);
+            }
+            BuiltinCommand::Quit => return Some(true),
+            other => self.running_command(other),
+        }
+        Some(false)
+    }
+
+    /// Runs a built in command that works the same while the agent is idle or working: the mode
+    /// and the model. Any other command says where it works.
+    /// @param command - the command
+    fn running_command(&mut self, command: BuiltinCommand) {
+        match command {
+            BuiltinCommand::Mode(Some(word)) => match crate::ui::overlay::pickers::parse_mode(&word) {
+                Some(mode) => {
+                    self.parts.interaction.mode = mode;
+                    live::update_header(|h| h.mode = word.clone());
+                    self.notice(Tone::Info, "mode", &format!("{word} mode"));
+                }
+                None => self.notice(Tone::Warning, "mode", &format!("unknown mode '{word}'. Use confirm, yolo or human")),
+            },
+            BuiltinCommand::Model(Some(name)) => self.switch_model(&name),
+            BuiltinCommand::Help => self.notice(Tone::Info, "help", &super::command_service::help_text()),
+            BuiltinCommand::Clear | BuiltinCommand::Resume(_) => self.notice(Tone::Warning, "command", "wait for the agent to finish, or press Ctrl+C, before starting another session"),
+            other => self.notice(Tone::Info, "command", &format!("{} opens in the fullscreen view", command_name(&other))),
+        }
     }
 
     /// One step: a model call (or a typed command in human mode), then the actions. A Ctrl+C
@@ -399,6 +596,14 @@ impl Agent {
     fn step(&mut self) -> Result<Step> {
         if interrupt::take() {
             return self.interrupted();
+        }
+        if self.parts.interaction.interactive {
+            work_clock::start();
+        }
+        self.apply_ui_requests();
+        self.finish_title_job(false);
+        if self.quit_requested {
+            return Ok(Step::Exit("UserQuit".into(), String::new()));
         }
         if self.parts.interaction.mode == Mode::Human {
             return self.human_step();
@@ -411,6 +616,7 @@ impl Agent {
         if interrupt::take() {
             return self.interrupted();
         }
+        self.refresh_mcp();
         self.stats.api_calls += 1;
         self.show_status(Phase::Thinking);
         let response = match self.call_model() {
@@ -458,13 +664,24 @@ impl Agent {
         if !self.parts.interaction.interactive {
             return;
         }
-        for text in console::take_queued_lines() {
-            if let Some(focus) = compact_command(&text) {
-                self.compact_by_summary(CompactionReason::Manual, focus);
-                continue;
-            }
-            show_queued_message(&text);
-            let images = self.typed_images(&text);
+        for line in console::take_queued_lines() {
+            let text = match handle_line(&line, &self.parts.context) {
+                LineAction::SendToModel(text) => text,
+                LineAction::Builtin(BuiltinCommand::Compact(focus)) => {
+                    self.compact_by_summary(CompactionReason::Manual, &focus);
+                    continue;
+                }
+                LineAction::Builtin(BuiltinCommand::Quit) => {
+                    self.quit_requested = true;
+                    continue;
+                }
+                LineAction::Builtin(command) => {
+                    self.running_command(command);
+                    continue;
+                }
+            };
+            show_queued_message(&line);
+            let images = self.typed_images(&line);
             self.messages.push(queued_message(&text).with_images(images));
         }
     }
@@ -676,6 +893,7 @@ impl Agent {
         self.messages = outcome.history.clone();
         self.compaction.reported = None;
         let after = self.request_estimate();
+        self.parts.session.summary = summary_from_compaction(&outcome.summary);
         self.notice(Tone::Info, "compaction", &format!("compacted: summarized {} {} · {} → {} tokens of {}", outcome.removed.len(), if outcome.removed.len() == 1 { "message" } else { "messages" }, short_tokens(before), short_tokens(after), short_tokens(window)));
         self.compaction.stuck_warned = false;
         self.compaction.records.push(summary_record(reason, self.stats.api_calls, (before, after, window), &outcome));
@@ -718,7 +936,8 @@ impl Agent {
         let trigger = compaction.enabled.then(|| budget_for(compaction, window).trigger);
         let summaries = self.compaction.records.iter().filter(|r| r.kind == CompactionKind::Summary).count() as u32;
         let model = self.parts.provider.model_name().to_string();
-        let info = StatusInfo { phase, model, used: self.request_estimate(), window, trigger, compactions: self.stats.compactions, summaries, step: self.stats.api_calls, cost: self.stats.instance_cost, elapsed_secs: self.started.elapsed().as_secs() };
+        let _ = summaries;
+        let info = StatusInfo { phase, model, used: self.request_estimate(), window, trigger, cost: self.stats.instance_cost, work_secs: work_clock::elapsed().as_secs(), ..Default::default() };
         console::update_status(info);
     }
 
@@ -837,6 +1056,17 @@ impl Agent {
     /// Runs one action in the environment or on its MCP server.
     /// @param action - the action
     fn execute(&mut self, action: &Action) -> Observation {
+        let started_at = now_seconds();
+        let clock = Instant::now();
+        let mut observation = self.execute_untimed(action);
+        observation.started_at = Some(started_at);
+        observation.duration_ms = Some(clock.elapsed().as_millis() as u64);
+        observation
+    }
+
+    /// Runs one action without timing it.
+    /// @param action - the action
+    fn execute_untimed(&mut self, action: &Action) -> Observation {
         match action {
             Action::Bash { command, .. } => self.parts.environment.execute(command),
             Action::Mcp { server, tool, arguments, .. } if is_tool_search(server, tool) => self.run_tool_search(arguments),
@@ -871,7 +1101,7 @@ impl Agent {
                 Some(id) => Message::tool(id, content),
                 None => Message::user(content),
             };
-            self.messages.push(message.with_images(observation.images.clone()).with_extra(json!({ "raw_output": observation.output, "returncode": observation.returncode, "exception_info": observation.exception_info, "timestamp": now_seconds() })));
+            self.messages.push(message.with_images(observation.images.clone()).with_extra(json!({ "raw_output": observation.output, "returncode": observation.returncode, "exception_info": observation.exception_info, "timestamp": now_seconds(), "started_at": observation.started_at, "duration_ms": observation.duration_ms })));
         }
         Ok(())
     }
@@ -891,8 +1121,10 @@ impl Agent {
         let action = Action::Bash { command: command.clone(), tool_call_id: None };
         self.messages.push(Message::user(format!("User command: \n```bash\n{command}\n```")).with_extra(json!({ "actions": [action] })));
         self.show_status(running_phase(std::slice::from_ref(&action)));
+        self.parts.events.action_started(0, &action);
         let observation = self.execute(&action);
         show_observation(&observation);
+        self.parts.events.action_finished(0, &action, &observation);
         let submitted = submission_from(&observation);
         self.push_observations(&[action], &[observation], None)?;
         Ok(match submitted { Some(text) => Step::Exit("Submitted".into(), text), None => Step::Continue })
@@ -922,14 +1154,18 @@ impl Agent {
         let last = self.messages.iter().rev().find(|m| m.role == Role::Exit);
         let exit_status = last.and_then(|m| m.extra["exit_status"].as_str()).unwrap_or("").to_string();
         let submission = last.map(|m| m.content.clone()).unwrap_or_default();
-        let session = self.parts.session.clone();
+        let mut session = self.parts.session.clone();
+        session.mcp_off = self.parts.mcp.off_names();
+        if self.parts.interaction.interactive {
+            session.work_seconds = work_clock::elapsed().as_secs_f64();
+        }
         let info = TrajectoryInfo { model_stats: self.stats.clone(), config: self.parts.config_record.clone(), umbra_version: env!("CARGO_PKG_VERSION").into(), exit_status: exit_status.clone(), submission, compactions: self.compaction.records.clone(), session: session.clone() };
         let trajectory = Trajectory { info, messages: self.messages.clone(), trajectory_format: "mini-swe-agent-1.1".into() };
         if let Err(error) = save_trajectory(&self.parts.trajectory_path, &trajectory) {
             eprintln!("umbra: could not save the trajectory: {error:#}");
         }
         let trajectory_path = absolute_path(&self.parts.trajectory_path).to_string_lossy().replace('\\', "/");
-        let entry = SessionIndexEntry { id: session.id, trajectory: trajectory_path, cwd: session.cwd, model: session.model, task: session.task, started_at: session.started_at, updated_at: now_seconds(), exit_status, api_calls: self.stats.api_calls, cost: self.stats.instance_cost, messages: self.messages.len() };
+        let entry = SessionIndexEntry { id: session.id, trajectory: trajectory_path, cwd: session.cwd, model: session.model, task: session.task, started_at: session.started_at, updated_at: now_seconds(), exit_status, api_calls: self.stats.api_calls, cost: self.stats.instance_cost, messages: self.messages.len(), title: session.title, summary: session.summary, mcp_off: session.mcp_off, work_seconds: session.work_seconds };
         if let Err(error) = save_index(&entry) {
             eprintln!("umbra: could not save the session index: {error:#}");
         }
@@ -993,12 +1229,29 @@ fn show_queued_message(text: &str) {
 /// words are kept in `extra.user_text` either way.
 /// @param task - the task text
 /// @param finish - how a turn ends
-fn new_task_message(task: &str, finish: Finish) -> Message {
+fn new_task_message(task: &str, typed: &str, finish: Finish) -> Message {
     let content = match finish {
         Finish::Reply => task.to_string(),
         Finish::Submit => format!("The user added a new task: {task}"),
     };
-    Message::user(content).with_extra(json!({ "interrupt_type": "UserNewTask", "user_text": task }))
+    Message::user(content).with_extra(json!({ "interrupt_type": "UserNewTask", "user_text": typed }))
+}
+
+/// The name of a built in command, as typed.
+/// @param command - the command
+fn command_name(command: &BuiltinCommand) -> &'static str {
+    match command {
+        BuiltinCommand::Config => "/config",
+        BuiltinCommand::Model(_) => "/model",
+        BuiltinCommand::Mcp => "/mcp",
+        BuiltinCommand::Mode(_) => "/mode",
+        BuiltinCommand::Clear => "/clear",
+        BuiltinCommand::Compact(_) => "/compact",
+        BuiltinCommand::Resume(_) => "/resume",
+        BuiltinCommand::Skills => "/skills",
+        BuiltinCommand::Help => "/help",
+        BuiltinCommand::Quit => "/quit",
+    }
 }
 
 /// The first sentence of an error, without its final full stop and starting lowercase, for a
@@ -1012,14 +1265,6 @@ fn first_sentence(error: &str) -> String {
         Some(first) => first.to_lowercase().chain(chars).collect(),
         None => "the reply could not be used".into(),
     }
-}
-
-/// Reads `/compact` or `/compact <focus>` typed at the follow up prompt. Returns the focus text,
-/// empty when there is none, or None for any other text.
-/// @param text - what the person typed
-fn compact_command(text: &str) -> Option<&str> {
-    let rest = text.trim().strip_prefix("/compact")?;
-    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
 }
 
 /// The status bar phase for a set of actions: the program a command starts, or the MCP tool,
@@ -1039,17 +1284,4 @@ fn running_phase(actions: &[Action]) -> Phase {
 /// Seconds since the Unix epoch, as a float.
 pub fn now_seconds() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::compact_command;
-
-    #[test]
-    fn reads_the_compact_command_and_its_focus() {
-        assert_eq!(compact_command("/compact"), Some(""));
-        assert_eq!(compact_command("  /compact keep the test names  "), Some("keep the test names"));
-        assert_eq!(compact_command("/compaction is broken"), None);
-        assert_eq!(compact_command("fix the build"), None);
-    }
 }

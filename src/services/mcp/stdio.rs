@@ -11,7 +11,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
 use crate::utils::interrupt;
-use crate::utils::process::own_process_group;
+use crate::utils::process::{own_process_group, ProcessJob};
 
 use super::transport::{is_server_request, notification_message, reply_to_server_request, request_message, response_result, Transport};
 
@@ -21,6 +21,9 @@ pub struct StdioTransport {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     responses: Receiver<Value>,
     next_id: u64,
+    /// Every process the server started, on Windows, where `cmd /c npx ...` starts the real
+    /// server as a grandchild that killing `cmd` would leave running.
+    job: Option<ProcessJob>,
 }
 
 impl StdioTransport {
@@ -39,12 +42,13 @@ impl StdioTransport {
             process.current_dir(dir);
         }
         let mut child = process.spawn().with_context(|| format!("could not start MCP server '{command}'"))?;
+        let job = ProcessJob::track(&child);
         let stdin = Arc::new(Mutex::new(Some(child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?)));
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
         let stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr"))?;
         let responses = spawn_stdout_reader(stdout, stdin.clone());
         spawn_stderr_logger(stderr, log_path.to_path_buf());
-        Ok(StdioTransport { child, stdin, responses, next_id: 1 })
+        Ok(StdioTransport { child, stdin, responses, next_id: 1, job })
     }
 
     /// Writes one message as a line.
@@ -105,12 +109,29 @@ impl Transport for StdioTransport {
         let deadline = Instant::now() + Duration::from_millis(500);
         while Instant::now() < deadline {
             if let Ok(Some(_)) = self.child.try_wait() {
-                return;
+                break;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(job) = &self.job {
+            job.kill();
+        }
+    }
+}
+
+impl Drop for StdioTransport {
+    /// Kills the server process when the connection is dropped without being closed, so a server
+    /// that missed its start deadline or was turned off does not stay behind.
+    fn drop(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        if let Some(job) = &self.job {
+            job.kill();
+        }
     }
 }
 

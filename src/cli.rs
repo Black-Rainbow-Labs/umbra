@@ -115,6 +115,10 @@ pub struct RunArgs {
     /// the terminal's alternate screen.
     #[arg(long)]
     pub no_fullscreen: bool,
+    /// Do not turn on mouse reporting in the fullscreen view. The terminal selects text itself and
+    /// everything is done with the keyboard.
+    #[arg(long)]
+    pub no_mouse: bool,
     /// Print every detail of the run: step headings with the cost, whole command outputs, full
     /// format errors and every compaction attempt.
     #[arg(long)]

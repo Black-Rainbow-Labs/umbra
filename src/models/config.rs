@@ -46,8 +46,9 @@ pub enum Mode {
 pub struct UmbraConfig {
     /// `provider/model`, for example `anthropic/claude-haiku-5-5` or `local/qwen`.
     pub model: String,
-    /// More `provider/model` strings an editor offers in its model picker, after `model`.
-    pub models: Vec<String>,
+    /// Named models (`[models.opus]` tables) and the older list of `provider/model` strings, both
+    /// offered in the model pickers after `model`.
+    pub models: ModelsConfig,
     pub mode: Mode,
     pub action_format: ActionFormat,
     /// How a turn ends: `reply` (a reply with no command) or `submit` (the submit command).
@@ -68,6 +69,11 @@ pub struct UmbraConfig {
     /// Open on the terminal's alternate screen with a scrollable transcript, as Claude Code's
     /// fullscreen mode does. Only in an interactive terminal.
     pub fullscreen: bool,
+    /// Turn on mouse reporting in the fullscreen view, so clicks and drags reach Umbra. Off, the
+    /// terminal selects text itself and everything is done with the keyboard.
+    pub mouse: bool,
+    pub sessions: SessionsConfig,
+    pub usage: UsageConfig,
     /// Print every detail of the run: step headings with the cost, whole command outputs, full
     /// format errors and every compaction attempt. Off, routine events take one line each.
     pub verbose: bool,
@@ -94,7 +100,7 @@ impl Default for UmbraConfig {
     fn default() -> Self {
         UmbraConfig {
             model: String::new(),
-            models: Vec::new(),
+            models: ModelsConfig::default(),
             mode: Mode::Confirm,
             action_format: ActionFormat::Tools,
             finish: Finish::Reply,
@@ -107,6 +113,9 @@ impl Default for UmbraConfig {
             status_bar: true,
             banner: true,
             fullscreen: true,
+            mouse: true,
+            sessions: SessionsConfig::default(),
+            usage: UsageConfig::default(),
             verbose: false,
             whitelist_actions: Vec::new(),
             output: String::new(),
@@ -388,5 +397,106 @@ impl Default for ImagesConfig {
     /// Claude's 1568 pixel long edge and the Claude API's 10 MB limit, with path detection on.
     fn default() -> Self {
         ImagesConfig { max_long_edge: 1568, max_bytes: 10 * 1024 * 1024, detect_paths: true }
+    }
+}
+
+/// Session listing settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionsConfig {
+    /// Ask the model for a session title and summary after the first turn.
+    pub auto_title: bool,
+}
+
+impl Default for SessionsConfig {
+    /// Titles on.
+    fn default() -> Self {
+        SessionsConfig { auto_title: true }
+    }
+}
+
+/// The weekly usage bar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UsageConfig {
+    /// Show the weekly usage bar for a Claude login.
+    pub enabled: bool,
+}
+
+impl Default for UsageConfig {
+    /// Usage on.
+    fn default() -> Self {
+        UsageConfig { enabled: true }
+    }
+}
+
+/// One `[models.<name>]` table: a short name for a provider and model.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NamedModel {
+    pub provider: String,
+    pub model: String,
+    /// Shown in pickers when set.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+impl NamedModel {
+    /// The `provider/model` string this name stands for.
+    pub fn spec(&self) -> String {
+        format!("{}/{}", self.provider, self.model)
+    }
+}
+
+/// The `models` setting. It is written either as a table of named models or, as before, as a list
+/// of `provider/model` strings. A table entry may also be a plain `provider/model` string.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ModelsConfig {
+    pub named: BTreeMap<String, NamedModel>,
+    pub listed: Vec<String>,
+}
+
+impl ModelsConfig {
+    /// Every `provider/model` string, named models first, without repeats.
+    pub fn specs(&self) -> Vec<String> {
+        let mut specs: Vec<String> = self.named.values().map(NamedModel::spec).collect();
+        for spec in &self.listed {
+            if !specs.contains(spec) {
+                specs.push(spec.clone());
+            }
+        }
+        specs
+    }
+}
+
+impl Serialize for ModelsConfig {
+    /// Writes the named models as a table, or the list when there are no named models.
+    /// @param serializer - the output
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.named.is_empty() { self.listed.serialize(serializer) } else { self.named.serialize(serializer) }
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelsConfig {
+    /// Reads a list of `provider/model` strings or a table of named models.
+    /// @param deserializer - the input
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let mut models = ModelsConfig::default();
+        match value {
+            Value::Array(items) => models.listed = items.into_iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            Value::Object(map) => {
+                for (name, entry) in map {
+                    let named = match entry {
+                        Value::String(spec) => match spec.split_once('/') { Some((p, m)) => NamedModel { provider: p.into(), model: m.into(), label: String::new() }, None => continue },
+                        other => serde_json::from_value(other).map_err(serde::de::Error::custom)?,
+                    };
+                    models.named.insert(name, named);
+                }
+            }
+            Value::Null => {}
+            _ => return Err(serde::de::Error::custom("models must be a list of provider/model strings or a table of named models")),
+        }
+        Ok(models)
     }
 }

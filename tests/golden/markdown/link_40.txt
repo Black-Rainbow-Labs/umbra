@@ -1,0 +1,7 @@
+See the docs (https://example.com/docs)
+and https://example.com and js
+(javascript:alert(1)) and a very long
+link text
+(https://example.com/a/very/long/path/th
+at/exceeds/width/of/narrow/terminal/rows
+) done.
