@@ -1,0 +1,12 @@
+; count down from 5 to 1
+PUSH 5
+loop:
+  DUP
+  PRINT
+  PUSH 1
+  SUB
+  DUP
+  JZ done
+  JMP loop
+done:
+  POP

@@ -1,0 +1,9 @@
+{
+  "id": "cut-resume",
+  "scenario": "cut-resume",
+  "timeoutSeconds": 600,
+  "phases": [
+    { "label": "work", "prompt": "The release code name for this sprint is amber-falcon-31. Remember it, but do not write it into any file. Create the folder data/ and in it the files a.txt, b.txt and c.txt, containing the words alpha, beta and gamma. Create each file with its own command. Then stop." },
+    { "label": "resume-after-cut", "mode": "resume", "from": 0, "cutSessionBytes": 400, "prompt": "Create release.txt containing only the release code name I gave you at the start, then stop." }
+  ]
+}

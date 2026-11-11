@@ -1,0 +1,7 @@
+{
+  "id": "inventory-64k-reconcile",
+  "contextWindow": 65536,
+  "stepLimit": 120,
+  "timeoutSeconds": 2700,
+  "prompt": "The folder weeks/ holds 40 weekly warehouse reports for one product, week-01.txt to week-40.txt. Each report states in words how many units were received and how many units were shipped that week, mixed in with other notes. Week 1 states the opening stock. Week 2 states the reorder point. Week 3 names the supplier.\n\nWork through the weeks one at a time, in order: read one file, then edit that file, and only then read the next. Do not write a script or a loop that handles several files; do every week yourself.\n\nFor each week, append a final line to that week's file in exactly this form:\n\nSTOCK: <n>\n\nwhere <n> is the stock at the end of that week in units, written in digits: the stock at the end of the week before (the opening stock for week 1) plus the units received minus the units shipped. A transfer that the report says was cancelled does not count. Change nothing else in the files.\n\nWhen all 40 weeks are done, write reconcile.json with exactly these keys: \"opening_stock\" (number), \"reorder_point\" (number), \"supplier\" (string, as written in week 3), \"final_stock\" (number, the stock at the end of week 40) and \"weeks_below_reorder\" (number of weeks whose end of week stock is lower than the reorder point). Then reply with the final stock."
+}

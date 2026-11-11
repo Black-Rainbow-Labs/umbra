@@ -3,6 +3,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { readJsonl, writeJson } from "../src/utils/files.mjs";
 
 export const name = "pi";
@@ -34,12 +35,37 @@ function writeAgentDir(input) {
  */
 export function buildLaunch(input) {
   writeAgentDir(input);
-  const args = [PI_CLI, "-p", "--mode", "json", "--no-mcp", "--no-context-files", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--provider", PROVIDER, "--model", input.model];
+  const env = { ...process.env, PI_CODING_AGENT_DIR: input.homeDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0" };
+  const common = ["--no-mcp", "--no-context-files", "--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--provider", PROVIDER, "--model", input.model];
+  const artifacts = { eventsPath: path.join(input.phaseDir, "stdout.log"), homeDir: input.homeDir };
+  if (input.resume?.mode === "branch") return { command: process.execPath, args: branchArgs(input, common), env, cwd: input.workspaceDir, artifacts };
+  const args = [PI_CLI, "-p", "--mode", "json", ...common];
   if (input.resume?.mode === "resume") args.push("--session", input.resume.sessionRef);
   if (input.resume?.mode === "fork") args.push("--fork", input.resume.sessionRef);
   args.push("--", input.prompt);
-  const env = { ...process.env, PI_CODING_AGENT_DIR: input.homeDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0" };
-  return { command: process.execPath, args, env, cwd: input.workspaceDir, artifacts: { eventsPath: path.join(input.phaseDir, "stdout.log"), homeDir: input.homeDir } };
+  return { command: process.execPath, args, env, cwd: input.workspaceDir, artifacts };
+}
+
+/**
+ * Builds the arguments for a branch at an earlier user message. pi's print mode can only fork a
+ * whole session, so the branch goes through pi's RPC mode: piRpcBranch.mjs forks before the user
+ * message the branched phase sent and then sends the new prompt.
+ * @param input - the AdapterInput
+ * @param common - the pi options every launch uses
+ */
+function branchArgs(input, common) {
+  const specPath = path.join(input.phaseDir, "branch-spec.json");
+  writeJson(specPath, { piCli: PI_CLI, piArgs: common, sessionRef: input.resume.sessionRef, beforePrompt: input.resume.beforePrompt, prompt: input.prompt });
+  return [path.join(path.dirname(fileURLToPath(import.meta.url)), "piRpcBranch.mjs"), specPath];
+}
+
+/**
+ * Returns the session file pi resumes a session from.
+ * @param homeDir - the PI_CODING_AGENT_DIR
+ * @param sessionRef - the session id
+ */
+export function sessionStoreFile(homeDir, sessionRef) {
+  return findSessionFile(homeDir, sessionRef);
 }
 
 /**
@@ -83,8 +109,8 @@ export function readArtifacts(launch) {
   const malformed = toolEnds.filter((event) => event.isError && MALFORMED_PATTERNS.some((re) => re.test(resultText(event)))).length;
   const turnEnds = events.filter((event) => event.type === "turn_end");
   const lastStop = turnEnds.length ? turnEnds[turnEnds.length - 1].message?.stopReason || null : null;
-  const compactions = events.filter((event) => /compaction/i.test(event.type || "") && /end|done/i.test(event.type || "")).length;
-  const sessionRef = header?.id || null;
+  const compactions = events.filter((event) => event.type === "compaction_start").length;
+  const sessionRef = [...events].reverse().find((event) => event.type === "session")?.id || header?.id || null;
   return {
     sessionRef, ...checkSessionFile(findSessionFile(launch.artifacts.homeDir, sessionRef)),
     malformedToolCalls: malformed, agentExitStatus: lastStop, toolCalls: toolEnds.length, compactions,

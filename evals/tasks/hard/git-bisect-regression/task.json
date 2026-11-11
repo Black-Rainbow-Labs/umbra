@@ -1,0 +1,6 @@
+{
+  "id": "git-bisect-regression",
+  "prompt": "This repository is a small invoice library with about 40 commits on the branch main. Running `node --test` in the project folder shows a failing test (the tax rounding test). That test used to pass, so some commit in the history broke it, and every commit after that one is broken too.\n\nDo these three things:\n1. Find the first commit where the suite fails (`git bisect` or checking commits one at a time both work). Write its full 40 character hash to a file named FIRST_BAD.txt in the project root: the hash and one newline, nothing else.\n2. Fix the bug on the current branch so that all tests pass. Do not edit any file in test/. Features that were added after the broken commit must keep working, so do not revert the whole history or restore old files wholesale: change only what is wrong in the code as it is today.\n3. Put FIRST_BAD.txt and the fix in one new commit on top of the current HEAD with exactly this commit message: `Fix tax rounding regression`.\n\nDo not rewrite, reorder or delete any existing commit (no reset, rebase or amend of old commits). When you finish, you must be on branch main with a clean working tree, and any `git bisect` session must be ended (`git bisect reset`).",
+  "timeoutSeconds": 1500,
+  "stepLimit": 150
+}

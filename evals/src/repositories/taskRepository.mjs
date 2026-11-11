@@ -7,7 +7,7 @@ import { readJson } from "../utils/files.mjs";
 
 export const EVALS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const TASKS_DIR = path.join(EVALS_DIR, "tasks");
-const CATEGORY_ORDER = ["smoke", "create", "bugfix", "edit-precision", "navigate", "large-output", "instructions", "compaction", "session"];
+const CATEGORY_ORDER = ["smoke", "create", "bugfix", "edit-precision", "navigate", "large-output", "instructions", "compaction", "session", "hard"];
 
 /**
  * Loads every task, sorted by category order and then by id.

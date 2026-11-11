@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { runCell } from "./cellService.mjs";
 import { waitForIdleServer } from "./serverCheck.mjs";
 import { loadAllTasks, selectTasks } from "../repositories/taskRepository.mjs";
@@ -31,6 +32,16 @@ export function adaptersFor(names) {
 function agentVersions() {
   const read = (command, args) => (spawnSync(command, args, { encoding: "utf8", windowsHide: true }).stdout || "").trim();
   return { umbra: read(umbraAdapter.UMBRA_BIN, ["--version"]), pi: read(process.execPath, [process.env.PI_CLI_JS || "C:/nvm4w/nodejs/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", "--version"]), node: process.version };
+}
+
+/**
+ * Describes the Umbra build under test: the binary, and the git commit of the checkout these
+ * evals live in, with a flag when its Rust sources have uncommitted changes.
+ */
+function umbraBuild() {
+  const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  const git = (args) => (spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", windowsHide: true }).stdout || "").trim();
+  return { bin: umbraAdapter.UMBRA_BIN, commit: git(["rev-parse", "--short", "HEAD"]), dirty: git(["status", "--porcelain", "--", "src", "Cargo.toml", "Cargo.lock"]) !== "" };
 }
 
 /**
@@ -84,7 +95,7 @@ export async function runEval(options) {
   const sampling = DEFAULT_SAMPLING;
   const versions = agentVersions();
   checkVersionsUnchanged(options.runId, versions);
-  writeRunMeta(options.runId, { runId: options.runId, agents: options.agents, reps: options.reps, tasks: tasks.map((t) => t.id), model, sampling, versions, lastStartedAt: new Date().toISOString() });
+  writeRunMeta(options.runId, { runId: options.runId, agents: options.agents, reps: options.reps, tasks: tasks.map((t) => t.id), model, sampling, versions, ...(options.agents.includes("umbra") ? { umbraBuild: umbraBuild() } : {}), lastStartedAt: new Date().toISOString() });
   console.log(`run ${options.runId}: ${tasks.length} tasks x ${adapters.length} agents x ${options.reps} reps`);
   const ping = await waitForIdleServer(model);
   console.log(`server idle (tiny request ${ping.ms} ms)`);

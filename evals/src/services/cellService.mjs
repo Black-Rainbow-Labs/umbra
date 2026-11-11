@@ -10,6 +10,7 @@ import { taskPhases, importTaskModule } from "../repositories/taskRepository.mjs
 import { writeCellResult } from "../repositories/runRepository.mjs";
 import { copyTree, removeCreatedTree, readJsonl } from "../utils/files.mjs";
 import { UPSTREAM, WORK_ROOT } from "../utils/config.mjs";
+import { reachedTaskDefinitions } from "./scorecardCells.mjs";
 
 /**
  * Creates the agent's workspace outside the repository, so the agent cannot find the
@@ -85,7 +86,7 @@ export async function runCell(ctx) {
   }
   const requests = readJsonl(requestsPath);
   const verdict = await runVerifier(task, scratch.workspaceDir, { task, agent: adapter.name, phases, requests, taskDir: task.dir });
-  const result = buildCellResult({ task, adapter, rep: ctx.rep, phases, requests, verdict, startedAt });
+  const result = buildCellResult({ task, adapter, rep: ctx.rep, phases, requests, verdict, startedAt, isolationBreach: reachedTaskDefinitions(cellDir) });
   saveWorkspace(task, scratch, cellDir);
   writeCellResult(cellDir, result);
   return result;
@@ -113,11 +114,11 @@ function buildCellResult(input) {
   const { task, adapter, phases, requests, verdict } = input;
   const windowExceededCount = requests.filter((r) => r.windowExceeded).length;
   const usesWindow = Boolean(task.contextWindow || taskPhases(task).some((p) => p.contextWindow));
-  const pass = verdict.pass && !(usesWindow && windowExceededCount > 0);
+  const pass = verdict.pass && !(usesWindow && windowExceededCount > 0) && !input.isolationBreach;
   return {
     taskId: task.id, category: task.category, scenario: task.scenario || null, agent: adapter.name, rep: input.rep,
     pass, score: verdict.score, verifierPass: verdict.pass, detail: verdict.detail,
-    windowExceededCount, contextWindow: task.contextWindow || null,
+    windowExceededCount, contextWindow: task.contextWindow || null, isolationBreach: Boolean(input.isolationBreach),
     wallMs: phases.reduce((sum, p) => sum + p.wallMs, 0),
     timedOut: phases.some((p) => p.killReason === "timeout"), stepLimitHit: phases.some((p) => p.killReason === "step-limit" || p.agentExitStatus === "LimitsExceeded"),
     exitCodes: phases.map((p) => p.exitCode), nonzeroExit: phases.some((p) => p.killReason !== "planned-interrupt" && p.exitCode !== 0),

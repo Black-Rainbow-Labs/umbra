@@ -15,7 +15,7 @@ server on `http://127.0.0.1:8080`.
 ```
 node evals/run.mjs run --agents umbra,pi --reps 1 [--tasks id,id] [--category x] [--run-id name]
 node evals/run.mjs selftest [--tasks id,id] [--category x]
-node evals/run.mjs report <run id> [--compare <other run id>]
+node evals/run.mjs report <run id> [--compare <other run id>] [--ref <pi reference run id>]
 node evals/run.mjs proxycheck [--run <run id>]
 ```
 
@@ -32,7 +32,14 @@ node evals/run.mjs proxycheck [--run <run id>]
 - `selftest` checks every task, including the ones left out of default runs: the verifier must
   fail on the untouched workspace and pass with score 1 on the reference solution.
 - `report` writes `scorecard.md` and `scorecard.json` into the run folder and prints the markdown.
-  `--compare` adds the other run's Umbra and pi values beside each head to head row.
+  `--compare` adds the other run's Umbra and pi values beside each head to head row. A run that
+  measured Umbra only is compared with pi's cells from the reference run, `pi-1.3.0-ref` unless
+  `--ref` names another. pi does not change, so it is measured once, 3 reps, and every later run
+  is Umbra only. Only tasks that both agents ran are scored.
+- `run.json` records `umbraBuild`: the `UMBRA_BIN` path, the git commit of this checkout, and
+  whether its Rust sources had uncommitted changes. The scorecard header prints it. Build the
+  binary under test with `cargo build --release --manifest-path <worktree>/Cargo.toml` and pass
+  it as `UMBRA_BIN`.
 - `proxycheck` sends one streaming request through a proxy and checks that chunks arrive over
   time (no buffering), that usage and timings are recorded, and with `--run` that every chat
   request in that run has usage, per agent.
@@ -103,7 +110,8 @@ through chunk by chunk.
 - Each request is one line in `requests.jsonl`: start time, `firstByteMs`, `firstContentMs`
   (first content, reasoning or tool call delta), `durationMs`, `usage` (prompt_tokens,
   cached_tokens, completion_tokens, reasoning_tokens, from the final SSE chunk), the server's
-  `timings`, `messageCount`, `toolCount`, `systemBytes`, `toolsBytes`, `finishReason`,
+  `timings`, `messageCount`, `messageHashes` (a short hash of each message, in order),
+  `toolCount`, `systemBytes`, `toolsBytes`, `finishReason`,
   `hasToolCall`, `status`, `aborted` (the agent dropped the connection, for example when it was
   killed), `phase`, `contextWindow` and `windowExceeded`.
 - On GET responses with JSON (`/props`, `/v1/models`), when the task sets `contextWindow`, every
@@ -140,16 +148,24 @@ through chunk by chunk.
 | Runs with a nonzero exit | Cells where a phase exited nonzero or was killed, except a planned interrupt |
 | Compaction pass rate, mean score | The same two numbers on the `compaction` category only |
 | Requests over the context window | Requests marked `windowExceeded` |
-| Compactions | Requests whose message count dropped compared with the previous request of the same session; a run of drops in a row (a summary call, then the rebuilt history) counts once. Umbra's mask pass rewrites old tool outputs without removing messages, so it is not counted here; the agents' own counts are shown beside it |
+| Compactions | Requests that changed an earlier message of the request before them in the same phase (from `messageHashes`), instead of only adding messages at the end. This counts a summary (messages removed) and Umbra's mask pass (old outputs rewritten in place) alike, and it is what stops the server's prompt cache from matching. Across a resume, and for records without hashes, a drop in the message count counts. A run of compactions in a row (a summary call, then the rebuilt history) counts once. The agents' own counts (Umbra's `info.compactions`, pi's `compaction_start` events) are shown beside it |
 | Cache hit rate after a compaction | Cached over prompt tokens on the 5 requests that start at each compaction |
 | Peak prompt tokens on window tasks | Largest `prompt_tokens` on any task with a context window |
-| Session pass rate | Pass rate per session scenario (resume, interrupt, fork, long-resume) |
+| Session pass rate | Pass rate per session scenario (resume, interrupt, fork, long-resume, branch, cut-resume, long-resume-300) |
+| Resume startup ms, long session | Time from launching the agent to its first model request when it resumes the 300 step session of `long-300-resume` |
+| Session store bytes written per step | Bytes the agent process wrote while it built the 300 step session (Windows `WriteTransferCount`, read every half second), minus its own stdout and stderr, divided by the model requests of that phase |
+| Runs that reached evals/tasks | Cells whose transcript (pi's event stream, Umbra's trajectory) names a path under `evals/tasks`. Such a cell fails, whatever the verifier said |
+| Hard tier pass rate, mean score | The same two numbers on the `hard` category only |
 
-The head to head table lists each metric with the Umbra value, the pi value, which is better and
-(Umbra - pi) / pi. With more than one rep, a paired sign test over tasks compares the pass rates.
-The scorecard ends with the metrics where Umbra is not strictly better than pi. A tie at the best
-possible value (0 errors, a 100% rate) is not listed, because neither agent can improve on it.
-The hill climb is finished when that list is empty for 3 reps.
+The head to head table lists each metric with the Umbra value, the pi value, pi's noise band,
+which is better and (Umbra - pi) / pi. Each value is the mean of that agent's per rep values, so
+"total" rows are totals per rep and a 1 rep run and a 3 rep run are on the same scale. The noise
+band is the largest minus the smallest of pi's per rep values. A difference no larger than the
+band is a tie (`tie (noise)`). With more than one rep, a paired sign test over tasks compares the
+pass rates, once over all tasks and once over the hard tier. The scorecard ends with the metrics
+where Umbra is not strictly better than pi. A tie at the best possible value (0 errors, a 100%
+rate) is not listed, because neither agent can improve on it. The hill climb is finished when
+that list is empty for 3 reps.
 
 ## Known differences left as shipped
 
@@ -171,7 +187,9 @@ The hill climb is finished when that list is empty for 3 reps.
 | large-output (3) | buried-log-line, buried-test-failure, giant-json-line | A 40 MB log, a 20,000 line test run and a 9 MB one line JSON file, each with one fact to act on |
 | instructions (3) | vendored-slugify, no-new-dependencies, orders-report | Constraints in the prompt (a file that must not change, no new dependencies, an exact output file and format), checked together with the result |
 | compaction (4) | records-threshold, facts-report, glossary-codes, ledger-balance | `contextWindow` 32768; 30 to 40 files of about 2,000 tokens each processed one at a time, with a rule from the prompt and facts from the first files needed at the end; score is the fraction of items right |
-| session (4) | resume-decisions, interrupt-continue, fork-branch, long-resume | Resume with a rule only the first prompt stated; a kill 20 seconds in and "continue"; a fork whose message the resumed original must not see; a resume of a history larger than 32768 tokens with a 32768 window |
+| compaction, added for the hill climb (5) | notes-16k-roster, orders-16k-audit, inventory-64k-reconcile, contracts-64k-clauses, long-150-steps | The same design at a 16,384 and a 65,536 window, and a task of about 150 tool calls at 32,768, so facts from the start must survive several compactions |
+| session (7) | resume-decisions, interrupt-continue, fork-branch, long-resume, branch-earlier, cut-resume, long-300-resume | Resume with a rule only the first prompt stated; a kill 20 seconds in and "continue"; a fork whose message the resumed original must not see; a resume of a history larger than 32768 tokens with a 32768 window; a branch from just before an earlier prompt, which must not see that prompt (pi branches through its RPC mode, `agents/piRpcBranch.mjs`, because its print mode cannot); a resume after the runner cut the last 400 bytes off the session file; a 300 step session, resumed, with the resume startup time and the session store bytes per step measured |
+| hard (20) | see `evals/tasks/hard/` | Work sized so that pi passes about 40% to 70%: changes across 5 or more files, a bug whose cause is in a different module from its symptom, a refactor that must keep 40 tests passing, specifications with 8 or more numbered requirements each scored, tasks of 40 or more steps, and Windows traps (CRLF files, paths with spaces, tabs, BOMs and UTF-16, text mode writes) |
 
 ## Adding a task
 
@@ -196,7 +214,12 @@ records) and `taskDir`. In selftest it also has `selftest: true` and synthetic p
 A phased task replaces `prompt` with `phases`: a list of `{ label, prompt, mode, from,
 killAfterSeconds, contextWindow }`, where `mode` is `new`, `resume` or `fork`, `from` is the index
 of the phase whose session is resumed or forked, `killAfterSeconds` makes the runner kill the
-agent during that phase, and `contextWindow` overrides the task's window for that phase.
+agent during that phase, and `contextWindow` overrides the task's window for that phase. Also:
+`mode: "branch"` with `at` continues the session of phase `from` from just before the user
+message that phase `at` sent (Umbra `--resume <id> --at <n> --fork`); `cutSessionBytes` cuts that
+many bytes off the end of the session file before the phase resumes it; `measureStoreWrites` and
+`measureResumeStartup` record the measurements described under Metrics; `stepLimit` overrides
+the task's step limit for that phase.
 
 Rules for tasks: solvable in under 5 minutes by a capable agent, no network or Docker, only Node,
 Python (standard library), git and Git Bash tools. Verifiers check behavior (run the code, run

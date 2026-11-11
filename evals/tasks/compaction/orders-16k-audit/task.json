@@ -1,0 +1,7 @@
+{
+  "id": "orders-16k-audit",
+  "contextWindow": 16384,
+  "stepLimit": 80,
+  "timeoutSeconds": 2700,
+  "prompt": "The folder orders/ holds 24 order files, order-01.txt to order-24.txt. Each file states in words how many units were ordered and the price in dollars of one unit. Order 1 also states the sales tax rate in percent that applies to every order.\n\nProcess the orders strictly one at a time, in order: read one file, then edit that same file, and only then read the next one. Do not write a script or a loop that handles several files; handle every file yourself.\n\nFor each order, append one final line to the end of the file in exactly this form:\n\nTOTAL: <n>\n\n<n> is units times unit price plus the sales tax on that amount, in whole dollars written in digits. A quantity change that the file says was not approved does not count. Change nothing else in the files.\n\nWhen all 24 files are done, write summary.json with exactly these keys: \"tax_rate\" (number, the percent from order 1), \"order_count\" (number of orders), \"grand_total\" (number, the sum of all 24 TOTAL values) and \"largest_order\" (number, the file number of the order with the highest TOTAL). Then reply with the grand total."
+}

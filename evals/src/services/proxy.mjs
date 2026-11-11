@@ -58,6 +58,7 @@ async function handleRequest(ctx) {
     body = prepareChatBody(body, ctx.options.sampling, record);
     state.chatCount += 1;
     state.phaseChatCount += 1;
+    if (state.phaseChatCount === 1) state.phaseFirstChatAt = started;
     ctx.options.onChatRequest?.(state.phaseChatCount);
   }
   state.inFlight += 1;
