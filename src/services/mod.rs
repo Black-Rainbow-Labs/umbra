@@ -8,6 +8,7 @@ pub mod command_service;
 pub mod compaction_service;
 pub mod context_service;
 pub mod environment;
+pub mod finish_check_service;
 pub mod image_service;
 pub mod inspect_service;
 pub mod interaction_service;

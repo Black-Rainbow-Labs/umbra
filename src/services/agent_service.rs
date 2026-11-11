@@ -20,6 +20,7 @@ use super::session_title_service::{initial_title, request_title, summary_from_co
 use super::{usage_service, work_clock};
 use super::compaction_service::{apply_mask, budget_for, estimate_history_tokens, estimate_request_tokens, estimate_tools_tokens, find_cut, mask_record, plan_mask, resolve_window, summarizable_tokens, summarize, summary_record, ReportedSize, SummaryInputs};
 use super::environment::{submission_from, Environment};
+use super::finish_check_service::{FinishCheck, FINISH_CHECK_TEXT};
 use super::image_service::images_in_text;
 use super::interaction_service::{show_assistant, show_event, show_observation, show_reply_text, show_turn_end, show_user_text, Comment, Decision, HumanInput, Interaction, Tone, TurnSummary};
 use super::session_service::ResumedSession;
@@ -158,6 +159,8 @@ pub struct Agent {
     title_job: Option<std::thread::JoinHandle<Option<(String, String, f64)>>>,
     /// True once the first turn has ended, so the title is asked for once.
     titled: bool,
+    /// Asks the model to check its work when it replies right after changing files.
+    finish_check: FinishCheck,
 }
 
 /// What the agent tracks for compaction.
@@ -188,7 +191,8 @@ impl Agent {
         let mcp = &parts.config.mcp;
         let deferred = !mcp_tools.is_empty() && should_defer(mcp.defer_tools, mcp_tokens, window, mcp.defer_ratio);
         let compaction = CompactionState { window: Some(window), ..Default::default() };
-        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, announced_failures: BTreeSet::new(), title_job: None, titled: false };
+        let finish_check = FinishCheck::new(parts.config.finish_check && parts.config.finish == Finish::Reply && parts.config.environment.kind == "local");
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check };
         agent.rebuild_tools();
         agent
     }
@@ -498,6 +502,7 @@ impl Agent {
             self.parts.session.title = initial_title(typed);
         }
         self.messages.push(new_task_message(task, typed, self.parts.config.finish).with_images(images));
+        self.finish_check.start_turn();
     }
 
     /// Makes the step, cost and time limits count from now, for a front end that runs one turn
@@ -1034,6 +1039,10 @@ impl Agent {
         self.messages.push(assistant_message(response, &[]));
         show_assistant(self.stats.api_calls, self.stats.instance_cost, &response.content, &[]);
         self.parts.events.reply(&response.content, &[]);
+        if self.finish_check.should_ask() {
+            self.messages.push(Message::user(FINISH_CHECK_TEXT).with_extra(json!({ "interrupt_type": "FinishCheck" })));
+            return Step::Continue;
+        }
         Step::Exit(REPLIED_STATUS.into(), response.content.trim().to_string())
     }
 
@@ -1076,9 +1085,14 @@ impl Agent {
         let mut submitted = None;
         for (index, action) in actions.iter().enumerate() {
             self.parts.events.action_started(index, action);
+            let is_bash = matches!(action, Action::Bash { .. });
+            if is_bash {
+                self.finish_check.before_command(&self.parts.cwd);
+            }
             let observation = self.execute(action);
-            if matches!(action, Action::Bash { .. }) {
+            if is_bash {
                 submitted = submission_from(&observation);
+                self.finish_check.after_command(&self.parts.cwd);
             }
             if submitted.is_none() || console::is_verbose() {
                 show_observation(&observation);

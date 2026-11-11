@@ -57,6 +57,10 @@ pub struct UmbraConfig {
     pub cost_limit: f64,
     pub wall_time_limit_seconds: u64,
     pub max_consecutive_format_errors: u32,
+    /// When the model replies to end its turn right after a command that changed files, with no
+    /// command run since, send it one message asking it to run the check that proves the change
+    /// and compare the result with the request. Once per turn.
+    pub finish_check: bool,
     /// Ask for a follow up task when the agent submits, instead of exiting.
     pub confirm_exit: bool,
     /// An empty line at the task prompt or the follow up prompt asks again instead of ending the run.
@@ -108,6 +112,7 @@ impl Default for UmbraConfig {
             cost_limit: 3.0,
             wall_time_limit_seconds: 0,
             max_consecutive_format_errors: 3,
+            finish_check: true,
             confirm_exit: true,
             keep_open: false,
             status_bar: true,

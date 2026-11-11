@@ -190,3 +190,43 @@ fn no_model_is_reported_before_the_prompt() {
     assert!(shown.contains("umbra setup"), "the message names the setup command:\n{shown}");
     assert!(!shown.contains("What do you want to do?"), "no prompt is shown when no model can answer it:\n{shown}");
 }
+
+#[test]
+fn a_reply_right_after_a_file_change_gets_one_finish_check() {
+    let scratch = Scratch::new("finish-check");
+    let work = scratch.path("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let model = script(&scratch, json!([
+        { "content": "Writing the file.", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo hello > out.txt" } }] },
+        "Done, the file is written.",
+        "Still done."
+    ]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "--cwd", &slash(&work), "-o", &slash(&traj), "write a file"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let trajectory = read_trajectory(&traj);
+    let messages = trajectory["messages"].as_array().unwrap();
+    let checks = messages.iter().filter(|m| m["extra"]["interrupt_type"] == "FinishCheck").count();
+    assert_eq!(checks, 1, "exactly one finish check");
+    assert_eq!(trajectory["info"]["exit_status"], "Replied");
+    assert_eq!(trajectory["info"]["submission"], "Still done.");
+}
+
+#[test]
+fn a_reply_after_a_check_command_ends_the_turn() {
+    let scratch = Scratch::new("finish-check-ran");
+    let work = scratch.path("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let model = script(&scratch, json!([
+        { "content": "Writing.", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo hello > out.txt" } }] },
+        { "content": "Checking.", "tool_calls": [{ "name": "bash", "arguments": { "command": "cat out.txt" } }] },
+        "Done."
+    ]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "--cwd", &slash(&work), "-o", &slash(&traj), "write a file"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let trajectory = read_trajectory(&traj);
+    let checks = trajectory["messages"].as_array().unwrap().iter().filter(|m| m["extra"]["interrupt_type"] == "FinishCheck").count();
+    assert_eq!(checks, 0);
+    assert_eq!(trajectory["info"]["submission"], "Done.");
+}
