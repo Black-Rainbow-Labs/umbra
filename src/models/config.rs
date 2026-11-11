@@ -233,6 +233,10 @@ pub struct ProviderConfig {
     pub preserve_thinking: Option<bool>,
     /// The model's context window in tokens, used instead of asking the server.
     pub context_window: Option<u64>,
+    /// OpenAI compatible servers with a Qwen style chat template: `on` or `off` sends
+    /// `chat_template_kwargs.enable_thinking`, and `first` thinks only on the first request of a
+    /// turn (the one that answers a person's message). Unset leaves it to the server.
+    pub thinking: Option<String>,
 }
 
 /// Which other harnesses' files Umbra reads. All are on by default.

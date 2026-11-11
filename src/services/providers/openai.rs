@@ -52,6 +52,12 @@ impl OpenAiProvider {
         if self.config.preserve_thinking.unwrap_or_else(|| is_local_url(&self.config.base_url)) {
             body["chat_template_kwargs"] = json!({ "preserve_thinking": true });
         }
+        if let Some(enable) = thinking_for(self.config.thinking.as_deref(), messages) {
+            if !body["chat_template_kwargs"].is_object() {
+                body["chat_template_kwargs"] = json!({});
+            }
+            body["chat_template_kwargs"]["enable_thinking"] = json!(enable);
+        }
         apply_extra_body(&mut body, &self.config);
         body
     }
@@ -183,6 +189,20 @@ impl Provider for OpenAiProvider {
             }
         }
         fetch_json(&agent, &format!("{base}/models"), &headers).and_then(|models| window_from_models(&models, &self.model))
+    }
+}
+
+/// Decides `enable_thinking` for one request from the `thinking` setting: `on`, `off`, or
+/// `first`, which thinks only when the newest message is the person's (the first request of a
+/// turn). None sends nothing.
+/// @param setting - the provider's `thinking` setting
+/// @param messages - the conversation
+fn thinking_for(setting: Option<&str>, messages: &[Message]) -> Option<bool> {
+    match setting? {
+        "on" => Some(true),
+        "off" => Some(false),
+        "first" => Some(messages.iter().rev().find(|m| m.role != Role::Exit).is_some_and(|m| m.role == Role::User && m.tool_call_id.is_none())),
+        _ => None,
     }
 }
 
@@ -587,6 +607,20 @@ mod tests {
         assert!(body.get("chat_template_kwargs").is_none());
         let body = OpenAiProvider::new(config("http://localhost:8080/v1", Some(false)), "m").request_body(&[], &[]);
         assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
+    fn the_thinking_setting_turns_thinking_on_off_or_on_for_the_first_request_of_a_turn() {
+        let config = |thinking: &str| ProviderConfig { kind: "openai".into(), base_url: "http://127.0.0.1:8080/v1".into(), thinking: Some(thinking.into()), ..Default::default() };
+        let user = vec![Message::user("go")];
+        let after_tool = vec![Message::user("go"), Message::new(Role::Assistant, ""), Message::tool("1", "out")];
+        let enable = |thinking: &str, messages: &[Message]| OpenAiProvider::new(config(thinking), "m").request_body(messages, &[])["chat_template_kwargs"]["enable_thinking"].clone();
+        assert_eq!(enable("off", &user), json!(false));
+        assert_eq!(enable("on", &after_tool), json!(true));
+        assert_eq!(enable("first", &user), json!(true));
+        assert_eq!(enable("first", &after_tool), json!(false));
+        let body = OpenAiProvider::new(config("first"), "m").request_body(&user, &[]);
+        assert_eq!(body["chat_template_kwargs"]["preserve_thinking"], true, "preserve_thinking is kept beside it");
     }
 
     #[test]

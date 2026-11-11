@@ -99,6 +99,7 @@ const MODELS_AND_PROVIDERS: &[SettingSpec] = &[
     s!("providers.*.context_window", Providers, "Context window", "Tokens. The model's window, used instead of asking the server.", Integer { min: 0, max: 100_000_000 }, Call),
     s!("providers.*.stream", Providers, "Stream", "OpenAI compatible servers: stream the reply so Ctrl+C stops generation.", Toggle, Call),
     s!("providers.*.send_reasoning", Providers, "Send reasoning back", "OpenAI compatible servers: send each reply's reasoning text back, so the server's prompt cache covers the whole history.", Toggle, Call),
+    s!("providers.*.thinking", Providers, "Thinking", "Qwen style templates: on, off, or first (think only on the first request of a turn). Empty leaves it to the server.", Text, Call),
     s!("providers.*.preserve_thinking", Providers, "Preserve thinking", "OpenAI compatible servers: ask the chat template to keep earlier turns' reasoning. On by default for a server on this machine.", Toggle, Call),
 ];
 
