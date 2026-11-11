@@ -9,7 +9,28 @@ Umbra talks to two kinds of API, plus a scripted one for tests.
 | `replay` | none | Returns replies from a JSON file, for tests and demos |
 
 Choose a model with `-m provider/model`. The provider is a name from the table below or from your
-config.
+config. A model can also have a short name:
+
+```toml
+model = "opus"                       # a name from [models], or provider/model
+
+[models.opus]
+provider = "anthropic"
+model = "claude-opus-5-5"
+label = "Opus 5.5"                   # optional, shown in the pickers
+
+[models.qwen]
+provider = "local"
+model = "qwen3.6-27b"
+```
+
+`-m opus`, `UMBRA_MODEL=opus` and `model = "opus"` all look the name up in `[models.<name>]`
+first. A value that is not a name is read as `provider/model`, and a bare `claude-...` name means
+the `anthropic` provider. The older form, `models = ["local/qwen"]`, still works. Both forms fill
+the `/model` picker in the fullscreen view, which lists the named models, then the listed ones,
+then the current model if it is in neither, and ends with `Other...` for a `provider/model` typed
+by hand. Choosing a model checks its credential and switches the model for the rest of the session
+without changing the config file. See [the fullscreen view](../README.md#the-fullscreen-view).
 
 | Provider | Kind | Base URL | Key read from |
 |---|---|---|---|
@@ -42,6 +63,15 @@ Umbra finds a credential in this order:
 
 Set `auth = "api_key"` to use only a key, or `auth = "claude_code"` to use only the Claude Code
 login.
+
+**Weekly usage.** When the session uses the Claude Code login (or `ANTHROPIC_AUTH_TOKEN`), the
+status bar shows the share of the weekly limit used, as `week ███░░░ 23%`. Umbra asks
+`https://api.anthropic.com/api/oauth/usage` with the login's token, at most every 180 seconds, and
+shows the `seven_day` value. After an HTTP 429 Umbra keeps the last value, draws it dim, and waits
+2, 5, 10, 20 and then 30 minutes between polls. After an HTTP 401 the bar is hidden and Umbra asks
+again after 5 minutes. A session that uses an API key or a local server shows no bar. The token is
+sent only to `api.anthropic.com`, never to a `base_url` from a config file. `usage.enabled = false`
+turns the polling and the bar off.
 
 What Umbra sends:
 
@@ -101,6 +131,21 @@ extra_body = { chat_template_kwargs = { enable_thinking = false } }
 | `max_retries` | Retries after the first attempt (default 9) |
 | `stream` | OpenAI compatible servers only: stream replies (default true). Set it to false for a server that rejects `stream` or `stream_options`. |
 | `replay_file` | Replay only: the script file |
+
+## Testing a provider
+
+In the `/config` modal, every provider has a Test button. It runs three steps on a worker thread and
+shows one line for each:
+
+1. Credentials: which credential was found (an API key from the config, an environment variable, or
+   the Claude Code login and when it expires). The value is never shown.
+2. Reachability: for an OpenAI compatible server, `GET <base_url>/models` with the HTTP status, the
+   time taken and the number of models listed. For llama.cpp, `GET /props` is also tried and shows
+   the loaded model and the context size.
+3. Completion: a one message "Say hello." request to the provider's model, with the time taken and
+   the first 60 characters of the reply, or the HTTP status and the first line of the error.
+
+`umbra setup` runs the same completion request.
 
 ## Streaming and Ctrl+C
 

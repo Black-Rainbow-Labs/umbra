@@ -4,6 +4,12 @@ The [Model Context Protocol](https://modelcontextprotocol.io) lets a program off
 model. Umbra is an MCP client: it starts the servers it finds, asks each for its tools, offers
 those tools to the model next to `bash`, and runs a tool when the model calls it.
 
+Umbra starts the servers in the background when it starts. In the fullscreen view and in an inline
+run at a terminal, a prompt typed while the servers are still starting gets a reply at once, and a
+server's tools are offered from the first model call after the server is ready. A run with no
+terminal waits for the servers before the first model call. See
+[Starting the servers](#starting-the-servers).
+
 ```mermaid
 sequenceDiagram
     participant U as Umbra
@@ -23,6 +29,46 @@ sequenceDiagram
     U->>S: tools/call when the model asks
     S-->>U: content, isError
 ```
+
+## Starting the servers
+
+| Run | What happens at the start |
+|---|---|
+| The fullscreen view | The servers start on their own threads and Umbra does not wait. The `mcp` row of the header shows a spinner and `starting 2 of 5` until every server has answered. A server that becomes ready during a turn is offered from the next model call, and a dim line `mcp <server> ready, <N> tools` is added to the transcript. |
+| An inline run at a terminal (`--no-fullscreen`) | The same: Umbra does not wait. A server that fails later prints one warning line. |
+| A run with no terminal: a pipe, `-q`, ACP, and `UMBRA_FORCE_INTERACTIVE` over pipes | Umbra waits until every server is ready or has failed, or until `mcp.startup_timeout_seconds` plus 2 seconds have passed, before the first model call. A server that fails is listed on stderr. |
+
+The `mcp` row of the header reads `starting 2 of 5` while any server starts, then `5 running`,
+`4 running · 1 failed`, `3 running · 2 off`, `none` when no server is defined, or `off` when
+`mcp.enabled = false`.
+
+### The MCP panel
+
+`/mcp`, or a click on the `mcp` row of the header, opens a panel with one row for each server: a
+toggle, the name, the state, the number of tools, and for a failed server the first line of the
+error.
+
+| Key | What it does |
+|---|---|
+| Up, Down | Move between servers |
+| Space, or a click | Turn the server on or off for this session |
+| `r` | Start a failed server again |
+| Enter | On a failed server, show the full error and the path of its log file |
+| Esc | Close the panel |
+
+A server turned off is closed, and its tools are not sent with the next model call. The servers
+turned off are saved with the session, so `umbra resume` turns them off again. The config file is
+not changed. When the model calls a tool of a server that is not ready, the result says why: `(it is
+still starting)`, `(it failed to start: <first line of the error>)` or `(it is turned off for this
+session)`.
+
+### The MCP error box
+
+When at least one server failed, the right end of the status bar shows a red `▲ N MCP error` box
+(`▲ 2 MCP errors` for two). A click on the box, or Enter or Space when it has focus, opens a list
+above the status bar with each failed server, its full error and its log file. The same action
+closes the list. The fullscreen view shows a failed server there and in the panel. It does not add
+a warning line to the transcript.
 
 ## Setting up a server
 
@@ -140,7 +186,7 @@ The text a server sends in `instructions` during the handshake is added to the s
 
 | Situation | What happens |
 |---|---|
-| A server does not start or does not answer within 30 seconds | It is listed as failed on stderr, and the run goes on without it. `mcp.startup_timeout_seconds` changes the limit. |
+| A server does not start or does not answer within 30 seconds | It is marked as failed, and the run goes on without it. In a terminal the header and the error box show it. With no terminal it is listed on stderr. A stdio server that missed the limit is stopped, so no process is left behind. `mcp.startup_timeout_seconds` changes the limit. |
 | A tool call takes more than 120 seconds | The model sees an error. On stdio Umbra also sends `notifications/cancelled`. `mcp.call_timeout_seconds` changes the limit. |
 | The server sends a request to Umbra | `ping` gets an empty result. Anything else gets "method not found", because Umbra offers no client features such as sampling. |
 | The server prints text before a message on the same line | The message is still read. |

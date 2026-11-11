@@ -27,6 +27,7 @@ $ umbra -m anthropic/claude-haiku-5-5 "add a --verbose flag to the CLI and test 
 - [Choosing a model](#choosing-a-model)
 - [What Umbra reads from other tools](#what-umbra-reads-from-other-tools)
 - [Modes: confirm, yolo and human](#modes-confirm-yolo-and-human)
+- [The fullscreen view](#the-fullscreen-view)
 - [Ctrl+C, images and resuming a session](#ctrlc-images-and-resuming-a-session)
 - [Features: what is included and what is not](#features-what-is-included-and-what-is-not)
 - [Commands](#commands)
@@ -35,7 +36,8 @@ $ umbra -m anthropic/claude-haiku-5-5 "add a --verbose flag to the CLI and test 
   [where files are found](docs/discovery.md), [MCP](docs/mcp.md), [models](docs/providers.md),
   [editors and ACP](docs/acp.md), [releases](docs/releasing.md),
   [design document](tasks/umbra-harness-tdd.md), [ACP and distribution design](tasks/umbra-acp-distribution-tdd.md), [compaction design](tasks/umbra-compaction-tdd.md),
-  [images, resume and Ctrl+C design](tasks/umbra-images-resume-interrupt-tdd.md)
+  [images, resume and Ctrl+C design](tasks/umbra-images-resume-interrupt-tdd.md),
+  [structured terminal UI design](tasks/umbra-improvements-v2-tdd.md)
 
 ## Install
 
@@ -132,7 +134,7 @@ What the editor gets:
 | ACP feature | What Umbra does |
 |---|---|
 | Modes | `confirm` asks the editor before each command; `yolo` runs them without asking. **Always allow** remembers the program for the rest of the session. |
-| Model picker | The configured model plus every `provider/model` in `models = [...]` in `~/.umbra/config.toml` |
+| Model picker | The configured model plus every model in `models` in `~/.umbra/config.toml`, a list of `provider/model` strings or `[models.<name>]` tables |
 | Sessions | Saved after every step. `session/load`, `session/resume` and `session/list` use the same sessions as `umbra --resume`, so a session started in the editor can be continued in the terminal and the other way round. |
 | Stop | `session/cancel` stops the running command or model call, the way Ctrl+C does |
 | Images and files | Image blocks go to the model; attached files are added to the task |
@@ -205,7 +207,8 @@ Pass `-m provider/model`, or set `model` in `~/.umbra/config.toml`.
 | `openai` | `openai/gpt-5` | OpenAI | `OPENAI_API_KEY` |
 | `openrouter` | `openrouter/anthropic/claude-sonnet-5-5` | OpenRouter | `OPENROUTER_API_KEY` |
 
-Any other OpenAI compatible server can be added in the config. See [models](docs/providers.md).
+Any other OpenAI compatible server can be added in the config. A model can have a short name in a
+`[models.<name>]` table, and `-m <name>` uses it. See [models](docs/providers.md).
 
 ## What Umbra reads from other tools
 
@@ -233,7 +236,7 @@ flowchart LR
 | Instruction files | `~/.claude/CLAUDE.md`, `AGENTS.md`, `CLAUDE.md`, `CLAUDE.local.md`, `GEMINI.md`, `.cursor/rules/*.mdc`, `.github/copilot-instructions.md`, `.windsurfrules`, `.clinerules` | Added to the system prompt, most general first. `@path` imports are followed. |
 | Skills | `~/.claude/skills`, installed Claude Code plugins, `~/.codex/skills`, `~/.agents/skills`, `.claude/skills`, `.agents/skills`, `.opencode/skills` | The name, description and path go into the system prompt. The model reads the SKILL.md when a task matches. |
 | Slash commands | `.claude/commands/*.md`, `~/.codex/prompts/*.md`, `.gemini/commands/*.toml`, opencode's `command/*.md` | A task that starts with `/name` is replaced by that command's prompt. `/skill-name` works too. |
-| MCP servers | `~/.claude.json`, `.mcp.json`, Claude Desktop, `~/.codex/config.toml`, `~/.gemini/settings.json`, `opencode.json`, `.cursor/mcp.json`, `.vscode/mcp.json` | Started when the run begins. Their tools are offered to the model. |
+| MCP servers | `~/.claude.json`, `.mcp.json`, Claude Desktop, `~/.codex/config.toml`, `~/.gemini/settings.json`, `opencode.json`, `.cursor/mcp.json`, `.vscode/mcp.json` | Started in the background when Umbra starts. Their tools are offered to the model as each server becomes ready. |
 
 The full list, the order, and the rules for duplicates are in [where files are found](docs/discovery.md).
 
@@ -252,6 +255,163 @@ With `--quiet` and `--exit-immediately`, `umbra -q -t "<question>"` prints only 
 At that prompt, `/compact` or `/compact <what to keep>` summarizes the session before the next task.
 If stdin is not a terminal, Umbra refuses to start in confirm mode and asks for `-y`, so it never
 waits for an answer nobody can give.
+
+## The fullscreen view
+
+In a terminal Umbra opens on the alternate screen, the way `vim`, `less` and Claude Code's
+fullscreen mode do. The session starts on a clean screen, scrolling up shows the conversation and
+never the shell's earlier output, and when Umbra exits the shell's screen comes back as it was,
+with the `trajectory <path>` line printed under it. `--no-fullscreen`, `fullscreen = false` or
+`UMBRA_FULLSCREEN=0` prints inline below the shell prompt instead, which is what a pipe, `--quiet`
+and `TERM=dumb` always get.
+
+The screen has four parts, from top to bottom: the transcript, a popup or a picker when one is
+open, the status bar, and an input line that is always there, so a message can be typed while the
+agent works.
+
+**The header** is the first block of the transcript and scrolls with it. It shows the umbra logo,
+the version, and these rows:
+
+| Row | What it shows |
+|---|---|
+| `model` | The model of this session. A click on the row, or `/model`, opens the model picker. |
+| `folder` | The folder Umbra works in. |
+| `mode` | `confirm`, `yolo` or `human`, and nothing else. |
+| `skills` | How many skills were found. |
+| `mcp` | `starting 2 of 5` with a spinner while the servers start, then `5 running`, `4 running · 1 failed`, `3 running · 2 off`, `none` or `off`. A click on the row, or `/mcp`, opens the MCP panel. See [MCP](docs/mcp.md#starting-the-servers). |
+
+The logo's cream letters show first and its green, yellow, orange, red and blue stripes appear one
+at a time over about 1.4 seconds. The input line accepts typing during that time.
+`UMBRA_BANNER_ANIMATION=0` shows the finished logo at once and `banner = false` leaves the header
+out. The logo goes beside the text when both fit, above the text when only the logo fits, and is
+left out in a terminal narrower than about 64 columns.
+
+**Commands.** Typing `/` as the first character opens a list of commands above the input line, up
+to 8 rows, each with its name, its kind (`command`, `custom` or `skill`) and a short description.
+Matching is by prefix first, then by any part of the name. Up and Down move in the list, Tab or
+Enter completes the name and adds a space, Enter on a name that is already complete runs it, and
+Esc closes the list and keeps the text. A command works on the first prompt, on a follow up prompt,
+and while the agent works. A command that only changes the screen (`/config`, `/mcp`, `/model`,
+`/help`) runs at once while the agent works. A command that needs the agent to be idle is refused
+with a one line notice.
+
+| Command | What it does |
+|---|---|
+| `/config` | Opens the configuration modal. |
+| `/model [name]` | Opens the model picker, or switches to the named model. |
+| `/mcp` | Opens the MCP panel: the servers and their state, with a toggle for each. |
+| `/mode [confirm, yolo, human]` | Switches the mode, or opens a picker. |
+| `/clear` | Saves this session and starts a new one with an empty history. The old session stays in the resume list. |
+| `/compact [focus]` | Summarizes the history now. |
+| `/resume` | Opens the session picker. |
+| `/skills` | Opens a picker of skills. Enter puts `/<skill> ` in the input line. |
+| `/help` | Lists the commands and the keys. |
+| `/quit` | Ends the session. |
+
+The list also holds your custom commands and your skills. A built in name wins when a custom
+command or a skill has the same name. The short commands inside the confirm, human and interrupt
+prompts (`/y`, `/u`, `/c`, `/q`, `/h`) keep working.
+
+**Keys**
+
+| Key | What it does |
+|---|---|
+| PageUp, PageDown | Scroll the transcript a screen at a time |
+| Mouse wheel | Scroll three lines |
+| Ctrl+Home, Ctrl+End, Esc | Jump to the top, or back to the newest output |
+| Tab, Shift+Tab | Move focus through the clickable parts of the transcript, the header rows and the status bar boxes. The focused part has a `›` marker. |
+| Enter or Space on a focused part | Does what a click does. Esc or typing a character gives focus back to the input line. |
+| Up, Down | Earlier prompts, when the cursor is on the first or last row of the input line. Otherwise Up and Down scroll one line. |
+| Left, Right, Home, End, Backspace, Delete | Edit the input line |
+| Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+W, Ctrl+U | Start of the line, end of the line, delete to the end, delete the last word, delete to the start |
+| Alt+Left, Alt+Right | Move by a word |
+| Enter | Send the line; a paste keeps its line breaks |
+| Ctrl+D on an empty line | End the session |
+| Ctrl+C | Interrupt, as inline |
+
+Every part that can be clicked can also be used from the keyboard. While the view is scrolled up,
+new output does not move it, and a line under the transcript says how many rows are below.
+
+**Replies and shell commands.** A reply is drawn from its markdown: headings, bold, italic,
+strikethrough, inline code, fenced code, lists, quotes, tables, links and rules. Consecutive shell
+commands are one collapsed row, `Ran 3 shell commands · 0:42`, with a spinner and `Running` while a
+command runs, and `1 failed` when a command failed. The time is the total of the commands, as
+`m:ss`. A click on the row, or Enter on it, shows one row for each command with its time and exit
+code. Expanding a command shows the whole command and its output. A reply that has text between
+two commands closes the group, so the order on the screen matches the order of events. Warnings
+are yellow with `▲` and failures red with `✖`. Other routine events are one dim line: `↻` for a
+compaction that freed space, `↺` for a reply with no usable command that was sent back to the
+model, `+` for an attached image. When the system prompt, the instruction files and the tool
+definitions fill most of the window, Umbra makes no summary and says once how many tokens the fixed
+part takes. A turn that ends normally prints no summary line. A turn that stops for another reason
+prints one line that says why, such as `▲ Interrupted` or a step or cost limit. `--verbose` (or
+`verbose = true`) shows every detail.
+
+**Selecting and copying text.** With the mouse on, a plain drag selects text, a double click selects
+a word and a triple click selects a row. The selection is drawn in reverse video and follows the
+text when the view scrolls. A drag past the top or bottom edge scrolls. When the button is
+released Umbra copies the text to the clipboard, with wrapped rows of one line joined, and the
+status bar says how many characters were copied for two seconds. Any key or click clears the
+selection. The terminal's own selection still works with its modifier key held (Shift in Windows
+Terminal and most Linux terminals, Option in iTerm2, Fn in Terminal.app).
+
+`mouse = false`, `--no-mouse` or `UMBRA_MOUSE=0` turns mouse reporting off anywhere. The terminal
+then selects text itself and everything is done with the keyboard. In a classic Windows console
+window (conhost, a visible console window), the mouse is off by default and quick edit stays on, so
+a drag selects text with the console's own selection. `UMBRA_MOUSE=1` turns the mouse on there.
+Windows Terminal and other pseudoconsole terminals get the mouse.
+
+**Pickers.** `/model`, `/mode`, `/resume` and `/skills` open a list above the status bar. Up and Down
+move, Enter chooses, typing filters the list and Esc closes it. The model picker lists the models
+from `[models.<name>]` and `models = [...]`, marks the current one, and ends with `Other...` for a
+`provider/model` typed by hand. A model whose credential is missing shows the error and the model
+does not change. A model chosen while the agent works applies from the next model call. The choice
+lasts for the session and is not written to the config file.
+
+**The configuration modal.** `/config` opens a modal with sections on the left and the fields of the
+selected section on the right. Up and Down move, Tab switches between the two panes, Enter or
+Space edits a field, Ctrl+S saves with the comments in the file kept, Ctrl+T switches between the
+user file `~/.umbra/config.toml` and the project file `<project>/.umbra/config.toml`, and Esc
+closes the modal, after asking whether to save or discard when there are unsaved changes. Each
+provider has a Test button that checks the credentials, checks that the server answers and asks for
+a "Say hello." completion. See [configuration](docs/configuration.md#editing-settings-in-the-terminal).
+
+**The status bar** sits under the transcript, and in the inline view under the output. It is drawn
+again after every line Umbra prints and once a second while the agent works:
+
+```text
+ context ████████░░░░░░░░░░░┊░░░░  33% · 42.6k / 128k │ ⠋ 3:07 │ $0.43 │ qwen-3.8 │ week ███░░░ 23%                     ▲ 1 MCP error
+```
+
+| Part | What it shows |
+|---|---|
+| context bar | How full the context window is. The bar fills in eighths of a cell, and `┊` marks where compaction starts. It is green while the request is under 60% of the compaction point, yellow under 85%, and red past that. The label reads `compacting` during a compaction. |
+| `33% · 42.6k / 128k` | The estimated size of the next request, as a share of the window and in tokens. This is the number compaction is decided on. |
+| `3:07` | The agent time as `m:ss` (`h:mm:ss` from one hour). It counts only while the agent works, so it does not move while Umbra waits for you, and it adds up across turns and across `--resume`. A spinner shows while the agent works. |
+| `$0.43` | The cost of the session. Left out for a free local model. |
+| model | The model's short name. |
+| `week ███░░░ 23%` | The share of the weekly limit used, for a Claude login only. Green below 70%, yellow below 90%, red from 90%, dim when the last poll was refused. Left out for an API key or a local server. See [models](docs/providers.md#claude). `usage.enabled = false` turns it off. |
+| `▲ 1 MCP error` | At the right edge, in red, only when an MCP server failed to start. A click on it, or Enter on it, lists each failed server with its error and its log file. |
+
+When the terminal is narrow, the parts shorten or are left out in this order: the weekly usage
+shrinks to the percent, the context bar gets shorter, the model is left out, the cost is left out.
+The agent time and the MCP error box stay. The bar is only drawn when stdout is a terminal and the
+run is not `--quiet`. `--no-status-bar`, `status_bar = false` in the config, or
+`UMBRA_STATUS_BAR=0` turns it off; `UMBRA_STATUS_BAR=1` draws it even into a pipe, which is how the
+tests read it.
+
+**Resuming a session.** Umbra does not print a resume command during a session or when it exits.
+`umbra resume` and `/resume` open a picker of saved sessions instead. Each session takes two rows:
+its title with the age, model and number of model calls, and under it a one sentence summary. Up
+and Down move, Enter resumes, typing filters, Esc cancels. `umbra resume <id>` resumes a session
+directly, and `umbra resume --all` lists the sessions of every folder. After a resume the
+transcript shows the earlier prompts, replies and collapsed command groups. Without a terminal,
+`umbra resume` prints the list the way `umbra sessions` does and asks for an id. The title of a
+session is the first line of the first prompt. After the first turn Umbra makes one small request
+to the session's model for a title and a one sentence summary, only in a terminal, and a
+compaction summary replaces the summary. `sessions.auto_title = false` turns the request off. In
+quiet mode an interrupted run still prints `umbra: interrupted. Resume with: umbra --resume <id>`
+on stderr, because a script has no other way to learn the id.
 
 ## Ctrl+C, images and resuming a session
 
@@ -289,67 +449,6 @@ task prompt or the follow up prompt asks again instead of ending the run, and a 
 the comment prompt carries on instead of ending it. Only `/q`, the end of input or a third
 unhandled Ctrl+C ends such a run.
 
-**The fullscreen view.** In a terminal Umbra opens on the alternate screen, the way `vim`, `less`
-and Claude Code's fullscreen mode do. The session starts on a clean screen, scrolling up shows the
-conversation and never the shell's earlier output, and when Umbra exits the shell's screen comes
-back as it was, with the last turn's summary, the resume command and the trajectory path printed
-under it. The transcript sits above the status bar and an input line that is always there, so a
-message can be typed while the agent works.
-
-| Key | What it does |
-|---|---|
-| PageUp, PageDown | Scroll the transcript a screen at a time |
-| Mouse wheel, Up, Down | Scroll three lines (Up and Down one) |
-| Ctrl+Home, Ctrl+End, Esc | Jump to the top, or back to the newest output |
-| Left, Right, Home, End, Backspace, Delete, Ctrl+U | Edit the input line |
-| Enter | Send the line; a paste keeps its line breaks |
-| Ctrl+D on an empty line | End the session |
-| Ctrl+C | Interrupt, as inline |
-
-While the view is scrolled up, new output does not move it, and a line under the transcript says
-how many rows are below. The terminal's own mouse selection needs Shift held while the view
-captures the wheel. `--no-fullscreen`, `fullscreen = false` or `UMBRA_FULLSCREEN=0` prints inline
-below the shell prompt instead, which is what a pipe, `--quiet` and `TERM=dumb` always get.
-
-**The status bar** sits under the output in a terminal and is drawn again after every line Umbra
-prints, so it always shows the current numbers:
-
-```text
- ● thinking │ context ████████░░░░░░░░░░░┊░░░░  33% · 42.6k / 128k │ 59.8k left before compaction at 80% │ ↻ 2 compactions (1 summary) │ step 14 │ 12m04s │ qwen-3.8
-```
-
-| Part | What it shows |
-|---|---|
-| `● thinking` | What the agent is doing: `starting`, `thinking` (a model call), `running <program>`, `compacting`, `waiting for you` (a prompt) or `finished`. |
-| context bar | How full the context window is. The bar fills in eighths of a cell, and `┊` marks where compaction starts. It is green while the request is under 60% of the compaction point, yellow under 85%, and red past that. |
-| `33% · 42.6k / 128k` | The estimated size of the next request, as a share of the window and in tokens. This is the number compaction is decided on. |
-| `59.8k left before compaction at 80%` | The tokens left before the next compaction runs. `compaction off` with `--no-compact`. |
-| `↻ 2 compactions (1 summary)` | The compactions this session has had, counted across `--resume`, and how many of them were summaries. The rest replaced old command outputs. |
-| `step 14`, `$0.43`, `12m04s`, model | Model calls in the session, the cost (left out for a free local model), the time since this run started, and the model. |
-
-When the terminal is narrow, the parts lower in the table shorten or are left out first; the bar
-and the percentage stay. The bar is erased before each line of output and drawn again under it, so
-the scrollback never keeps old copies. When the run ends, it is printed once more as the last
-line. Prompts are written on the line above the bar, and what you type echoes there. It is only
-drawn when stdout is a terminal and the run is not `--quiet`. `--no-status-bar`, `status_bar =
-false` in the config, or `UMBRA_STATUS_BAR=0` turns it off; `UMBRA_STATUS_BAR=1` draws it even
-into a pipe, which is how the tests read it.
-
-**The output** above the bar is kept short. A run in a terminal starts with the umbra banner: the
-logo with "by Black Rainbow Labs" under it, the version, the model, the folder, the mode and what was
-loaded (`banner = false` turns it off). The logo's cream letters show first and its green, yellow,
-orange, red and blue stripes appear one at a time over about 1.4 seconds; `UMBRA_BANNER_ANIMATION=0`
-shows the finished logo at once. Each
-reply is shown after a `●`, each command as `$ command`, and its output under a `⎿` with the first
-10 lines and a count of the rest. Exit code 0 is not shown; any other exit code is shown in red.
-Routine events are one dim line: `↻` for a compaction that freed space, `↺` for a reply with no
-usable command that was sent back to the model, `+` for an attached image. Warnings are yellow with
-`▲` and failures red with `✖`. When the system prompt, the instruction files and the tool
-definitions fill most of the window, a summary could only remove a little conversation. Umbra then
-makes no summary, and says once how many tokens the fixed part takes, instead of summarizing
-before every call. Each turn ends with `✔ Done`, the steps, cost and time, the final output, and the command that
-resumes the session. `--verbose` (or `verbose = true`) shows every detail instead.
-
 **Images** go to the model with the task:
 
 ```bash
@@ -369,7 +468,9 @@ interrupted or crashed:
 umbra sessions                       # this folder's sessions, newest first
 umbra --continue "now add a test"    # the newest session in this folder
 umbra --resume 1794185509287 "and update the docs"
-umbra --resume                       # pick one from a list
+umbra resume                         # pick one from a list with a title and a summary
+umbra resume 17941855                # resume one directly
+umbra --resume                       # the same picker
 umbra --resume 17941855 --fork "try it a different way"   # copy it, leave the original alone
 ```
 
@@ -419,7 +520,7 @@ project's documentation as of November 2026.
 | Paste an image from the clipboard | no | no | yes | yes | yes |
 | Resume a past session | yes (`--resume`, `--continue`, `--fork`) | no | yes | yes | yes |
 | Ctrl+C stops the current step and asks for a comment | yes | yes | yes, with Esc | yes, with Esc | yes, with Esc |
-| Full screen terminal interface | no | no | yes | yes | yes |
+| Full screen terminal interface | yes | no | yes | yes | yes |
 | Agent Client Protocol, for editors | yes (`umbra acp`) | no | through an adapter | through an adapter | yes |
 | Git checkpoints and undo | no | no | yes | not documented | yes |
 
@@ -438,7 +539,8 @@ search or a browser.
 | `umbra commands` | Lists the slash commands. |
 | `umbra mcp [--connect]` | Lists MCP servers; with `--connect` starts them and lists their tools. |
 | `umbra config` | Prints the merged configuration. |
-| `umbra sessions [--all]` | Lists saved sessions, newest first, for `--resume`. |
+| `umbra sessions [--all]` | Lists saved sessions, newest first. |
+| `umbra resume [id] [--all]` | Opens a picker of saved sessions, or resumes the session with that id or the start of its id. `--all` lists every folder's sessions. |
 | `umbra acp` | Runs as an ACP agent on stdin and stdout, for an editor. Takes `-m`, `--yolo`, `--mode`, `-l` and `--step-limit`. |
 | `umbra setup` | Asks for a provider and model, saves it in `~/.umbra/config.toml`, and checks that the model answers. |
 
@@ -462,6 +564,7 @@ The listing commands take `--json`. The options used most:
 | `--finish reply\|submit` | How a turn ends: a reply with no command (default), or the submit command |
 | `-q, --quiet` | Print only the final answer |
 | `--no-fullscreen` | Print inline below the shell prompt instead of on the alternate screen |
+| `--no-mouse` | Do not turn on mouse reporting in the fullscreen view. The terminal selects text itself. |
 | `--no-status-bar` | Do not draw the status bar under the output |
 | `--verbose` | Print every detail: step costs, whole command outputs, full format errors |
 | `--no-compact` | Never compact the history |
@@ -486,6 +589,7 @@ src/
                          prompt templates, the confirm prompt, the setup wizard
   services/acp/          the ACP server: JSON-RPC, sessions, session updates
   templates/             the Jinja prompt templates
+  ui/                    the fullscreen view: blocks, frame, markdown, header, overlays, selection
   utils/                 paths, frontmatter, variable expansion, HTTP, terminal output, status bar
 tests/                   integration tests that run the real binary
 docs/                    the documents linked above

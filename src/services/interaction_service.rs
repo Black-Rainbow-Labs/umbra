@@ -324,8 +324,16 @@ pub fn show_reply_text(content: &str) {
     if text.is_empty() {
         return;
     }
-    // A reply is often the final answer of a turn, so it is shown nearly whole.
-    emit(&format!("{} {}", paint(CYAN, "●"), indent_after_first(&wrap(&clip(text, 20_000), 2), "  ")));
+    // A reply is often the final answer of a turn, so it is shown nearly whole. At a terminal it
+    // is rendered from markdown; a pipe gets the source as the model wrote it.
+    let text = clip(text, 20_000);
+    if stdout_is_terminal() {
+        let rows = crate::ui::markdown::render(&text, terminal_width().saturating_sub(3).max(20), crate::utils::console::color_enabled());
+        let body: Vec<String> = rows.iter().enumerate().map(|(i, row)| if i == 0 { format!("{} {}", paint(CYAN, "●"), row.text) } else { format!("  {}", row.text) }).collect();
+        emit(&body.join("\n"));
+        return;
+    }
+    emit(&format!("{} {}", paint(CYAN, "●"), indent_after_first(&text, "  ")));
 }
 
 /// Prints one action: `$ command` for a shell command, `→ server.tool arguments` for an MCP tool.

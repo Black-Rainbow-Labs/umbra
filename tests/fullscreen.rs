@@ -446,8 +446,8 @@ fn umbra_resume_lists_sessions_with_titles_and_rebuilds_the_chosen_one() {
     assert!(has(&frame, r"task three .*1 call"), "{}", frame.text());
     screen.press("Down");
     screen.press("Enter");
-    let frame = screen.wait_for("● answer two");
-    assert!(frame.row_of("❯ task two").is_some() && frame.row_of("resuming session").is_some(), "{}", frame.text());
+    let frame = screen.wait_until("the rebuilt session", Duration::from_secs(15), |f| f.row_of("● answer two").is_some() && f.row_of("resuming session").is_some());
+    assert!(frame.row_of("❯ task two").is_some(), "{}", frame.text());
     assert!(frame.row_of("answer three").is_none(), "{}", frame.text());
     screen.type_line("carry on");
     screen.wait_for("● after the resume");
@@ -587,7 +587,8 @@ fn the_weekly_usage_bar_follows_the_claude_usage_endpoint() {
     screen.wait_until("the usage bar", Duration::from_secs(10), |f| f.rows.iter().any(|r| r.contains("week") && r.contains("23%")));
     screen.type_line("hello");
     screen.wait_for("● Hi from Claude.");
-    screen.click_text("week");
+    screen.press("Tab");
+    screen.press("Enter");
     screen.wait_for("resets in");
     assert_eq!(paths.lock().unwrap().iter().filter(|p| p.starts_with("/api/oauth/usage")).count(), 1, "polled once, not again within 180 seconds");
     for (status, body) in [(401, "{}".to_string()), (200, json!({ "seven_day": null }).to_string())] {

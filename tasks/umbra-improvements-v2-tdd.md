@@ -1,6 +1,6 @@
 # Umbra Improvements v2: a structured, interactive terminal UI
 
-Ticket: task-2607. Status: design only. Nothing in this document is built yet.
+Ticket: task-2607 (design), task-2611 (build). Status: built in 0.6.0, except the Codex provider and the Codex usage bar, which wait for Jason's decision in the last section. The section "Changes made during the build" at the end lists where the build differs from this design and why.
 
 ## Introduction
 
@@ -705,3 +705,25 @@ Each phase leaves `cargo test` passing and the binary usable.
 ## Open decision for Jason
 
 - **Codex provider (phase 9).** The Codex weekly bar needs Umbra to send requests to `chatgpt.com/backend-api` with the Codex login. If that is not wanted, the usage bar ships for Claude only and `kind = "codex"` is not built. Everything else in this design is independent of the answer.
+
+## Changes made during the build (task-2611)
+
+Each change below replaces what the sections above say.
+
+| Area | The design said | The build does | Why |
+|---|---|---|---|
+| Mouse in conhost | Verify that conhost sends SGR mouse reports; fall back when `WT_SESSION` is not set | In a classic console window (`GetConsoleWindow` is visible) the mouse is off by default and quick edit stays on. `UMBRA_MOUSE=1` turns it on. Windows Terminal and other pseudoconsole terminals get the mouse | Automation could not confirm conhost's mouse reports: mouse records written into the console input buffer do not become SGR sequences, and moving the real pointer would take over the desktop. A visible console window is a better test than `WT_SESSION`, which Termoil, VS Code and other pseudoconsole terminals do not set |
+| MCP wait | Runs with a pipe, `-q` or ACP wait | A run waits unless it is in the fullscreen view or stdin and stdout are a real terminal. `UMBRA_FORCE_INTERACTIVE` over pipes still waits | `tests/mcp.rs` drives Ctrl+C over pipes with `UMBRA_FORCE_INTERACTIVE`, and its first request must have the server's tools |
+| Inline view failures | The yellow `was not started` line stays | It is printed once per failed server when the agent next reads the tools | The inline view no longer waits, so a failure can arrive after the first prompt |
+| Start timeout text | `did not finish starting within 30 seconds` | That text, or the transport's own `MCP server did not answer initialize within N seconds`, whichever comes first | Both are true; the transport's timeout usually fires first |
+| Durations | Set in `environment/local.rs`, `environment/docker.rs` and `McpManager::call` | Set once in `Agent::execute` around every action, `tool_search` and human mode included | One place times every kind of action |
+| `models` config | `models = [...]` and `[models.<name>]` | The `models` key is either the list or the table; a table entry may also be a `provider/model` string | TOML cannot have one key as both an array and a table |
+| Session titles | One request after the first turn | Only in a terminal. The replay provider answers it with a `{"title_reply": ...}` entry and does not record it | Scripted runs over pipes and their recorded request counts stay unchanged |
+| Test clock | A fixed clock environment variable | No such variable; the tests read `m:ss` with a pattern and use `sleep_ms` replies | Real time was enough to test that the clock stops while the prompt waits |
+| Esc key | Not covered | A lone ESC at the end of a read is the Esc key at once | Before, Esc did nothing until the next key arrived |
+| Header updates | Not covered | `live::update_header` asks the ticker to redraw instead of drawing | Drawing from inside the view's key handling deadlocked on the view's lock |
+| Status bar in the inline view | Not covered | Same segments as the fullscreen view | The bar is one function for both views |
+| Config modal scope | A scope switch | Ctrl+T or a click on `scope:` switches between the user file and the project file | |
+| Usage endpoint override | A test environment variable | `UMBRA_TEST_USAGE_URL` | |
+| Text action format | Not covered | Tools of a server that becomes ready later are in the tool list, not in the system prompt, which was rendered at session start | Rendering the system prompt again would break the prompt cache |
+| Codex provider and Codex usage | Phase 9 | Not built | No approval on task-2607 or task-2611 |

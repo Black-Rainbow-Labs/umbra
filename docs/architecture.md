@@ -8,6 +8,9 @@ flowchart TD
     subgraph Entry
       MAIN[main.rs] --> CLI[cli.rs]
     end
+    subgraph UI
+      VIEW[ui<br/>blocks, frame, overlays, selection]
+    end
     subgraph Services
       RUN[run_service<br/>puts a run together]
       INSPECT[inspect_service<br/>the listing commands]
@@ -17,6 +20,8 @@ flowchart TD
       PROMPT[prompt_service<br/>Jinja templates]
       PARSE[action_parser]
       ASK[interaction_service<br/>confirm prompt and output]
+      CMDS[command_service<br/>built in commands, completion]
+      STATE[usage, session title, work clock,<br/>settings services]
       PROV[providers<br/>anthropic, openai, replay]
       ENV[environment<br/>local, docker]
       MCP[mcp<br/>client and transports]
@@ -44,6 +49,7 @@ flowchart TD
 
 | Layer | Folder | What lives there |
 |---|---|---|
+| UI | `src/ui` | The fullscreen view: the list of blocks, the frame and its hit map, markdown, the header, the overlays (command popup, pickers, MCP panel, configuration modal) and text selection. It reads state from the services and sends events and commands back to them. |
 | Models | `src/models` | Plain data with no behavior: `Message`, `Action`, `Observation`, `UmbraConfig`, `Skill`, `InstructionFile`, `McpServerDefinition`, `Trajectory`. |
 | Repositories | `src/repositories` | Everything that reads or writes files. Each loader takes a `DiscoveryContext` (home folder, working folder, project root, enabled sources) and returns models. |
 | Services | `src/services` | The agent loop and everything it talks to: models, shells, MCP servers, templates, the person at the keyboard. |
@@ -64,7 +70,8 @@ sequenceDiagram
     Run->>Run: load and merge config files
     Run->>Ctx: load instructions, skills, commands, MCP definitions
     Run->>Run: expand /command or /skill in the task
-    Run->>MCP: start every server (in parallel, 30 s limit)
+    Run->>MCP: start every server on its own thread (30 s limit)
+    Note over Run,MCP: at a terminal Umbra does not wait;<br/>with no terminal it waits until the servers settle
     Run->>Agent: provider, environment, MCP, template variables
     Agent->>Agent: render system prompt and task message
     loop each step
@@ -79,6 +86,51 @@ sequenceDiagram
     Agent-->>Run: exit status and final answer
     Run-->>CLI: exit code 0 for Submitted, 1 otherwise
 ```
+
+## The fullscreen view
+
+The fullscreen view in `src/ui` keeps the transcript as a list of typed blocks and not as printed
+lines: the header, a user prompt, a reply (kept as markdown source), a group of commands, a notice,
+and plain text. Each block lays itself out again when the width changes, and the layout is cached
+for each block and width. Each frame is a full repaint that also builds a hit map from screen cells
+to targets, so a click can open a command group, a header row, a status bar box or an item of an
+overlay. The input thread decodes keys, bracketed paste and SGR mouse reports and sends them to the
+topmost overlay, or to the focused element, or to the input line.
+
+- **Redraw ticker.** A thread wakes every 100 ms and redraws only while something changes with
+  time: a command is running, the agent is working, an MCP server is starting or the logo is being
+  revealed. Otherwise it waits and uses no CPU.
+- **Agent events.** The agent loop sends `action_started`, `action_finished` and `action_not_run`
+  events to the view. Each `Observation` has `started_at` and `duration_ms`, which the trajectory
+  keeps in the message `extra` and an old trajectory can leave out. Consecutive commands form one
+  group with the header `Ran N shell commands` and the time as `m:ss`. A reply with text closes the
+  open group.
+- **Mouse and selection.** With mouse reporting on, a plain drag selects text. Umbra draws the
+  selection in reverse video, keeps it in transcript coordinates so it survives scrolling, and
+  copies it on release with an OSC 52 write and the system clipboard (the Windows clipboard API,
+  `pbcopy`, or `wl-copy`, `xclip` or `xsel`). A double click selects a word and a triple click a
+  row. `mouse = false`, `--no-mouse` and `UMBRA_MOUSE=0` send no mouse modes. In a classic Windows
+  console window (conhost) `src/utils/terminal_mode.rs` detects the visible console window with
+  `in_classic_console_window`, and `mouse_wanted` in `run_service` leaves the mouse off and quick
+  edit on there unless `UMBRA_MOUSE=1` is set.
+- **Work clock.** `WorkClock` adds up the time the agent works. It starts when a prompt goes to the
+  agent or a confirm prompt is answered, and stops when a turn ends or a prompt waits for the
+  person. The total is saved in the session as `work_seconds` and restored on resume.
+- **MCP state.** `McpManager` starts each server on its own thread and keeps a state for each one:
+  `Off`, `Starting`, `Ready` or `Failed`. The agent reads the tools of the ready servers before each
+  model call. A stdio transport kills its child process when it is dropped, so a failed or disabled
+  server leaves no process.
+- **Commands.** `command_service` holds the built in commands (`/config`, `/model`, `/mcp`,
+  `/mode`, `/clear`, `/compact`, `/resume`, `/skills`, `/help`, `/quit`), the completion list of
+  built in commands, custom commands and skills, and `handle_line`, which every prompt goes
+  through, so a slash command works on the first prompt, on a follow up prompt and while the agent
+  works. ACP uses the same list.
+- **Settings.** The configuration modal is driven by a table of every setting, and a test fails when
+  a key of the default config has no entry. Saving uses `toml_edit`, so comments and key order stay.
+- **Usage and titles.** `usage_service` polls the Claude usage endpoint on its own thread.
+  `session_title_service` makes the one small request that names a session.
+
+The inline view and the quiet mode do not use `src/ui`. They print through `interaction_service`.
 
 ## The message list
 
@@ -229,8 +281,17 @@ once, in case the main thread is stuck somewhere that does not check the flag.
 
 A session is one trajectory file, identified by its start time in milliseconds. After every step
 Umbra writes the trajectory and a small index entry, `~/.umbra/sessions/<id>.json`, that holds the
-folder, model, first task, status, call count and cost, so `umbra sessions` can list sessions
-without reading trajectories that may hold large images.
+folder, model, first task, title, summary, status, call count, cost, the MCP servers turned off and
+the agent time, so `umbra sessions` and the resume picker can list sessions without reading
+trajectories that may hold large images.
+
+The title is the first line of the first prompt, cut to 60 characters. After the first turn, in a
+terminal, one small request to the session's model replaces it with a title of at most 6 words and
+sets a one sentence summary (`sessions.auto_title = false` skips the request). The request is not
+added to the conversation and its cost is added to the session. When a compaction writes a summary,
+the first sentence of that summary replaces the session summary. `umbra resume` and `/resume` open
+a picker of these titles and summaries, and `umbra resume <id>` resumes directly. After a resume
+the fullscreen view rebuilds the transcript from the trajectory.
 
 Resuming reads the trajectory back: the messages, `info.model_stats`, `info.compactions` and
 `info.session`. The exit marker is removed, and any tool call with no result gets one saying it was
@@ -251,7 +312,7 @@ record up to the last step. Its shape follows mini-swe-agent's `mini-swe-agent-1
   "info": {
     "model_stats": { "instance_cost": 0.0037, "api_calls": 2, "input_tokens": 51293, "output_tokens": 427, "compactions": 0 },
     "config": { "agent": {}, "model": {}, "environment": {}, "mcp_servers": [], "skills": 42, "instruction_files": [] },
-    "umbra_version": "0.1.0",
+    "umbra_version": "0.6.0",
     "exit_status": "Submitted",
     "submission": "5050\n",
     "compactions": [],
