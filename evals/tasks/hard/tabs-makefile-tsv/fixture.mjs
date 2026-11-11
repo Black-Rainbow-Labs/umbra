@@ -1,7 +1,17 @@
 // Project files for the tabs-makefile-tsv task: the Makefile, the TSV data, the Python tools, and the expected results.
 
 export const COLUMNS_BEFORE = ["sku", "name", "category", "price_cents", "stock", "note"];
-export const COLUMNS_AFTER = ["sku", "name", "category", "price", "stock", "note", "status"];
+export const COLUMNS_AFTER = ["sku", "name", "category", "label", "price", "stock", "note", "value", "status"];
+
+/** The category to label lookup that is written to data/categories.tsv. The category "home" has no entry. */
+export const CATEGORY_LABELS = [["garden", "Garden & Outdoor"], ["tools", "Hand Tools"], ["office", "Office Supplies"], ["kitchen", "Caf\u00e9 & K\u00fcche"], ["toys", "Toys & Games"]];
+
+/**
+ * Returns the text of data/categories.tsv: a header and one line per category, with CRLF line endings like a Windows export.
+ */
+export function categoriesFile() {
+  return ["category\tlabel", ...CATEGORY_LABELS.map((pair) => pair.join("\t"))].join("\r\n") + "\r\n";
+}
 
 /**
  * Small deterministic random number generator (mulberry32).
@@ -46,6 +56,13 @@ export function productRows(seed) {
   rows[8][5] = "";
   rows[39][5] = "";
   rows[39][4] = "3";
+  ["garden", "tools", "office", "kitchen", "toys", "home"].forEach((category, offset) => { rows[10 + offset][2] = category; });
+  rows[16][3] = "";
+  rows[16][4] = "0";
+  rows[17][3] = "250004";
+  rows[17][4] = "59";
+  rows[18][3] = "123456789";
+  rows[18][4] = "7";
   return rows;
 }
 
@@ -68,6 +85,24 @@ export function centsToDollars(cents) {
 }
 
 /**
+ * Returns the stock value (price times stock) in dollars with two decimals, or an empty string when the price is empty.
+ * @param cents - digits only, or an empty string
+ * @param stock - digits only
+ */
+export function valueFor(cents, stock) {
+  return cents === "" ? "" : centsToDollars(String(Number(cents) * Number(stock)));
+}
+
+/**
+ * Returns the label for a category from the lookup, or "unlabeled" when the category is not in it.
+ * @param category - the category name
+ */
+export function labelFor(category) {
+  const found = CATEGORY_LABELS.find((pair) => pair[0] === category);
+  return found ? found[1] : "unlabeled";
+}
+
+/**
  * Returns the stock status word for a stock count.
  * @param stock - digits only
  */
@@ -77,11 +112,11 @@ export function statusFor(stock) {
 }
 
 /**
- * Returns the rows after the change: seven fields, price in dollars, status last.
+ * Returns the rows after the change: nine fields, label after category, price in dollars, value and status last.
  * @param seed - integer seed
  */
 export function expectedRows(seed) {
-  return productRows(seed).map((row) => [row[0], row[1], row[2], row[3] === "" ? "" : centsToDollars(row[3]), row[4], row[5], statusFor(row[4])]);
+  return productRows(seed).map((row) => [row[0], row[1], row[2], labelFor(row[2]), row[3] === "" ? "" : centsToDollars(row[3]), row[4], row[5], valueFor(row[3], row[4]), statusFor(row[4])]);
 }
 
 /**
@@ -139,11 +174,11 @@ export function solvedMakefileLines() {
     "DATA = data/products.tsv",
     "OUT = build",
     "DIST = dist",
-    "COLUMNS = 7",
+    "COLUMNS = 9",
     "",
     ".PHONY: all stats check clean dist",
     "",
-    "all: stats check",
+    "all: stats check dist",
     "",
     "$(OUT):",
     "\tmkdir -p $(OUT)",
@@ -157,14 +192,20 @@ export function solvedMakefileLines() {
     "\t$(PYTHON) tools/tsvcheck.py $(DATA) $(COLUMNS)",
     "",
     "$(OUT)/lowstock.tsv: $(DATA) $(OUT)",
-    "\t$(PYTHON) tools/tsvfilter.py $(DATA) status low out > $(OUT)/lowstock.tsv",
+    "\t$(PYTHON) tools/tsvfilter.py $(DATA) status low out > $@",
     "",
     "$(OUT)/categories.txt: $(DATA) $(OUT)",
-    "\t$(PYTHON) tools/tsvcolumn.py $(DATA) category | sort -u > $(OUT)/categories.txt",
+    "\t$(PYTHON) tools/tsvcolumn.py $(DATA) category | sort -u > $@",
     "",
-    "dist: stats $(OUT)/lowstock.tsv $(OUT)/categories.txt",
+    "$(OUT)/labels.txt: $(DATA) $(OUT)",
+    "\t$(PYTHON) tools/tsvcolumn.py $(DATA) label | sort -u > $@",
+    "",
+    "$(OUT)/value_stats.txt: $(DATA) $(OUT)",
+    "\t$(PYTHON) tools/tsvstat.py $(DATA) value > $@",
+    "",
+    "dist: stats $(OUT)/value_stats.txt $(OUT)/lowstock.tsv $(OUT)/categories.txt $(OUT)/labels.txt",
     "\tmkdir -p $(DIST)",
-    "\t$(PYTHON) tools/bundle.py $(DIST)/bundle.txt $(OUT)/stats.txt $(OUT)/lowstock.tsv $(OUT)/categories.txt",
+    "\t$(PYTHON) tools/bundle.py $(DIST)/bundle.txt $(OUT)/stats.txt $(OUT)/value_stats.txt $(OUT)/lowstock.tsv $(OUT)/categories.txt $(OUT)/labels.txt",
     "",
     "clean:",
     "\trm -rf $(OUT) $(DIST)",
@@ -296,11 +337,29 @@ export function expectedStats(seed) {
 }
 
 /**
+ * Returns the expected content of build/value_stats.txt for the changed data.
+ * @param seed - integer seed
+ */
+export function expectedValueStats(seed) {
+  const values = productRows(seed).filter((row) => row[3] !== "").map((row) => Number(row[3]) * Number(row[4]));
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return ["column: value", `count: ${values.length}`, `sum: ${centsToDollars(String(total))}`, `min: ${centsToDollars(String(Math.min(...values)))}`, `max: ${centsToDollars(String(Math.max(...values)))}`, ""].join("\n");
+}
+
+/**
+ * Returns the expected content of build/labels.txt.
+ * @param seed - integer seed
+ */
+export function expectedLabels(seed) {
+  return [...new Set(productRows(seed).map((row) => labelFor(row[2])))].sort().join("\n") + "\n";
+}
+
+/**
  * Returns the expected content of build/lowstock.tsv.
  * @param seed - integer seed
  */
 export function expectedLowStock(seed) {
-  const rows = expectedRows(seed).filter((row) => row[6] === "low" || row[6] === "out");
+  const rows = expectedRows(seed).filter((row) => row[8] === "low" || row[8] === "out");
   return [COLUMNS_AFTER.join("\t"), ...rows.map((row) => row.join("\t"))].join("\n") + "\n";
 }
 
@@ -317,6 +376,6 @@ export function expectedCategories(seed) {
  * @param seed - integer seed
  */
 export function expectedBundle(seed) {
-  const parts = [["stats.txt", expectedStats(seed)], ["lowstock.tsv", expectedLowStock(seed)], ["categories.txt", expectedCategories(seed)]];
+  const parts = [["stats.txt", expectedStats(seed)], ["value_stats.txt", expectedValueStats(seed)], ["lowstock.tsv", expectedLowStock(seed)], ["categories.txt", expectedCategories(seed)], ["labels.txt", expectedLabels(seed)]];
   return parts.map(([name, text]) => `== ${name} ==\n${text}`).join("");
 }

@@ -1,4 +1,4 @@
-// Writes the ten config and source files with their exact encodings, BOMs and line endings.
+// Writes the config, source and document files with their exact encodings, BOMs and line endings.
 
 import fs from "node:fs";
 import path from "node:path";

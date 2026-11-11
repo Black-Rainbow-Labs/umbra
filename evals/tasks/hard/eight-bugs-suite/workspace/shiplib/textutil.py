@@ -28,3 +28,17 @@ def wrap_text(text, width):
     if current:
         lines.append(current)
     return lines
+
+
+def truncate(text, width):
+    """Return text cut to at most width characters.
+
+    Text that already fits in width characters is returned unchanged. Otherwise the result is the start of
+    the text followed by '...' and is exactly width characters long. Cutting needs a width of at least 3,
+    so a smaller width raises ValueError when the text does not fit.
+    """
+    if len(text) <= width:
+        return text
+    if width < 3:
+        raise ValueError("width must be at least 3")
+    return text[:width] + "..."

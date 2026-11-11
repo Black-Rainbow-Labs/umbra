@@ -1,4 +1,4 @@
-// Verifier: runs report.py on fixed inputs and scores each of the 12 numbered requirements separately.
+// Verifier: runs report.py on fixed inputs and scores 22 checks covering the numbered requirements separately.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -12,16 +12,18 @@ const HEADER = "category,items,quantity,revenue\n";
  * @param script - absolute path of the workspace report.py
  * @param files - { name: string | Buffer } written to the temp folder
  * @param args - command line arguments (file names are relative to the temp folder)
+ * @param stdin - optional Buffer or string fed to standard input
  */
-function runCli(script, files, args) {
+function runCli(script, files, args, stdin) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "eval-csv-"));
   try {
     for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content);
     const env = { ...process.env, PYTHONUTF8: "0", PYTHONIOENCODING: "" };
     delete env.PYTHONIOENCODING;
-    const run = spawnSync("python", [script, ...args], { cwd: dir, env, timeout: 30000 });
+    const run = spawnSync("python", [script, ...args], { cwd: dir, env, timeout: 30000, input: stdin === undefined ? Buffer.alloc(0) : stdin });
     const outFile = path.join(dir, "out.csv");
-    return { status: run.status, stdout: run.stdout || Buffer.alloc(0), stderr: (run.stderr || Buffer.alloc(0)).toString("utf8").replace(/\r\n/g, "\n"), outFile: fs.existsSync(outFile) ? fs.readFileSync(outFile) : null };
+    const badFile = path.join(dir, "bad.csv");
+    return { status: run.status, stdout: run.stdout || Buffer.alloc(0), stderr: (run.stderr || Buffer.alloc(0)).toString("utf8").replace(/\r\n/g, "\n"), outFile: fs.existsSync(outFile) ? fs.readFileSync(outFile) : null, badFile: fs.existsSync(badFile) ? fs.readFileSync(badFile) : null };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -107,6 +109,93 @@ function buildChecks() {
     }],
     ["12 trimming and grouping", (s) => compare(runCli(s, { "in.csv": "category,quantity,price\n Tea , 2 , 1.50 \nTea,1,1.00\ntea,1,2.00\n" }, ["in.csv"]),
       { status: 0, stdout: `${HEADER}Tea,2,3,4.00\ntea,1,1,2.00\nTOTAL,3,4,6.00\n`, stderr: "" })],
+    ["13 delimiter option", (s) => {
+      const semi = compare(runCli(s, { "in.csv": 'category;quantity;price\n"A;B";2;1.50\n"C,D";1;2.00\n' }, ["--delimiter", ";", "in.csv"]), { status: 0, stdout: `${HEADER}A;B,1,2,3.00\n"C,D",1,1,2.00\nTOTAL,2,3,5.00\n`, stderr: "" });
+      if (semi) return `semicolon: ${semi}`;
+      const tab = compare(runCli(s, { "in.csv": "price\tcategory\tquantity\r\n2\tTea\t3\r\n" }, ["in.csv", "--delimiter", "tab"]), { status: 0, stdout: `${HEADER}Tea,1,3,6.00\nTOTAL,1,3,6.00\n` });
+      if (tab) return `tab: ${tab}`;
+      for (const bad of ["ab", "", '"']) {
+        const run = runCli(s, { "in.csv": "category,quantity,price\nA,1,1\n" }, ["in.csv", "--delimiter", bad]);
+        if (run.status !== 2 || run.stdout.length || run.stderr !== "error: invalid --delimiter\n") return `delimiter ${JSON.stringify(bad)} gave exit ${run.status}, stderr ${JSON.stringify(run.stderr.slice(0, 80))}`;
+      }
+      return "";
+    }],
+    ["14 discount column", (s) => compare(runCli(s, { "in.csv": "Category,Quantity,Price,Discount\nA,3,10.00,12.5\nA,1,3.00,\nB,2,5.00, 100 \nC,1,0.50,50\nD,1,1.00,\n" }, ["in.csv"]),
+      { status: 0, stdout: `${HEADER}A,2,4,29.25\nD,1,1,1.00\nC,1,1,0.25\nB,1,2,0.00\nTOTAL,5,8,30.50\n`, stderr: "" })],
+    ["15 discount errors", (s) => {
+      const text = "category,quantity,price,discount\nA,1,1.00,100.01\nB,1,1.00,-5\nC,1,1.00,abc\nD,1,x,5\nE,1,1.00,1e1\nF,1,1.00,10%\nG,2,1.00,.5\nH,2,2.00,99\n";
+      const stderr = ["row 1: invalid discount", "row 2: invalid discount", "row 3: invalid discount", "row 4: invalid price", "row 5: invalid discount", "row 6: invalid discount", "row 7: invalid discount"].join("\n") + "\n";
+      return compare(runCli(s, { "in.csv": text }, ["in.csv"]), { status: 1, stdout: `${HEADER}H,1,2,0.04\nTOTAL,1,2,0.04\n`, stderr });
+    }],
+    ["16 duplicate header names", (s) => compare(runCli(s, { "in.csv": "Category,quantity,price,CATEGORY,Price\nA,2,1.00,Z,100\nB,1,3.00,Y,200\n" }, ["in.csv"]),
+      { status: 0, stdout: `${HEADER}B,1,1,3.00\nA,1,2,2.00\nTOTAL,2,3,5.00\n` })],
+    ["17 sort modes", (s) => {
+      const text = "category,quantity,price\nbeta,1,5\nAlpha,2,1\nalpha,1,2\nZed,3,10\nant,1,2\nant,1,3\n";
+      const name = compare(runCli(s, { "in.csv": text }, ["in.csv", "--sort", "name"]), { status: 0, stdout: `${HEADER}Alpha,1,2,2.00\nalpha,1,1,2.00\nant,2,2,5.00\nbeta,1,1,5.00\nZed,1,3,30.00\nTOTAL,6,9,44.00\n` });
+      if (name) return `name: ${name}`;
+      const items = compare(runCli(s, { "in.csv": text }, ["--sort", "items", "in.csv"]), { status: 0, stdout: `${HEADER}ant,2,2,5.00\nZed,1,3,30.00\nbeta,1,1,5.00\nAlpha,1,2,2.00\nalpha,1,1,2.00\nTOTAL,6,9,44.00\n` });
+      if (items) return `items: ${items}`;
+      const rev = compare(runCli(s, { "in.csv": text }, ["--sort", "revenue", "in.csv"]), { status: 0, stdout: `${HEADER}Zed,1,3,30.00\nant,2,2,5.00\nbeta,1,1,5.00\nAlpha,1,2,2.00\nalpha,1,1,2.00\nTOTAL,6,9,44.00\n` });
+      if (rev) return `revenue: ${rev}`;
+      const bad = runCli(s, { "in.csv": text }, ["in.csv", "--sort", "price"]);
+      return bad.status === 2 && !bad.stdout.length ? "" : `unknown mode gave exit ${bad.status}`;
+    }],
+    ["18 top option", (s) => {
+      const text = "category,quantity,price\nA,1,50\nB,1,40\nC,1,0.005\nD,2,0.005\nE,1,30\n";
+      const top2 = compare(runCli(s, { "in.csv": text }, ["in.csv", "--top", "2"]), { status: 0, stdout: `${HEADER}A,1,1,50.00\nB,1,1,40.00\nOther,3,4,30.02\nTOTAL,5,6,120.02\n` });
+      if (top2) return `top 2: ${top2}`;
+      const all = compare(runCli(s, { "in.csv": text }, ["--top", "5", "in.csv"]), { status: 0, stdout: `${HEADER}A,1,1,50.00\nB,1,1,40.00\nE,1,1,30.00\nD,1,2,0.01\nC,1,1,0.01\nTOTAL,5,6,120.02\n` });
+      if (all) return `top 5: ${all}`;
+      const byItems = compare(runCli(s, { "in.csv": text }, ["in.csv", "--top", "1", "--sort", "items"]), { status: 0, stdout: `${HEADER}A,1,1,50.00\nOther,4,5,70.02\nTOTAL,5,6,120.02\n` });
+      if (byItems) return `top 1 by items: ${byItems}`;
+      for (const value of ["0", "x", "1.5", ""]) {
+        const run = runCli(s, { "in.csv": text }, ["in.csv", "--top", value]);
+        if (run.status !== 2 || run.stdout.length || run.stderr !== "error: invalid --top\n") return `--top ${JSON.stringify(value)} gave exit ${run.status}, stderr ${JSON.stringify(run.stderr.slice(0, 80))}`;
+      }
+      return "";
+    }],
+    ["19 bad rows file", (s) => {
+      const text = 'category,quantity,price\nA,1,1\n\nB,x,1\n"M\nL",1,\nC,1,1,1\n';
+      const run = runCli(s, { "in.csv": text }, ["in.csv", "--bad-rows", "bad.csv"]);
+      if (run.status !== 1 || run.stderr !== "row 2: invalid quantity\nrow 3: invalid price\nrow 4: wrong number of fields\n") return `exit ${run.status}, stderr ${JSON.stringify(run.stderr.slice(0, 120))}`;
+      if (!run.badFile || !run.badFile.equals(Buffer.from("row,reason\n2,invalid quantity\n3,invalid price\n4,wrong number of fields\n"))) return `bad.csv was ${JSON.stringify(run.badFile && run.badFile.toString("utf8"))}`;
+      const good = runCli(s, { "in.csv": "category,quantity,price\nA,1,1\n" }, ["--bad-rows", "bad.csv", "--out", "out.csv", "in.csv"]);
+      if (good.status !== 0 || good.stdout.length || !good.outFile) return `clean input with --out gave exit ${good.status}`;
+      return good.badFile && good.badFile.equals(Buffer.from("row,reason\n")) ? "" : `bad.csv for a clean input was ${JSON.stringify(good.badFile && good.badFile.toString("utf8"))}`;
+    }],
+    ["20 exit 2 creates no files", (s) => {
+      const valid = "category,quantity,price\nA,1,1\n";
+      const cases = [["missing column", "category,quantity\nA,1\n", ["in.csv", "--out", "out.csv", "--bad-rows", "bad.csv"]], ["delimiter", valid, ["in.csv", "--out", "out.csv", "--bad-rows", "bad.csv", "--delimiter", "ab"]], ["top", valid, ["--out", "out.csv", "--bad-rows", "bad.csv", "--top", "0", "in.csv"]], ["sort", valid, ["in.csv", "--out", "out.csv", "--bad-rows", "bad.csv", "--sort", "nope"]]];
+      for (const [label, text, args] of cases) {
+        const run = runCli(s, { "in.csv": text }, args);
+        if (run.status !== 2 || run.stdout.length || run.outFile || run.badFile) return `${label}: exit ${run.status}, stdout ${run.stdout.length} bytes, out file ${!!run.outFile}, bad file ${!!run.badFile}`;
+      }
+      const bytes = runCli(s, { "in.csv": Buffer.from([0x63, 0x61, 0x74, 0xff, 0xfe, 0x0a]) }, ["in.csv", "--out", "out.csv", "--bad-rows", "bad.csv"]);
+      if (bytes.status !== 2 || bytes.stderr !== "error: cannot read in.csv\n" || bytes.outFile || bytes.badFile) return `invalid UTF-8 gave exit ${bytes.status}, stderr ${JSON.stringify(bytes.stderr.slice(0, 80))}`;
+      return "";
+    }],
+    ["21 standard input", (s) => {
+      const input = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("category,quantity,price\r\nTea,4,2.50\r\nTea,2,1.25\r\n")]);
+      const first = compare(runCli(s, {}, ["-"], input), { status: 0, stdout: `${HEADER}Tea,2,6,12.50\nTOTAL,2,6,12.50\n`, stderr: "" });
+      if (first) return first;
+      const withOptions = compare(runCli(s, {}, ["--delimiter", "tab", "-", "--top", "1"], "category\tquantity\tprice\nTea\t1\t2\n"), { status: 0, stdout: `${HEADER}Tea,1,1,2.00\nTOTAL,1,1,2.00\n` });
+      if (withOptions) return `with options: ${withOptions}`;
+      const bad = runCli(s, {}, ["-"], Buffer.from([0xff, 0xff]));
+      if (bad.status !== 2 || bad.stderr !== "error: cannot read -\n" || bad.stdout.length) return `invalid UTF-8 on stdin gave exit ${bad.status}, stderr ${JSON.stringify(bad.stderr.slice(0, 80))}`;
+      const empty = runCli(s, {}, ["-"], "");
+      return empty.status === 2 && empty.stderr === "error: input has no header row\n" ? "" : `empty stdin gave exit ${empty.status}, stderr ${JSON.stringify(empty.stderr.slice(0, 80))}`;
+    }],
+    ["22 combined options and unicode", (s) => {
+      const text = "Qty|Cat|Price|Discount\n2|Café|10|10\n1|日本酒|9|\n1|Café|1|0\n3|ünï|1|oops\n1|ünï|0.5|50\n";
+      const run = runCli(s, { "in.csv": Buffer.from(text, "utf8") }, ["in.csv", "--delimiter", "|", "--out", "out.csv"]);
+      if (run.status !== 2 || run.stderr !== "error: missing column: category\nerror: missing column: quantity\n" || run.outFile) return `renamed header gave exit ${run.status}, stderr ${JSON.stringify(run.stderr.slice(0, 120))}`;
+      const fixed = Buffer.from(text.replace("Qty|Cat", "Quantity|Category"), "utf8");
+      const ok = runCli(s, { "in.csv": fixed }, ["--sort", "name", "--top", "2", "--bad-rows", "bad.csv", "--out", "out.csv", "in.csv", "--delimiter", "|"]);
+      const want = `${HEADER}Café,2,3,19.00\nünï,1,1,0.25\nOther,1,1,9.00\nTOTAL,4,5,28.25\n`;
+      if (ok.status !== 1 || ok.stdout.length || ok.stderr !== "row 4: invalid discount\n") return `exit ${ok.status}, stdout ${ok.stdout.length} bytes, stderr ${JSON.stringify(ok.stderr.slice(0, 80))}`;
+      if (!ok.outFile || !ok.outFile.equals(Buffer.from(want, "utf8"))) return `out.csv was ${JSON.stringify(ok.outFile && ok.outFile.toString("utf8"))}`;
+      return ok.badFile && ok.badFile.equals(Buffer.from("row,reason\n4,invalid discount\n")) ? "" : "bad.csv was wrong";
+    }],
   ];
 }
 

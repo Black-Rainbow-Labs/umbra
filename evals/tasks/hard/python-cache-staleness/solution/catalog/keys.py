@@ -11,3 +11,8 @@ def lookup_key(name):
 def search_key(prefix):
     """Return the cache key for a prefix search."""
     return ("search", normalize_name(prefix))
+
+
+def total_key(prefix):
+    """Return the cache key for the total price of the products under a prefix."""
+    return ("total", normalize_name(prefix))

@@ -28,6 +28,12 @@ class OrdersTests(unittest.TestCase):
         text = order_summary("A, 1, 9.00\nB, 1, 12.00\n", inventory)
         self.assertEqual(text, "B: $12.00\nA: $9.00\nTOTAL: $21.00")
 
+    def test_repeated_sku_lines_are_checked_together(self):
+        inventory = Inventory({"A": 10})
+        with self.assertRaises(OutOfStock):
+            place_order("A, 6, 1.00\nA, 6, 1.00\n", inventory)
+        self.assertEqual(inventory.available("A"), 10)
+
 
 if __name__ == "__main__":
     unittest.main()

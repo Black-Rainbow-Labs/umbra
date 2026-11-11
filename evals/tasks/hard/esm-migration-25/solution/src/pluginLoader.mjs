@@ -8,6 +8,7 @@ export function listPlugins() {
 }
 
 export async function loadPlugin(name) {
+  if (!listPlugins().includes(name)) throw new Error('unknown plugin: ' + name);
   const loaded = await import('./plugins/' + name + '.mjs');
   return loaded.default;
 }

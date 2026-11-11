@@ -236,8 +236,251 @@ test("handle does not modify or keep the request it was given", async () => {
   assert.deepEqual(first.config.retries.schedule, [3, 4]);
 });
 
+const { PRESETS, applyPreset, withHeaders } = lib;
+const PRESET_VALUES = {
+  fast: { timeout: 5, retries: { max: 2, backoff: [10, 20] } },
+  slow: { timeout: 120, retries: { max: 6, backoff: [500, 1000] } },
+  secure: { headers: { "x-secure": "1" }, features: { tags: ["tls"] } },
+};
+
+/**
+ * Copies plain objects and arrays and keeps every other value (functions included) as it is.
+ * @param value - any value
+ */
+function copyKeepingFunctions(value) {
+  if (Array.isArray(value)) return value.map(copyKeepingFunctions);
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, copyKeepingFunctions(inner)]));
+  return value;
+}
+
+/**
+ * Merges source into target the way the task describes: plain objects merge, other values replace, undefined is skipped.
+ * @param target - the object to change
+ * @param source - the values to put on top
+ */
+function mergeReference(target, source) {
+  for (const [key, value] of Object.entries(source ?? {})) {
+    if (value === undefined) continue;
+    const plain = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+    if (plain(value) && plain(target[key])) mergeReference(target[key], value);
+    else target[key] = copyKeepingFunctions(value);
+  }
+  return target;
+}
+
+/**
+ * Builds the config a request should get from a service with this base, computed independently of the library.
+ * @param request - { overrides, preset, token, headers, features }
+ * @param base - the base option of the service
+ */
+function expectedFull(request, base = {}) {
+  const config = copyKeepingFunctions(ORIGINAL);
+  mergeReference(config, base);
+  mergeReference(config, request.overrides);
+  if (request.preset) mergeReference(config, PRESET_VALUES[request.preset]);
+  if (request.token) config.headers.authorization = `Bearer ${request.token}`;
+  Object.assign(config.headers, request.headers ?? {});
+  for (const name of request.features ?? []) {
+    if (name === "beta") config.features.beta = true;
+    if (!config.features.tags.includes(name)) config.features.tags.push(name);
+  }
+  const last = config.retries.backoff[config.retries.backoff.length - 1] ?? 0;
+  config.retries.schedule = Array.from({ length: config.retries.max }, (_, i) => config.retries.backoff[i] ?? last);
+  return config;
+}
+
+test("PRESETS is deeply frozen and keeps its values", () => {
+  assert.deepEqual(PRESETS, PRESET_VALUES);
+  assertDeeplyFrozen(PRESETS, "PRESETS");
+  assert.throws(() => { PRESETS.fast.retries.backoff.push(1); }, TypeError);
+  assert.throws(() => { PRESETS.secure.headers.authorization = "x"; }, TypeError);
+});
+
+test("applyPreset merges deeply, returns a new config and shares nothing", () => {
+  const input = buildConfig({ headers: { "x-id": "1" }, retries: { max: 9 } });
+  const snapshot = structuredClone(input);
+  const secure = applyPreset(input, "secure");
+  assert.deepEqual(input, snapshot);
+  assert.deepEqual(secure.headers, { accept: "application/json", "x-id": "1", "x-secure": "1" });
+  assert.deepEqual(secure.features, { beta: false, tags: ["tls"] });
+  assert.deepEqual(secure.retries, input.retries);
+  assert.deepEqual(sharedRefs(secure, input), []);
+  assert.deepEqual(sharedRefs(secure, PRESETS), []);
+  const fast = applyPreset(input, "fast");
+  assert.deepEqual(fast.retries, { max: 2, backoff: [10, 20] });
+  assert.equal(fast.timeout, 5);
+  assert.deepEqual(fast.headers, input.headers);
+  assert.deepEqual(sharedRefs(fast, PRESETS), []);
+  fast.retries.backoff.push(99);
+  fast.headers.authorization = "x";
+  assert.deepEqual(PRESETS, PRESET_VALUES);
+});
+
+test("applyPreset can be applied twice and changing the result does not change the preset", () => {
+  const once = applyPreset(buildConfig(), "secure");
+  const twice = applyPreset(once, "secure");
+  assert.deepEqual(twice.features.tags, ["tls"]);
+  once.features.tags.push("later");
+  assert.deepEqual(twice.features.tags, ["tls"]);
+  assert.deepEqual(applyPreset(buildConfig(), "secure").features.tags, ["tls"]);
+});
+
+test("applyPreset rejects names that are not presets, including inherited names", () => {
+  const input = buildConfig();
+  for (const name of ["nope", "", "constructor", "toString", "__proto__", "hasOwnProperty", undefined, null]) {
+    assert.throws(() => applyPreset(input, name), (error) => error instanceof RangeError && error.message === `unknown preset: ${name}`, String(name));
+  }
+  assert.deepEqual(input, ORIGINAL);
+});
+
+test("withHeaders returns a new config, later values win and nothing is shared", () => {
+  const input = buildConfig({ headers: { "x-id": "1" } });
+  const snapshot = structuredClone(input);
+  const headers = { "x-id": "2", "x-more": "m" };
+  const output = withHeaders(input, headers);
+  assert.deepEqual(input, snapshot);
+  assert.deepEqual(headers, { "x-id": "2", "x-more": "m" });
+  assert.deepEqual(output.headers, { accept: "application/json", "x-id": "2", "x-more": "m" });
+  assert.deepEqual(sharedRefs(input, output), []);
+  assert.deepEqual(sharedRefs(output, headers), []);
+  assert.deepEqual(withHeaders(input, {}), input);
+});
+
+test("buildConfig keeps function values and never shares them as objects", () => {
+  const onRetry = () => "retry";
+  const config = buildConfig({ hooks: { onRetry, list: [onRetry] }, retries: { max: 1 } });
+  assert.equal(config.hooks.onRetry, onRetry);
+  assert.equal(config.hooks.list[0], onRetry);
+  const next = planRetries(withAuth(enableFeature(config, "search"), "t"));
+  assert.equal(next.hooks.onRetry, onRetry);
+  assert.notEqual(next.hooks, config.hooks);
+  assert.notEqual(next.hooks.list, config.hooks.list);
+});
+
+test("handle applies the base, the overrides and the preset in the stated order", async () => {
+  const base = { timeout: 10, headers: { "x-app": "web", accept: "text/plain" }, retries: { backoff: [1, 2] }, features: { tags: ["core"] } };
+  const service = createService({ base });
+  const requests = [
+    { path: "/1" },
+    { path: "/2", overrides: { retries: { max: 4 }, headers: { "x-id": "2" } } },
+    { path: "/3", preset: "fast", overrides: { timeout: 1, retries: { backoff: [7] } } },
+    { path: "/4", preset: "secure", token: "tk", headers: { "x-id": "4", accept: "text/html" }, features: ["search", "beta"] },
+    { path: "/5", preset: "slow", features: ["core", "extra"], overrides: { features: { tags: ["mine"] } } },
+  ];
+  for (const request of requests) {
+    const result = await service.handle(request);
+    assert.deepEqual(result.config, expectedFull(request, base), request.path);
+  }
+  assert.deepEqual(DEFAULTS, ORIGINAL);
+  assert.deepEqual(PRESETS, PRESET_VALUES);
+});
+
+test("an unknown preset in a request fails that request only", async () => {
+  const service = createService();
+  await assert.rejects(() => service.handle({ path: "/bad", preset: "constructor" }), RangeError);
+  const ok = await service.handle({ path: "/ok", preset: "fast" });
+  assert.deepEqual(ok.config, expectedFull({ preset: "fast" }));
+  assert.deepEqual(service.history().map((entry) => entry.path), ["/ok"]);
+});
+
+test("the base is copied when the service is created and never changed by requests", async () => {
+  const base = { headers: { "x-app": "web" }, features: { tags: ["core"] }, retries: { backoff: [1, 2] } };
+  const snapshot = structuredClone(base);
+  const service = createService({ base });
+  const first = await service.handle({ path: "/a", token: "t", features: ["search"], preset: "secure", overrides: { retries: { max: 2 } } });
+  assert.deepEqual(base, snapshot);
+  assert.deepEqual(sharedRefs(first.config, base), []);
+  first.config.features.tags.push("junk");
+  first.config.headers["x-app"] = "changed";
+  base.headers["x-app"] = "later edit";
+  base.features.tags.push("later");
+  const second = await service.handle({ path: "/b" });
+  assert.deepEqual(second.config, expectedFull({}, snapshot));
+});
+
+test("two services with different bases do not affect each other", async () => {
+  const one = createService({ base: { headers: { "x-app": "one" } } });
+  const two = createService({ base: { headers: { "x-app": "two" }, features: { tags: ["t"] } } });
+  const [a, b, c] = await Promise.all([one.handle({ path: "/a", features: ["f"] }), two.handle({ path: "/b" }), one.handle({ path: "/c" })]);
+  assert.equal(a.config.headers["x-app"], "one");
+  assert.equal(b.config.headers["x-app"], "two");
+  assert.deepEqual(c.config.features, { beta: false, tags: [] });
+  assert.deepEqual(b.config.features.tags, ["t"]);
+  assert.deepEqual(one.history().map((entry) => entry.path), ["/a", "/c"]);
+  assert.deepEqual(two.history().map((entry) => entry.path), ["/b"]);
+});
+
+test("history returns copies in the order requests finished and is not changed by callers", async () => {
+  const service = createService();
+  assert.deepEqual(service.history(), []);
+  const first = await service.handle({ path: "/a", token: "t", features: ["search"] });
+  const second = await service.handle({ path: "/b", preset: "fast" });
+  first.config.headers.authorization = "stolen";
+  first.config.features.tags.push("junk");
+  const entries = service.history();
+  assert.deepEqual(entries.map((entry) => entry.path), ["/a", "/b"]);
+  assert.deepEqual(entries[0].config, expectedFull({ token: "t", features: ["search"] }));
+  assert.deepEqual(entries[1].config, second.config);
+  assert.deepEqual(sharedRefs(entries[0].config, first.config), []);
+  assert.deepEqual(sharedRefs(entries[1].config, second.config), []);
+  entries[1].config.retries.backoff.push(1);
+  entries.pop();
+  entries[0].path = "/changed";
+  const again = service.history();
+  assert.equal(again.length, 2);
+  assert.equal(again[0].path, "/a");
+  assert.deepEqual(again[1].config, second.config);
+  assert.notEqual(again, service.history());
+  assert.deepEqual(sharedRefs(again, service.history()), []);
+});
+
+test("concurrent requests with presets, headers and a base stay separate and are all in the history", async () => {
+  const base = { headers: { "x-app": "web" } };
+  const service = createService({ base });
+  const requests = [
+    { path: "/1", preset: "secure", features: ["a"] },
+    { path: "/2", preset: "fast", token: "x" },
+    { path: "/3", headers: { "x-id": "3" } },
+    { path: "/4", preset: "secure" },
+    { path: "/5", overrides: { retries: { max: 1 } }, features: ["beta"] },
+    { path: "/6", preset: "slow", headers: { accept: "text/csv" } },
+  ];
+  const results = await Promise.all(requests.map((request) => service.handle(request)));
+  results.forEach((result, index) => assert.deepEqual(result.config, expectedFull(requests[index], base), requests[index].path));
+  for (let a = 0; a < results.length; a += 1) {
+    for (let b = a + 1; b < results.length; b += 1) assert.deepEqual(sharedRefs(results[a].config, results[b].config), []);
+  }
+  const entries = service.history();
+  assert.deepEqual(entries.map((entry) => entry.path).sort(), requests.map((request) => request.path));
+  entries.forEach((entry) => assert.deepEqual(entry.config, expectedFull(requests.find((request) => request.path === entry.path), base), entry.path));
+});
+
+test("function values in a request or in the base pass through to the config", async () => {
+  const onRetry = () => 1;
+  const onDone = () => 2;
+  const service = createService({ base: { hooks: { onDone } } });
+  const request = { path: "/f", overrides: { hooks: { onRetry } }, features: ["search"], preset: "fast" };
+  const first = await service.handle(request);
+  assert.equal(first.config.hooks.onRetry, onRetry);
+  assert.equal(first.config.hooks.onDone, onDone);
+  assert.deepEqual(Object.keys(request.overrides.hooks), ["onRetry"]);
+  const [entry] = service.history();
+  assert.equal(entry.config.hooks.onRetry, onRetry);
+  assert.notEqual(entry.config.hooks, first.config.hooks);
+});
+
+test("handle does not modify or keep the request when it has a preset, headers and a base", async () => {
+  const service = createService({ base: { features: { tags: ["b"] } } });
+  const request = { path: "/a", preset: "secure", headers: { "x-id": "1" }, token: "t", features: ["search"], overrides: { retries: { backoff: [3] }, features: { beta: true } } };
+  const snapshot = copyKeepingFunctions(request);
+  const first = await service.handle(request);
+  assert.deepEqual(request, snapshot);
+  assert.deepEqual(sharedRefs(first.config, request), []);
+  assert.deepEqual(first.config.features, { beta: true, tags: ["tls", "search"] });
+});
+
 test("index still exports the same functions", () => {
-  for (const name of ["DEFAULTS", "getDefaults", "buildConfig", "withAuth", "enableFeature", "planRetries", "createService"]) {
+  for (const name of ["DEFAULTS", "getDefaults", "buildConfig", "withAuth", "withHeaders", "enableFeature", "planRetries", "PRESETS", "applyPreset", "createService"]) {
     assert.ok(lib[name] !== undefined, name);
   }
 });

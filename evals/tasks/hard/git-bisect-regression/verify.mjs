@@ -1,5 +1,5 @@
-// Verifier for git-bisect-regression: eleven checks on FIRST_BAD.txt, the history, the new commit, the working
-// tree, the visible tests and the hidden behavior tests.
+// Verifier for git-bisect-regression: sixteen checks on FIRST_BAD.txt (two lines), the history, the new commit,
+// the working tree, the visible tests and the hidden behavior tests.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -36,12 +36,13 @@ function testsPass(cwd, files, workspaceDir) {
  * @param taskDir - the task folder
  */
 async function buildOriginal(taskDir) {
-  const { buildRepo, BAD_SUBJECT } = await import(pathToFileURL(path.join(taskDir, "hidden", "repo.mjs")).href);
+  const repo = await import(pathToFileURL(path.join(taskDir, "hidden", "repo.mjs")).href);
+  const { buildRepo, BAD_SUBJECT, BAD_SUBJECT_DUE } = repo;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bisect-orig-"));
   buildRepo(dir);
   const revs = git(dir, ["rev-list", "main"]).out.trim().split("\n");
   const rows = git(dir, ["log", "--format=%H%x09%s", "main"]).out.trim().split("\n").map((line) => line.split("\t"));
-  return { dir, revs, badHash: rows.find(([, subject]) => subject === BAD_SUBJECT)[0], message: (await import(pathToFileURL(path.join(taskDir, "hidden", "repo.mjs")).href)).FIX_MESSAGE };
+  return { dir, revs, badHash: rows.find(([, subject]) => subject === BAD_SUBJECT)[0], dueHash: rows.find(([, subject]) => subject === BAD_SUBJECT_DUE)[0], message: repo.FIX_MESSAGE };
 }
 
 /**
@@ -67,7 +68,7 @@ export async function verify(workspaceDir, runInfo) {
 /**
  * Returns the list of { label, ok } checks.
  * @param ws - the workspace repository folder
- * @param original - { revs, badHash, message } of a fresh copy of the original repository
+ * @param original - { revs, badHash, dueHash, message } of a fresh copy of the original repository
  * @param taskDir - the task folder
  */
 function runChecks(ws, original, taskDir) {
@@ -80,9 +81,11 @@ function runChecks(ws, original, taskDir) {
   const status = git(ws, ["status", "--porcelain"]);
   const bisectRefs = git(ws, ["for-each-ref", "refs/bisect"]).out.trim();
   const sameTests = changed.every((name) => !name.startsWith("test/"));
+  const lines = raw.replace(/\r/g, "").split("\n");
   return [
-    { label: "FIRST_BAD.txt holds the hash of the first bad commit", ok: raw.trim() === original.badHash },
-    { label: "FIRST_BAD.txt is only the hash and a newline", ok: /^[0-9a-f]{40}\n?$/.test(raw) },
+    { label: "FIRST_BAD.txt has the first bad commit of the tax test on its tax line", ok: lines[0] === `tax ${original.badHash}` },
+    { label: "FIRST_BAD.txt has the first bad commit of the due date test on its due line", ok: lines[1] === `due ${original.dueHash}` },
+    { label: "FIRST_BAD.txt is exactly the two lines, each ending in a newline", ok: /^tax [0-9a-f]{40}\ndue [0-9a-f]{40}\n$/.test(raw.replace(/\r/g, "")) },
     { label: "history is unchanged with exactly one new commit", ok: oneNew },
     { label: "commit message is exactly the stated one", ok: git(ws, ["log", "-1", "--format=%B"]).out.trim() === original.message },
     { label: "on branch main with a clean working tree", ok: branch.ok && branch.out.trim() === "main" && status.ok && status.out.trim() === "" },
@@ -91,6 +94,9 @@ function runChecks(ws, original, taskDir) {
     { label: "no test file was changed", ok: oneNew && sameTests },
     { label: "the repository's own tests pass", ok: testsPass(ws, [], ws) },
     { label: "hidden tax behavior checks pass", ok: testsPass(ws, [path.join(taskDir, "hidden", "tax.test.mjs")], ws) },
+    { label: "hidden due date behavior checks pass", ok: testsPass(ws, [path.join(taskDir, "hidden", "due.test.mjs")], ws) },
+    { label: "later code that uses roundCents is unchanged in behavior", ok: testsPass(ws, [path.join(taskDir, "hidden", "rounding.test.mjs")], ws) },
+    { label: "later code that uses dueDate or the tax functions is unchanged in behavior", ok: testsPass(ws, [path.join(taskDir, "hidden", "callers.test.mjs")], ws) },
     { label: "features added after the broken commit still work", ok: testsPass(ws, [path.join(taskDir, "hidden", "features.test.mjs")], ws) },
   ];
 }

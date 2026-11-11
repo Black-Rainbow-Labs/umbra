@@ -1,6 +1,6 @@
 import unittest
 
-from shiplib.textutil import slugify, wrap_text
+from shiplib.textutil import slugify, truncate, wrap_text
 
 
 class TextUtilTests(unittest.TestCase):
@@ -18,6 +18,16 @@ class TextUtilTests(unittest.TestCase):
 
     def test_wrap_long_word_gets_its_own_line(self):
         self.assertEqual(wrap_text("a bcdefghij k", 5), ["a", "bcdefghij", "k"])
+
+    def test_truncate_leaves_short_text_alone(self):
+        self.assertEqual(truncate("hello", 5), "hello")
+
+    def test_truncate_result_fits_the_width(self):
+        self.assertEqual(truncate("hello world", 8), "hello...")
+
+    def test_truncate_needs_room_for_the_dots(self):
+        with self.assertRaises(ValueError):
+            truncate("hello", 2)
 
 
 if __name__ == "__main__":

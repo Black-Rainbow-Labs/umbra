@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import {
-  COLUMNS_AFTER, expectedRows, expectedStats, expectedLowStock, expectedCategories, expectedBundle,
+  COLUMNS_AFTER, categoriesFile, expectedRows, expectedStats, expectedValueStats, expectedLowStock, expectedCategories, expectedLabels, expectedBundle,
   makefileLines, productRows, productsAfter, productsBefore, toolFiles,
 } from "./fixture.mjs";
 
@@ -20,29 +20,40 @@ function readOrEmpty(file) {
 }
 
 /**
- * Checks the TSV file and returns one problem text (or "") for each of the five TSV checks.
+ * Returns a problem text for the first row whose field at a column differs from the expected one, or "".
+ * @param rows - the rows of the agent's file
+ * @param want - the expected rows
+ * @param column - the column position
+ * @param name - the column name for the message
+ */
+function columnProblem(rows, want, column, name) {
+  const bad = rows.findIndex((row, index) => row[column] !== want[index][column]);
+  return bad < 0 ? "" : `row ${bad + 1}: ${name} ${JSON.stringify(rows[bad][column])}, expected ${JSON.stringify(want[bad][column])}`;
+}
+
+/**
+ * Checks the TSV file and returns one problem text (or "") for each of the TSV checks.
  * @param buffer - the bytes of data/products.tsv
  */
 function tsvProblems(buffer) {
   const text = buffer.toString("utf8");
   const lines = text.split("\n");
   const want = expectedRows(SEED);
-  const before = productRows(SEED);
   const rows = lines.slice(1, -1).map((line) => line.split("\t"));
-  const problems = { header: "", price: "", status: "", tabs: "", ending: "" };
+  const problems = { header: "", label: "", price: "", value: "", status: "", tabs: "", ending: "" };
   if (lines[0] !== COLUMNS_AFTER.join("\t")) problems.header = `header is ${JSON.stringify(lines[0]).slice(0, 80)}`;
   if (rows.length !== want.length) problems.tabs = `${rows.length} data rows, expected ${want.length}`;
-  const badWidth = rows.findIndex((row) => row.length !== 7);
-  if (!problems.tabs && badWidth >= 0) problems.tabs = `row ${badWidth + 1} has ${rows[badWidth].length} fields, expected 7`;
+  const badWidth = rows.findIndex((row) => row.length !== COLUMNS_AFTER.length);
+  if (!problems.tabs && badWidth >= 0) problems.tabs = `row ${badWidth + 1} has ${rows[badWidth].length} fields, expected ${COLUMNS_AFTER.length}`;
   if (!problems.tabs) {
-    const moved = rows.findIndex((row, index) => [0, 1, 2, 4, 5].some((column) => row[column] !== want[index][column]));
-    if (moved >= 0) problems.tabs = `row ${moved + 1}: a field other than price and status changed`;
-    const price = rows.findIndex((row, index) => row[3] !== want[index][3]);
-    if (price >= 0) problems.price = `row ${price + 1}: price ${JSON.stringify(rows[price][3])}, expected ${JSON.stringify(want[price][3])} (cents ${JSON.stringify(before[price][3])})`;
-    const status = rows.findIndex((row, index) => row[6] !== want[index][6]);
-    if (status >= 0) problems.status = `row ${status + 1}: status ${JSON.stringify(rows[status][6])}, expected ${JSON.stringify(want[status][6])}`;
+    const moved = rows.findIndex((row, index) => [0, 1, 2, 5, 6].some((column) => row[column] !== want[index][column]));
+    if (moved >= 0) problems.tabs = `row ${moved + 1}: a field other than label, price, value and status changed`;
+    problems.label = columnProblem(rows, want, 3, "label");
+    problems.price = columnProblem(rows, want, 4, "price");
+    problems.value = columnProblem(rows, want, 7, "value");
+    problems.status = columnProblem(rows, want, 8, "status");
   } else {
-    problems.price = problems.status = "rows are not usable";
+    problems.label = problems.price = problems.value = problems.status = "rows are not usable";
   }
   if (buffer.includes(0x0d)) problems.ending = "contains CR characters";
   else if (!text.endsWith("\n") || text.endsWith("\n\n")) problems.ending = "file must end with exactly one newline";
@@ -56,7 +67,7 @@ function tsvProblems(buffer) {
  */
 function preservedProblem(text) {
   if (text.includes("\r")) return "Makefile contains CR characters";
-  const changeable = new Set([".PHONY: all stats check clean", "COLUMNS = 6", "\t$(PYTHON) tools/tsvstat.py $(DATA) price_cents > $(OUT)/stats.txt", "\trm -rf $(OUT)"]);
+  const changeable = new Set([".PHONY: all stats check clean", "all: stats check", "COLUMNS = 6", "\t$(PYTHON) tools/tsvstat.py $(DATA) price_cents > $(OUT)/stats.txt", "\trm -rf $(OUT)"]);
   const lines = text.split("\n");
   let position = 0;
   for (const original of makefileLines()) {
@@ -84,6 +95,7 @@ function makeProject(scratch, name, makefile, dataText) {
   fs.mkdirSync(path.join(dir, "data"), { recursive: true });
   fs.writeFileSync(path.join(dir, "data", "products.tsv"), dataText);
   fs.writeFileSync(path.join(dir, "data", "old.tsv"), productsBefore(SEED));
+  fs.writeFileSync(path.join(dir, "data", "categories.tsv"), categoriesFile());
   fs.writeFileSync(path.join(dir, "Makefile"), makefile);
   return dir;
 }
@@ -95,7 +107,7 @@ function makeProject(scratch, name, makefile, dataText) {
  * @param args - make arguments
  */
 function runMake(taskDir, dir, args) {
-  const run = spawnSync("python", [path.join(taskDir, "hidden", "minimake.py"), "-C", dir, ...args], { encoding: "utf8", timeout: 60000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+  const run = spawnSync("python", [path.join(taskDir, "hidden", "minimake.py"), "-C", dir, ...args], { encoding: "utf8", timeout: 60000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", LC_ALL: "C" } });
   const output = `${run.stdout || ""}${run.stderr || ""}${run.error ? run.error.message : ""}`.trim().split("\n").slice(-2).join(" | ");
   return { code: run.status, output: output.slice(0, 200), stdout: run.stdout || "" };
 }
@@ -127,17 +139,23 @@ function targetCheck(ctx) {
  * @param dump - the JSON from minimake --dump, or null
  */
 function structureProblems(dump) {
-  const result = { lowstock: "no parsed Makefile", categories: "no parsed Makefile", dist: "no parsed Makefile" };
+  const names = ["lowstock", "categories", "labels", "value_stats", "dist", "all", "target_vars"];
+  const result = Object.fromEntries(names.map((name) => [name, "no parsed Makefile"]));
   if (!dump) return result;
   const has = (rule, items) => rule && items.every((item) => rule.prereqs.includes(item));
-  const lowstock = dump.rules["build/lowstock.tsv"];
-  const categories = dump.rules["build/categories.txt"];
+  const outRules = { lowstock: "build/lowstock.tsv", categories: "build/categories.txt", labels: "build/labels.txt", value_stats: "build/value_stats.txt" };
+  for (const [name, target] of Object.entries(outRules)) {
+    const rule = dump.rules[target];
+    result[name] = has(rule, ["data/products.tsv", "build"]) && rule.recipe.length ? "" : `no rule ${target} with prerequisites data/products.tsv and build`;
+  }
+  const wanted = ["stats", "build/value_stats.txt", "build/lowstock.tsv", "build/categories.txt", "build/labels.txt"];
   const dist = dump.rules.dist;
-  result.lowstock = has(lowstock, ["data/products.tsv", "build"]) && lowstock.recipe.length ? "" : "no rule build/lowstock.tsv with prerequisites data/products.tsv and build";
-  result.categories = has(categories, ["data/products.tsv", "build"]) && categories.recipe.length ? "" : "no rule build/categories.txt with prerequisites data/products.tsv and build";
-  const wanted = ["stats", "build/lowstock.tsv", "build/categories.txt"];
   const exact = dist && dist.prereqs.length === wanted.length && has(dist, wanted);
-  result.dist = !exact ? "no rule dist with prerequisites stats, build/lowstock.tsv, build/categories.txt" : !dump.phony.includes("dist") ? "dist is not listed in .PHONY" : !["all", "stats", "check", "clean"].every((name) => dump.phony.includes(name)) ? "an original name was removed from .PHONY" : "";
+  result.dist = !exact ? `no rule dist with prerequisites ${wanted.join(", ")}` : !dump.phony.includes("dist") ? "dist is not listed in .PHONY" : !["all", "stats", "check", "clean"].every((name) => dump.phony.includes(name)) ? "an original name was removed from .PHONY" : "";
+  const all = dump.rules.all;
+  result.all = all && all.prereqs.join(" ") === "stats check dist" ? "" : "all must have the prerequisites stats check dist, in that order";
+  const missing = Object.values(outRules).filter((target) => !dump.rules[target] || !dump.rules[target].recipe.join("\n").includes("$@") || /build\//.test(dump.rules[target].recipe.join("\n")));
+  result.target_vars = missing.length ? `recipes of ${missing.join(", ")} must write to $@ and not repeat the build/ path` : "";
   return result;
 }
 
@@ -152,7 +170,9 @@ function runChecks(workspaceDir, taskDir, scratch) {
   const add = (name, why) => checks.push({ name, ok: !why, why: why || "" });
   const tsv = tsvProblems(readOrEmpty(path.join(workspaceDir, "data", "products.tsv")));
   add("tsv header", tsv.header);
+  add("tsv label column from categories.tsv", tsv.label);
   add("tsv price column in dollars", tsv.price);
+  add("tsv value column", tsv.value);
   add("tsv status column", tsv.status);
   add("tsv tabs and other fields unchanged", tsv.tabs);
   add("tsv single trailing newline, LF only", tsv.ending);
@@ -167,19 +187,29 @@ function runChecks(workspaceDir, taskDir, scratch) {
   const structure = structureProblems(dump);
   add("rule build/lowstock.tsv", structure.lowstock);
   add("rule build/categories.txt", structure.categories);
+  add("rule build/labels.txt", structure.labels);
+  add("rule build/value_stats.txt", structure.value_stats);
   add("rule dist and .PHONY", structure.dist);
+  add("rule all has the prerequisites stats check dist", structure.all);
+  add("new recipes use $@ and no literal build/ path", structure.target_vars);
 
   const base = { taskDir, scratch, makefile };
   add("make stats writes build/stats.txt for price", targetCheck({ ...base, name: "stats", args: ["stats"], file: "build/stats.txt", expected: expectedStats(SEED) }));
   const okDir = makeProject(scratch, "check-ok", makefile, productsAfter(SEED));
   const okRun = runMake(taskDir, okDir, ["check"]);
-  add("make check passes on the 7 column file", okRun.code === 0 ? "" : okRun.output);
+  add("make check passes on the 9 column file", okRun.code === 0 ? "" : okRun.output);
   const badRun = runMake(taskDir, makeProject(scratch, "check-bad", makefile, productsAfter(SEED)), ["check", "DATA=data/old.tsv"]);
   add("make check fails on a 6 column file", badRun.code !== 0 ? "" : "make check passed on a file with 6 columns");
   add("make build/lowstock.tsv", targetCheck({ ...base, name: "low", args: ["build/lowstock.tsv"], file: "build/lowstock.tsv", expected: expectedLowStock(SEED) }));
   add("make build/categories.txt", targetCheck({ ...base, name: "cat", args: ["build/categories.txt"], file: "build/categories.txt", expected: expectedCategories(SEED) }));
+  add("make build/labels.txt", targetCheck({ ...base, name: "labels", args: ["build/labels.txt"], file: "build/labels.txt", expected: expectedLabels(SEED) }));
+  add("make build/value_stats.txt", targetCheck({ ...base, name: "valstats", args: ["build/value_stats.txt"], file: "build/value_stats.txt", expected: expectedValueStats(SEED) }));
   add("make dist writes dist/bundle.txt", targetCheck({ ...base, name: "dist", args: ["dist"], file: "dist/bundle.txt", expected: expectedBundle(SEED) }));
   add("OUT and DIST overrides are honored", targetCheck({ ...base, name: "vars", args: ["OUT=alt", "DIST=out2", "dist"], file: "out2/bundle.txt", expected: expectedBundle(SEED) }));
+  add("make all builds dist and runs check", targetCheck({ ...base, name: "all", args: ["all"], file: "dist/bundle.txt", expected: expectedBundle(SEED) }));
+  const allBad = runMake(taskDir, makeProject(scratch, "all-bad", makefile, productsAfter(SEED).replace("\n", "\textra\n")), ["all"]);
+  add("make all fails when check fails", allBad.code !== 0 ? "" : "make all passed on a file with a wrong column count");
+  add("data/categories.tsv is unchanged", readOrEmpty(path.join(workspaceDir, "data", "categories.tsv")).equals(Buffer.from(categoriesFile())) ? "" : "data/categories.tsv was changed or removed");
 
   const cleanDir = makeProject(scratch, "clean", makefile, productsAfter(SEED));
   const built = runMake(taskDir, cleanDir, ["dist"]);

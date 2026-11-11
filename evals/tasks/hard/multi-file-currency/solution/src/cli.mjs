@@ -3,10 +3,11 @@ import { parseInventory } from "./parser.mjs";
 import { validateItem } from "./validator.mjs";
 import { toCsv, toJson } from "./serializer.mjs";
 import { renderReport } from "./report.mjs";
+import { renderSummary } from "./summary.mjs";
 import { SUPPORTED_CURRENCIES, DEFAULT_CURRENCY } from "./money.mjs";
 
-const FORMATS = ["csv", "json", "report"];
-const USAGE = "usage: inventory <file> [--format csv|json|report] [--currency CODE]";
+const FORMATS = ["csv", "json", "report", "summary"];
+const USAGE = "usage: inventory <file> [--format csv|json|report|summary] [--currency CODE] [--total-in CODE]";
 
 /**
  * Reads the value of an option written as "--name value" or "--name=value".
@@ -23,14 +24,15 @@ function readOption(argv, index, name) {
 }
 
 /**
- * Parses command line arguments into { file, format, currency } or { error }.
+ * Parses command line arguments into { file, format, currency, totalIn } or { error }.
  * @param argv - the argument list without the node and script entries
  */
 export function parseArgs(argv) {
-  const options = { file: null, format: "report", currency: DEFAULT_CURRENCY };
+  const options = { file: null, format: "report", currency: DEFAULT_CURRENCY, totalIn: null };
   for (let i = 0; i < argv.length; ) {
     const format = readOption(argv, i, "--format");
     const currency = readOption(argv, i, "--currency");
+    const totalIn = readOption(argv, i, "--total-in");
     if (format.matched) {
       if (format.value === undefined) return { error: "missing value for --format" };
       options.format = format.value;
@@ -39,12 +41,17 @@ export function parseArgs(argv) {
       if (currency.value === undefined) return { error: "missing value for --currency" };
       options.currency = currency.value.trim().toUpperCase();
       i += currency.consumed;
+    } else if (totalIn.matched) {
+      if (totalIn.value === undefined) return { error: "missing value for --total-in" };
+      options.totalIn = totalIn.value.trim().toUpperCase();
+      i += totalIn.consumed;
     } else if (argv[i].startsWith("--")) return { error: `unknown option: ${argv[i]}` };
     else { options.file = argv[i]; i += 1; }
   }
   if (!options.file) return { error: USAGE };
   if (!FORMATS.includes(options.format)) return { error: `unknown format: ${options.format}` };
   if (!SUPPORTED_CURRENCIES.includes(options.currency)) return { error: `unsupported currency: ${options.currency}` };
+  if (options.totalIn !== null && !SUPPORTED_CURRENCIES.includes(options.totalIn)) return { error: `unsupported currency: ${options.totalIn}` };
   return options;
 }
 
@@ -78,6 +85,7 @@ export function run(argv) {
   const errors = collectErrors(rows);
   if (errors.length) return { code: 1, stdout: "", stderr: errors.join("\n") + "\n" };
   const items = rows.map((row) => row.item);
-  const writers = { csv: toCsv, json: toJson, report: renderReport };
+  const totalIn = options.totalIn ?? undefined;
+  const writers = { csv: toCsv, json: toJson, report: (list) => renderReport(list, { totalIn }), summary: (list) => renderSummary(list, { totalIn }) };
   return { code: 0, stdout: writers[options.format](items), stderr: "" };
 }

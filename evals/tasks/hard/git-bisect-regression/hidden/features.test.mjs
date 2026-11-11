@@ -41,7 +41,7 @@ test("money helpers and formatting still work", async () => {
   const { toCents, fromCents } = await load("src/money.mjs");
   assert.equal(toCents(19.99), 1999);
   assert.equal(fromCents(1999), 19.99);
-  const { formatMoney } = await load("src/format.mjs");
+  const { formatMoney } = await load("src/format/index.mjs");
   assert.equal(formatMoney(-250), "-$2.50");
   assert.equal(formatMoney(1234, "GBP"), "£12.34");
 });

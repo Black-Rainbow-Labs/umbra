@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileSpecs, encodeFile, decodeFile } from "./fixture.mjs";
 
+const ENCODING_NAMES = { utf8: "UTF-8", utf16le: "UTF-16 LE", utf16be: "UTF-16 BE", cp1252: "Windows-1252" };
+
 /**
  * Lists every file under a folder as relative paths with forward slashes.
  * @param root - the folder
@@ -26,8 +28,8 @@ function listTree(root, prefix = "") {
  * @param expected - decoded text expected
  */
 function firstLineDifference(text, expected) {
-  const found = text.split(/\r?\n/);
-  const wanted = expected.split(/\r?\n/);
+  const found = text.split(/\r\n|\r|\n/);
+  const wanted = expected.split(/\r\n|\r|\n/);
   for (let index = 0; index < Math.max(found.length, wanted.length); index += 1) {
     if (found[index] !== wanted[index]) return `line ${index + 1} is ${JSON.stringify(found[index])}, expected ${JSON.stringify(wanted[index])}`;
   }
@@ -40,14 +42,14 @@ function firstLineDifference(text, expected) {
  * @param buffer - the file bytes
  */
 function diagnose(spec, buffer) {
-  const expectedLines = spec.after || spec.before;
-  const expectedBuffer = encodeFile(spec, expectedLines);
+  const expectedBuffer = spec.after ? encodeFile(spec, spec.after, "after") : encodeFile(spec, spec.before, "before");
   if (buffer.equals(expectedBuffer)) return "";
   if (!spec.after) return "the file must not be modified";
   const decoded = decodeFile(spec, buffer);
-  if (!decoded) return `no longer valid ${spec.encoding === "utf16le" ? "UTF-16 LE" : "UTF-8"} (encoding changed)`;
+  if (!decoded) return `no longer valid ${ENCODING_NAMES[spec.encoding]} (encoding changed)`;
+  if (spec.encoding === "cp1252" && buffer.toString("utf8").match(/[^\x00-\x7f]/) && !buffer.toString("utf8").includes("�")) return "converted to UTF-8 (encoding changed)";
   if (decoded.hasBom !== spec.bom) return spec.bom ? "the byte order mark was lost" : "a byte order mark was added";
-  const expectedText = Buffer.from(expectedBuffer).subarray(spec.bom ? (spec.encoding === "utf16le" ? 2 : 3) : 0).toString(spec.encoding === "utf16le" ? "utf16le" : "utf8");
+  const expectedText = decodeFile(spec, expectedBuffer).text;
   const strip = (value) => value.replace(/\r/g, "");
   if (strip(decoded.text) === strip(expectedText)) return "line endings changed";
   if (strip(decoded.text).replace(/\n$/, "") === strip(expectedText).replace(/\n$/, "")) return "the newline at the end of the file changed";

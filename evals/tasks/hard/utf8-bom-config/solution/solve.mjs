@@ -11,6 +11,6 @@ import { fileSpecs, encodeFile } from "../fixture.mjs";
  */
 export async function solve(workspaceDir, { seed }) {
   for (const spec of fileSpecs()) {
-    if (spec.after) fs.writeFileSync(path.join(workspaceDir, ...spec.path.split("/")), encodeFile(spec, spec.after));
+    if (spec.after) fs.writeFileSync(path.join(workspaceDir, ...spec.path.split("/")), encodeFile(spec, spec.after, "after"));
   }
 }

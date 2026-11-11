@@ -1,9 +1,9 @@
-// Builds the 30 messy input files and, by construction, the clean text each file must become.
-// Each file starts from "truth" customers (already clean) and then makes messy copies of them, so the
-// expected output does not come from a cleanup implementation.
+// Builds the 30 messy input files and, by construction, the clean text each file must become, plus the text of
+// data/summary.json. Each file starts from "truth" customers (already clean) and then makes messy copies of
+// them, so the expected output does not come from a cleanup implementation.
 
 export const FILE_COUNT = 30;
-const KEY_ORDER = ["id", "name", "email", "phone", "signup", "country", "tags", "last_login"];
+const KEY_ORDER = ["id", "name", "email", "phone", "signup", "country", "tags", "balance", "last_login"];
 const DROPPED = ["internal_score", "notes", "ssn_last4", "debug"];
 const WORDS_A = ["ada", "grace", "alan", "linus", "maria", "dennis", "barbara", "ken", "radia", "tim", "jose", "zoe", "lukas", "amelie", "soren", "noor", "priya", "wei", "hiro", "fatima", "omar", "ines", "karl", "mei"];
 const WORDS_B = ["lovelace", "hopper", "turing", "torvalds", "garcia", "ritchie", "liskov", "thompson", "perlman", "berners", "mueller", "nowak", "dubois", "larsen", "khan", "patel", "chen", "sato", "ali", "silva", "costa", "weber", "stone", "brook"];
@@ -54,9 +54,14 @@ function truthCustomer(t, id, used) {
   const year = 2015 + t.int(10);
   const signup = t.chance(0.12) ? null : isoDate(year, 1 + t.int(12), 1 + t.int(28), t);
   const tags = t.shuffle(TAGS).slice(0, t.int(4));
-  const customer = { id, name: `${t.pick(FIRST_NAMES)} ${t.pick(LAST_NAMES)}`, email, phone, signup, country: t.pick(COUNTRIES), tags };
+  const name = `${t.pick(FIRST_NAMES)} ${t.pick(LAST_NAMES)}`.normalize("NFC");
+  const customer = { id, name, email, phone, signup, country: t.pick(COUNTRIES), tags };
+  const balanceRoll = t.int(10);
+  if (balanceRoll === 1) customer.balance = null;
+  else if (balanceRoll > 1) customer.balance = t.chance(0.08) ? 0 : t.int(220000) - 20000;
   if (t.chance(0.7)) customer.last_login = `${2020 + t.int(5)}-${t.pad(1 + t.int(12))}-${t.pad(1 + t.int(28))}T${t.pad(t.int(24))}:${t.pad(t.int(60))}:00Z`;
-  if (t.chance(0.08)) { customer.signup = "2020-02-29"; }
+  if (t.chance(0.08)) customer.signup = "2020-02-29";
+  if (t.chance(0.05)) customer.signup = t.pick(["2010-01-01", "2025-12-31"]);
   return customer;
 }
 
@@ -66,7 +71,7 @@ function isoDate(year, month, day, t) {
 }
 
 /**
- * Writes a clean date in one of the four accepted input formats, with optional surrounding spaces.
+ * Writes a clean date in one of the five accepted input formats, with optional surrounding spaces.
  * @param t - the tools
  * @param iso - YYYY-MM-DD
  */
@@ -80,13 +85,16 @@ function messyDate(t, iso) {
     `${t.pad(d)}.${t.pad(m)}.${y}`,
     `${MONTHS[m - 1]} ${d}, ${y}`,
     `${MONTHS[m - 1]} ${t.pad(d)}, ${y}`,
+    `${d} ${MONTHS[m - 1]} ${y}`,
+    `${t.pad(d)} ${MONTHS[m - 1]} ${y}`,
   ]);
   return t.chance(0.3) ? `  ${text} ` : text;
 }
 
 /** A date value that must become null. */
 function badDate(t) {
-  return t.pick([null, "", "N/A", "2021/03/14", "31.02.2021", "13/01/2021", "02/30/2021", "March 14th", "3-14-2021", "2021-13-01", "Sept 5, 2021", "00/10/2021", "29.02.2021", "12/25/21"]);
+  return t.pick([null, "", "N/A", "2021/03/14", "31.02.2021", "13/01/2021", "02/30/2021", "March 14th", "3-14-2021", "2021-13-01", "Sept 5, 2021", "00/10/2021", "29.02.2021", "12/25/21",
+    "1999-12-31", "2026-01-01", "1/1/2009", "31.12.2030", "Dec 31, 2009", "1 Jan 2026", "5 January 2021", "15 Sept 2021", "2009-12-31", "12/31/2009"]);
 }
 
 /** Writes a clean phone number in one of several accepted input formats, sometimes with an extension. */
@@ -99,7 +107,7 @@ function messyPhone(t, phone) {
 
 /** A phone value that must become null. */
 function badPhone(t) {
-  return t.pick([null, "", "555-0132", "n/a", "+44 20 7946 0958", "12345", "   ", "415-555-013"]);
+  return t.pick([null, "", "555-0132", "n/a", "+44 20 7946 0958", "12345", "   ", "415-555-013", "012-345-6789", "(415) 155-0132", "(415) 055-0132", "1-155-555-0132", "(100) 555-0132", "21 415 555 0132", "800-FLOWERS"]);
 }
 
 /** Changes the case of some letters of an email and adds spaces around it. */
@@ -108,9 +116,10 @@ function messyEmail(t, email) {
   return t.chance(0.3) ? ` ${flipped}  ` : flipped;
 }
 
-/** Adds extra spaces and tabs to a name. */
+/** Adds extra spaces and tabs to a name, and sometimes writes its accents as separate combining marks. */
 function messyName(t, name) {
-  const inner = name.replace(/ /g, () => t.pick([" ", "  ", "\t", " \t "]));
+  const base = t.chance(0.4) ? name.normalize("NFD") : name;
+  const inner = base.replace(/ /g, () => t.pick([" ", "  ", "\t", " \t "]));
   return t.chance(0.5) ? `  ${inner}\t` : inner;
 }
 
@@ -125,9 +134,35 @@ function messyTags(t, tags) {
   return out;
 }
 
+/** Writes an amount in cents in one of the accepted balance formats (a JSON number or a string). */
+function messyBalance(t, cents) {
+  if (t.chance(0.15)) return cents / 100;
+  const abs = Math.abs(cents);
+  const whole = Math.floor(abs / 100);
+  const frac = abs % 100;
+  const grouped = t.chance(0.5) ? String(whole).replace(/\B(?=(\d{3})+(?!\d))/g, ",") : String(whole);
+  let decimals;
+  if (frac === 0) decimals = t.pick(["", ".00", ".0"]);
+  else if (frac % 10 === 0) decimals = t.pick([`.${frac / 10}`, `.${t.pad(frac)}`]);
+  else decimals = `.${t.pad(frac)}`;
+  let text = `${t.chance(0.5) ? "$" : ""}${grouped}${decimals}`;
+  if (cents < 0) text = t.pick([`-${text}`, `(${text})`]);
+  return t.chance(0.25) ? `  ${text} ` : text;
+}
+
+/** A balance value that must become null. */
+function badBalance(t) {
+  return t.pick([null, "", "   ", "n/a", "twelve", "12.345", "1,23.45", "$", "12,00", "1.234,50", "--5", "$ 12", "12 USD", "(12.00", "+5.00", "1e3", "$-12.00", "1,2345", ",500", "12.", "-(5.00)"]);
+}
+
+/** A record id: usually the number, sometimes the same number written as a string. */
+function messyId(t, id) {
+  return t.chance(0.15) ? String(id) : id;
+}
+
 /** Messy values for the scalar fields of a clean customer. */
 function messyValues(t, truth) {
-  return {
+  const values = {
     name: messyName(t, truth.name),
     email: messyEmail(t, truth.email),
     phone: truth.phone === null ? badPhone(t) : messyPhone(t, truth.phone),
@@ -135,6 +170,8 @@ function messyValues(t, truth) {
     country: t.pick([truth.country, truth.country.toLowerCase(), ` ${truth.country.toLowerCase()} `]),
     tags: messyTags(t, truth.tags),
   };
+  if ("balance" in truth) values.balance = truth.balance === null ? badBalance(t) : messyBalance(t, truth.balance);
+  return values;
 }
 
 /** Adds the fields that must be dropped, in random numbers. */
@@ -160,16 +197,39 @@ function emptyLike(t, kind) {
 }
 
 /**
+ * Gives the duplicates their balances. The duplicates that hold a number have parts that add up to the clean
+ * balance, the others hold nothing usable.
+ * @param t - the tools
+ * @param truth - the clean customer
+ * @param records - the duplicate records
+ */
+function splitBalance(t, truth, records) {
+  if (!("balance" in truth)) return;
+  if (truth.balance === null) { records.forEach((record) => { record.balance = badBalance(t); }); return; }
+  const holders = t.shuffle(records.map((_, i) => i)).slice(0, 1 + t.int(records.length));
+  let left = truth.balance;
+  holders.forEach((index, n) => {
+    const part = n === holders.length - 1 ? left : t.int(60000) - 15000;
+    left -= part;
+    records[index].balance = messyBalance(t, part);
+  });
+  records.forEach((record, i) => {
+    if (!holders.includes(i)) { const v = t.pick([undefined, null, "n/a", "", "   "]); if (v !== undefined) record.balance = v; }
+  });
+}
+
+/**
  * Builds the messy duplicates of one clean customer. The first duplicate has the clean id. For every
  * scalar field one duplicate holds the clean value, the ones before it hold other valid values and the
- * ones after it are empty, so the last duplicate with a value is the clean one.
+ * ones after it are empty, so the last duplicate with a value is the clean one. Balances are split so that
+ * they add up.
  * @param t - the tools
  * @param truth - the clean customer
  * @param count - number of duplicates (2 or 3)
  * @param nextId - function returning a new unused id
  */
 function makeDuplicates(t, truth, count, nextId) {
-  const records = Array.from({ length: count }, (_, i) => ({ id: i === 0 ? truth.id : nextId() }));
+  const records = Array.from({ length: count }, (_, i) => ({ id: i === 0 ? messyId(t, truth.id) : nextId() }));
   const stale = { name: () => messyName(t, `${t.pick(FIRST_NAMES)} ${t.pick(LAST_NAMES)}`), phone: () => messyPhone(t, `+1 ${300 + t.int(600)}-555-${String(t.int(10000)).padStart(4, "0")}`), signup: () => messyDate(t, "2014-06-30"), country: () => t.pick(["xx", " zz "]), last_login: () => "2019-01-01T00:00:00Z" };
   for (const record of records) record.email = messyEmail(t, truth.email);
   for (const field of ["name", "phone", "signup", "country", "last_login"]) {
@@ -187,6 +247,7 @@ function makeDuplicates(t, truth, count, nextId) {
       else { const v = emptyLike(t, "text"); if (v !== undefined) record[field] = v; else if (field === "phone" || field === "signup") record[field] = field === "phone" ? badPhone(t) : badDate(t); }
     });
   }
+  splitBalance(t, truth, records);
   splitTags(t, truth.tags, records);
   return records.map((record) => shuffleKeys(t, addDroppedFields(t, record)));
 }
@@ -209,7 +270,8 @@ function splitTags(t, tags, records) {
 function emailLessRecord(t, id, used) {
   const truth = truthCustomer(t, id, used);
   const messy = messyValues(t, truth);
-  const record = { id, name: messy.name, phone: messy.phone, signup: messy.signup, country: messy.country, tags: messy.tags };
+  const record = { id: messyId(t, id), ...messy };
+  delete record.email;
   const style = t.int(4);
   if (style === 1) record.email = null;
   if (style === 2) record.email = "";
@@ -225,22 +287,23 @@ function buildFileRecords(t) {
   const ids = new Set();
   const newId = () => { let id; do { id = t.chance(0.3) ? 1 + t.int(99) : t.chance(0.5) ? 100 + t.int(900) : 1000 + t.int(9000); } while (ids.has(id)); ids.add(id); return id; };
   const used = new Set();
-  const truths = Array.from({ length: 10 + t.int(14) }, () => truthCustomer(t, newId(), used));
+  const truths = Array.from({ length: 24 + t.int(24) }, () => truthCustomer(t, newId(), used));
   const decoys = makeDecoys(t, truths, newId, used);
   const groups = [];
   for (const truth of [...truths, ...decoys]) {
     const roll = t.int(100);
-    const size = roll < 70 ? 1 : roll < 93 ? 2 : 3;
-    groups.push(size === 1 ? [shuffleKeys(t, addDroppedFields(t, { id: truth.id, ...messyValues(t, truth), ...(truth.last_login ? { last_login: truth.last_login } : {}) }))] : makeDuplicates(t, truth, size, newId));
+    const size = roll < 62 ? 1 : roll < 90 ? 2 : 3;
+    groups.push(size === 1 ? [shuffleKeys(t, addDroppedFields(t, { id: messyId(t, truth.id), ...messyValues(t, truth), ...(truth.last_login ? { last_login: truth.last_login } : {}) }))] : makeDuplicates(t, truth, size, newId));
   }
-  for (let i = 0; i < 1 + t.int(3); i += 1) groups.push([emailLessRecord(t, newId(), used)]);
-  return { records: interleave(t, groups), truths: [...truths, ...decoys] };
+  const dropped = 2 + t.int(4);
+  for (let i = 0; i < dropped; i += 1) groups.push([emailLessRecord(t, newId(), used)]);
+  return { records: interleave(t, groups), truths: [...truths, ...decoys], dropped };
 }
 
 /** Customers whose emails look like another customer's email but are different, so they must not merge. */
 function makeDecoys(t, truths, newId, used) {
   const decoys = [];
-  for (const source of truths.slice(0, 3 + t.int(3))) {
+  for (const source of truths.slice(0, 4 + t.int(4))) {
     const [local, domain] = source.email.split("@");
     const email = t.pick([`${local}+promo@${domain}`, `${local}@${domain.replace(/\.[a-z]+$/, ".org")}`, `x${local}@${domain}`]);
     if (used.has(email)) continue;
@@ -268,20 +331,33 @@ function messyText(t, doc, index) {
 }
 
 /**
- * Builds all files. Returns [{ name, input, expected }] for customers-01.json to customers-30.json.
+ * Builds all files. Returns [{ name, input, expected, stats }] for customers-01.json to customers-30.json.
+ * stats holds the counts that data/summary.json reports for the file.
  * @param seed - the task seed
  */
 export function buildDataset(seed) {
   const files = [];
   for (let index = 0; index < FILE_COUNT; index += 1) {
     const t = tools(makeRng(seed * 1000 + index));
-    const { records, truths } = buildFileRecords(t);
+    const { records, truths, dropped } = buildFileRecords(t);
     const topKeys = t.shuffle(["source", "exportedAt", "count", "customers"]);
     const make = (customers) => Object.fromEntries(topKeys.map((key) => [key, { source: `crm-export-${String(index + 1).padStart(2, "0")}`, exportedAt: `2024-0${1 + (index % 9)}-15T08:00:00Z`, count: customers.length, customers }[key]]));
     const sorted = [...truths].sort((x, y) => x.id - y.id).map((truth) => orderedCustomer(truth));
-    files.push({ name: `customers-${String(index + 1).padStart(2, "0")}.json`, input: messyText(t, make(records), index), expected: JSON.stringify(make(sorted), null, 2) + "\n" });
+    const name = `customers-${String(index + 1).padStart(2, "0")}.json`;
+    const stats = { file: name, records: records.length, droppedNoEmail: dropped, merged: records.length - dropped - truths.length, customers: truths.length, nullPhones: truths.filter((c) => c.phone === null).length, nullSignups: truths.filter((c) => c.signup === null).length };
+    files.push({ name, input: messyText(t, make(records), index), expected: JSON.stringify(make(sorted), null, 2) + "\n", stats });
   }
   return files;
+}
+
+/**
+ * Returns the expected text of data/summary.json for a built dataset.
+ * @param files - the result of buildDataset
+ */
+export function buildSummary(files) {
+  const totals = { records: 0, droppedNoEmail: 0, merged: 0, customers: 0, nullPhones: 0, nullSignups: 0 };
+  for (const file of files) for (const key of Object.keys(totals)) totals[key] += file.stats[key];
+  return JSON.stringify({ files: files.map((file) => file.stats), totals }, null, 2) + "\n";
 }
 
 /** Returns the customer with its keys in the required order. */
