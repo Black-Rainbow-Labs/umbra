@@ -1,7 +1,7 @@
 {
   "id": "umbra",
   "name": "Umbra",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "A small coding agent modeled after mini-swe-agent. One bash tool, a fresh shell for every command, Claude, OpenAI compatible and local models, and the MCP servers, skills and instructions you already set up for other agents.",
   "repository": "https://github.com/Black-Rainbow-Labs/umbra",
   "authors": [
@@ -12,64 +12,64 @@
   "distribution": {
     "binary": {
       "darwin-aarch64": {
-        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.6.2/umbra-aarch64-apple-darwin.tar.gz",
-        "sha256": "8301babed5a0198bbb03bc9f136e9d46d35583b7ef51c0a8f5754dc2b8ce77d4",
+        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.7.0/umbra-aarch64-apple-darwin.tar.gz",
+        "sha256": "0091b48339fae11797d693e49350d53518726c5720793eefde4e6efb5a4a1d4d",
         "cmd": "./umbra",
         "args": [
           "acp"
         ]
       },
       "darwin-x86_64": {
-        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.6.2/umbra-x86_64-apple-darwin.tar.gz",
-        "sha256": "7097c702011e90fc853b93bcfd80a57f9bbd6a14b78389a0d39bb280cc402a5d",
+        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.7.0/umbra-x86_64-apple-darwin.tar.gz",
+        "sha256": "6c4c248503ae59855e5b889185d6cca3e85143494f24c861d7d3140b058d7753",
         "cmd": "./umbra",
         "args": [
           "acp"
         ]
       },
       "linux-aarch64": {
-        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.6.2/umbra-aarch64-unknown-linux-musl.tar.gz",
-        "sha256": "6008a612555f0c815adce3c974360494e0b5bf9f4341de0382947e546389b331",
+        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.7.0/umbra-aarch64-unknown-linux-musl.tar.gz",
+        "sha256": "c46ff5e6ccb5a17823248958cc4a4173d2bb2c220bef8f723e3cc4e78c69fc89",
         "cmd": "./umbra",
         "args": [
           "acp"
         ]
       },
       "linux-x86_64": {
-        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.6.2/umbra-x86_64-unknown-linux-musl.tar.gz",
-        "sha256": "88dd2a7de0b6f8fdb8b822decb65180fba66b5404c0e805e5e29f5910354ef2b",
+        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.7.0/umbra-x86_64-unknown-linux-musl.tar.gz",
+        "sha256": "c193810d9e48c9115d1f7833a763053e73d7f7957355266bbe27c09058ec2e49",
         "cmd": "./umbra",
         "args": [
           "acp"
         ]
       },
       "linux-aarch64-musl": {
-        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.6.2/umbra-aarch64-unknown-linux-musl.tar.gz",
-        "sha256": "6008a612555f0c815adce3c974360494e0b5bf9f4341de0382947e546389b331",
+        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.7.0/umbra-aarch64-unknown-linux-musl.tar.gz",
+        "sha256": "c46ff5e6ccb5a17823248958cc4a4173d2bb2c220bef8f723e3cc4e78c69fc89",
         "cmd": "./umbra",
         "args": [
           "acp"
         ]
       },
       "linux-x86_64-musl": {
-        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.6.2/umbra-x86_64-unknown-linux-musl.tar.gz",
-        "sha256": "88dd2a7de0b6f8fdb8b822decb65180fba66b5404c0e805e5e29f5910354ef2b",
+        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.7.0/umbra-x86_64-unknown-linux-musl.tar.gz",
+        "sha256": "c193810d9e48c9115d1f7833a763053e73d7f7957355266bbe27c09058ec2e49",
         "cmd": "./umbra",
         "args": [
           "acp"
         ]
       },
       "windows-aarch64": {
-        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.6.2/umbra-aarch64-pc-windows-msvc.zip",
-        "sha256": "fa0d210d7336ef2ba9977eed6bade02bcc0cb4714012d8a6bb28ab9e87bdeddb",
+        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.7.0/umbra-aarch64-pc-windows-msvc.zip",
+        "sha256": "777107d65ea453eff60bc356c6312557b67f97a345cb7758ccdc7e387ce526b7",
         "cmd": "./umbra.exe",
         "args": [
           "acp"
         ]
       },
       "windows-x86_64": {
-        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.6.2/umbra-x86_64-pc-windows-msvc.zip",
-        "sha256": "8b8ee1cce375d70492baaf74ef8541feecc42080295afa3d8d583bf1d2e2f7a7",
+        "archive": "https://github.com/Black-Rainbow-Labs/umbra/releases/download/v0.7.0/umbra-x86_64-pc-windows-msvc.zip",
+        "sha256": "6ca00e47fc2cb566b7fe3d830130fa2f711a30d835bea8b3253854bc4562dd7d",
         "cmd": "./umbra.exe",
         "args": [
           "acp"
