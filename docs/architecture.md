@@ -84,7 +84,7 @@ sequenceDiagram
         Agent->>Agent: append observations, save trajectory
     end
     Agent-->>Run: exit status and final answer
-    Run-->>CLI: exit code 0 for Submitted, 1 otherwise
+    Run-->>CLI: exit code 0 for Replied or Submitted, 130 for Interrupted, 1 otherwise
 ```
 
 ## The fullscreen view
@@ -354,9 +354,9 @@ record up to the last step. Its shape follows mini-swe-agent's `mini-swe-agent-1
 ```json
 {
   "info": {
-    "model_stats": { "instance_cost": 0.0037, "api_calls": 2, "input_tokens": 51293, "output_tokens": 427, "compactions": 0 },
+    "model_stats": { "instance_cost": 0.0037, "api_calls": 2, "input_tokens": 51293, "output_tokens": 427, "cache_read_tokens": 48120, "reasoning_tokens": 0, "compactions": 0 },
     "config": { "agent": {}, "model": {}, "environment": {}, "mcp_servers": [], "skills": 42, "instruction_files": [] },
-    "umbra_version": "0.6.0",
+    "umbra_version": "0.7.2",
     "exit_status": "Submitted",
     "submission": "5050\n",
     "compactions": [],

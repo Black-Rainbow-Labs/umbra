@@ -55,8 +55,9 @@ models = ["anthropic/claude-haiku-5-5", "local/qwen", "openrouter/openai/gpt-5"]
 
 ## What a turn looks like to the editor
 
-Each `session/prompt` is one turn. Umbra runs the agent loop until the model submits its answer,
-a limit is reached, or the editor cancels.
+Each `session/prompt` is one turn. Umbra runs the agent loop until the model replies without asking
+for a command, a limit is reached, or the editor cancels. With `finish = "submit"` the turn ends
+when a command prints the submit line instead.
 
 | What happens | What Umbra sends |
 |---|---|
@@ -69,11 +70,12 @@ a limit is reached, or the editor cancels.
 | The action ends | `tool_call_update` with `completed` or `failed`, the output (at most 20,000 characters) and `rawOutput` |
 | An action is not run | `tool_call_update` with `failed` and the reason |
 | A compaction, a format error | `notice` when the editor supports notices, otherwise `agent_thought_chunk` |
-| The model submits | `agent_message_chunk` with the final answer, then the `session/prompt` answer `end_turn` |
+| The model replies with no command | The reply has already gone as `agent_message_chunk`, and the `session/prompt` answer is `end_turn` |
+| A command prints the submit line (`finish = "submit"`) | `agent_message_chunk` with the submitted output, then `end_turn` |
 
 | How the turn ended | `stopReason` |
 |---|---|
-| The model submitted | `end_turn` |
+| The model replied, or a command submitted | `end_turn` |
 | The step, cost or time limit | `max_turn_requests` |
 | `session/cancel` | `cancelled` |
 | The model's replies could not be read three times in a row | `end_turn`, with a message saying so |
