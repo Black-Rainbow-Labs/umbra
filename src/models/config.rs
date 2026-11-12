@@ -59,7 +59,8 @@ pub struct UmbraConfig {
     pub max_consecutive_format_errors: u32,
     /// When the model replies to end its turn right after a command that changed files, with no
     /// command run since, send it one message asking it to run the check that proves the change
-    /// and compare the result with the request. Once per turn.
+    /// and compare the result with the request. Once per turn. Off by default: in task-2617 (E3) it
+    /// did not raise the hard tier pass rate by more than the noise band and cost 30% more tokens.
     pub finish_check: bool,
     /// Offer the `edit` tool beside `bash` in tool mode: an exact text replacement that keeps the
     /// file's line endings and encoding.
@@ -115,7 +116,7 @@ impl Default for UmbraConfig {
             cost_limit: 3.0,
             wall_time_limit_seconds: 0,
             max_consecutive_format_errors: 3,
-            finish_check: true,
+            finish_check: false,
             edit_tool: false,
             confirm_exit: true,
             keep_open: false,

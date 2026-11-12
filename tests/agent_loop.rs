@@ -196,6 +196,9 @@ fn a_reply_right_after_a_file_change_gets_one_finish_check() {
     let scratch = Scratch::new("finish-check");
     let work = scratch.path("work");
     std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(scratch.path("home/.umbra")).unwrap();
+    std::fs::write(scratch.path("home/.umbra/config.toml"), "finish_check = true
+").unwrap();
     let model = script(&scratch, json!([
         { "content": "Writing the file.", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo hello > out.txt" } }] },
         "Done, the file is written.",
@@ -217,6 +220,9 @@ fn a_reply_after_a_check_command_ends_the_turn() {
     let scratch = Scratch::new("finish-check-ran");
     let work = scratch.path("work");
     std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(scratch.path("home/.umbra")).unwrap();
+    std::fs::write(scratch.path("home/.umbra/config.toml"), "finish_check = true
+").unwrap();
     let model = script(&scratch, json!([
         { "content": "Writing.", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo hello > out.txt" } }] },
         { "content": "Checking.", "tool_calls": [{ "name": "bash", "arguments": { "command": "cat out.txt" } }] },
