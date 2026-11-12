@@ -2,13 +2,18 @@
 // same sampling settings to every chat request, and writes one JSON line per request.
 
 import http from "node:http";
+import https from "node:https";
 import fs from "node:fs";
 import { applySampling, describeRequest, normalizeUsage, createSseTracker, describeJsonResponse, rewriteContextFields } from "../utils/chatShape.mjs";
+import { isMessagesRequest, describeAnthropicRequest, anthropicAgentSettings, applyAnthropicPolicy, normalizeAnthropicUsage, createAnthropicSseTracker, describeAnthropicJson } from "../utils/anthropicShape.mjs";
+import { readAnthropicCredential, waitForAnthropicCredential, withCredential } from "../repositories/anthropicCredentials.mjs";
 
 /**
  * Starts a proxy on a free local port. The returned state object can be changed while it runs
  * (phase index and context window), and `onChatRequest` is called with the running chat count.
- * @param options - { upstreamHost, upstreamPort, sampling, requestsPath, onChatRequest }
+ * With `upstreamKind` "anthropic" it forwards over HTTPS to the Messages API and sends its own
+ * credential in place of the agent's placeholder key (task-2643).
+ * @param options - { upstreamHost, upstreamPort, upstreamKind, upstreamTls, sampling, requestsPath, onChatRequest }
  */
 export async function startProxy(options) {
   const state = { phase: 0, contextWindow: null, chatCount: 0, phaseChatCount: 0, inFlight: 0 };
@@ -52,17 +57,19 @@ async function handleRequest(ctx) {
   const { req, state } = ctx;
   const started = Date.now();
   let body = await readBody(req);
-  const isChat = req.method === "POST" && /\/chat\/completions$/.test(req.url.split("?")[0]);
+  const anthropic = ctx.options.upstreamKind === "anthropic";
+  const isChat = anthropic ? isMessagesRequest(req.method, req.url) : req.method === "POST" && /\/chat\/completions$/.test(req.url.split("?")[0]);
   const record = baseRecord(req, state, started, isChat);
+  const credential = anthropic ? readAnthropicCredential() || await waitForAnthropicCredential() : null;
   if (isChat) {
-    body = prepareChatBody(body, ctx.options.sampling, record);
+    body = anthropic ? prepareMessagesBody(body, ctx.options.sampling, record, credential) : prepareChatBody(body, ctx.options.sampling, record);
     state.chatCount += 1;
     state.phaseChatCount += 1;
     if (state.phaseChatCount === 1) state.phaseFirstChatAt = started;
     ctx.options.onChatRequest?.(state.phaseChatCount);
   }
   state.inFlight += 1;
-  forward({ ...ctx, body, record, started, isChat });
+  forward({ ...ctx, body, record, started, isChat, anthropic, credential });
 }
 
 /**
@@ -96,14 +103,36 @@ function prepareChatBody(raw, sampling, record) {
 }
 
 /**
- * Sends the request upstream and relays the response back to the agent.
- * @param ctx - request context with body, record, started and isChat
+ * Parses a Messages body, applies the run's model settings, and copies its shape into the record.
+ * @param raw - the raw request body
+ * @param sampling - the AnthropicSampling
+ * @param record - the request record, changed in place
+ * @param credential - the credential the proxy sends
+ */
+function prepareMessagesBody(raw, sampling, record, credential) {
+  let parsed;
+  try { parsed = JSON.parse(raw.toString("utf8")); } catch { return raw; }
+  record.agentSampling = anthropicAgentSettings(parsed);
+  const prepared = applyAnthropicPolicy(parsed, sampling, credential);
+  Object.assign(record, describeAnthropicRequest(prepared));
+  return Buffer.from(JSON.stringify(prepared), "utf8");
+}
+
+/**
+ * Sends the request upstream and relays the response back to the agent. For the Anthropic
+ * upstream the agent's placeholder key is replaced with the proxy's credential.
+ * @param ctx - request context with body, record, started, isChat, anthropic and credential
  */
 function forward(ctx) {
   const { req, res, options, body } = ctx;
-  const headers = { ...req.headers, host: `${options.upstreamHost}:${options.upstreamPort}`, "content-length": String(body.length) };
+  let headers = { ...req.headers, host: options.upstreamTls ? options.upstreamHost : `${options.upstreamHost}:${options.upstreamPort}`, "content-length": String(body.length) };
   delete headers["accept-encoding"];
-  const upstream = http.request({ host: options.upstreamHost, port: options.upstreamPort, method: req.method, path: req.url, headers }, (up) => relayResponse(ctx, up));
+  if (ctx.anthropic) {
+    delete headers.connection;
+    headers = withCredential(headers, ctx.credential);
+  }
+  const client = options.upstreamTls ? https : http;
+  const upstream = client.request({ host: options.upstreamHost, port: options.upstreamPort, method: req.method, path: req.url, headers }, (up) => relayResponse(ctx, up));
   upstream.on("error", (error) => failRequest(ctx, error));
   res.on("close", () => {
     if (res.writableFinished) return;
@@ -157,7 +186,8 @@ function relayResponse(ctx, up) {
  */
 function relayStream(ctx, up) {
   const { res, record, started } = ctx;
-  const tracker = createSseTracker(() => { record.firstContentMs = Date.now() - started; });
+  const makeTracker = ctx.anthropic ? createAnthropicSseTracker : createSseTracker;
+  const tracker = makeTracker(() => { record.firstContentMs = Date.now() - started; });
   res.writeHead(up.statusCode, up.headers);
   res.flushHeaders?.();
   up.on("data", (part) => {
@@ -168,6 +198,7 @@ function relayStream(ctx, up) {
   up.on("end", () => {
     tracker.push("\n");
     Object.assign(record, { usage: tracker.state.usage, timings: tracker.state.timings, finishReason: tracker.state.finishReason, hasToolCall: tracker.state.hasToolCall });
+    if (tracker.state.streamError) record.streamError = tracker.state.streamError;
     res.end();
     finishRecord(ctx);
   });
@@ -182,11 +213,12 @@ function relayStream(ctx, up) {
  */
 function finishJsonBody(ctx, raw, headers) {
   const { record, state, isChat } = ctx;
+  if (record.status >= 400) record.errorBody = raw.toString("utf8").slice(0, 500);
   if (!String(headers["content-type"] || "").includes("json")) return raw;
   let json;
   try { json = JSON.parse(raw.toString("utf8")); } catch { return raw; }
   if (isChat) {
-    Object.assign(record, describeJsonResponse(json));
+    Object.assign(record, ctx.anthropic ? describeAnthropicJson(json) : describeJsonResponse(json));
     if (record.firstContentMs === null) record.firstContentMs = record.firstByteMs;
     return raw;
   }
@@ -207,7 +239,7 @@ function finishRecord(ctx) {
   ctx.finished = true;
   state.inFlight -= 1;
   record.durationMs = Date.now() - started;
-  record.usage = normalizeUsage(record.usage);
+  record.usage = ctx.anthropic ? normalizeAnthropicUsage(record.usage) : normalizeUsage(record.usage);
   if (record.usage && record.contextWindow) record.windowExceeded = record.usage.prompt_tokens > record.contextWindow;
   log.write(JSON.stringify(record) + "\n");
 }
