@@ -3,6 +3,7 @@
   "returncode": {{ output.returncode }},
   "output": {{ output.output | tojson }}
   {%- if output.exception_info %}, "exception_info": {{ output.exception_info | tojson }}{% endif %}
+  {%- if output.output_file is defined and output.output_file %}, "full_output_file": {{ output.output_file | tojson }}, "note": "Lines over 2000 characters were cut above. The whole output is in full_output_file: search it with grep -n or read a part with sed -n instead of running the command again."{% endif %}
 }
 {%- else -%}
 {
@@ -12,5 +13,6 @@
   "elided_chars": {{ output.output | length - 10000 }},
   "warning": "Output too long."
   {%- if output.exception_info %}, "exception_info": {{ output.exception_info | tojson }}{% endif %}
+  {%- if output.output_file is defined and output.output_file %}, "full_output_file": {{ output.output_file | tojson }}, "note": "The whole output is in full_output_file: search it with grep -n or read a part with sed -n instead of running the command again."{% endif %}
 }
 {%- endif -%}

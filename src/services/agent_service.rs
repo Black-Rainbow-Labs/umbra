@@ -19,7 +19,11 @@ use super::context_service::RunContext;
 use super::session_title_service::{initial_title, request_title, summary_from_compaction};
 use super::{usage_service, work_clock};
 use super::compaction_service::{apply_mask, budget_for, estimate_history_tokens, estimate_request_tokens, estimate_tools_tokens, find_cut, mask_record, plan_mask, resolve_window, summarizable_tokens, summarize, summary_record, ReportedSize, SummaryInputs};
+use super::edit_tool_service::{edit_spec, edit_tool, is_edit, run_edit};
 use super::environment::{submission_from, Environment};
+use super::finish_check_service::{FinishCheck, FINISH_CHECK_TEXT};
+use super::output_spill_service::{outputs_dir, spill_long_output};
+use super::stall_service::{StallWatch, STALL_TEXT};
 use super::image_service::images_in_text;
 use super::interaction_service::{show_assistant, show_event, show_observation, show_reply_text, show_turn_end, show_user_text, Comment, Decision, HumanInput, Interaction, Tone, TurnSummary};
 use super::session_service::ResumedSession;
@@ -38,6 +42,7 @@ use crate::models::model_response::ModelResponse;
 use crate::models::session::{SessionIndexEntry, SessionInfo};
 use crate::models::trajectory::{ModelStats, Trajectory, TrajectoryInfo};
 use crate::repositories::session_repository::save_index;
+use crate::repositories::journal_repository::{journal_path, JournalWriter};
 use crate::repositories::trajectory_repository::save_trajectory;
 use crate::utils::console;
 use crate::utils::interrupt;
@@ -162,6 +167,12 @@ pub struct Agent {
     title_job: Option<std::thread::JoinHandle<Option<(String, String, f64)>>>,
     /// True once the first turn has ended, so the title is asked for once.
     titled: bool,
+    /// Asks the model to check its work when it replies right after changing files.
+    finish_check: FinishCheck,
+    /// Appends each step to the session journal next to the trajectory.
+    journal: JournalWriter,
+    /// Notices the same command giving the same output three times in a row.
+    stall: StallWatch,
 }
 
 /// What the agent tracks for compaction.
@@ -176,6 +187,10 @@ struct CompactionState {
     records: Vec<CompactionRecord>,
     /// True once the person was told compaction cannot shrink the history, so it is said once.
     stuck_warned: bool,
+    /// The request estimate when a threshold summary last failed. No threshold summary is tried
+    /// again until the estimate has grown 10% past it, so a failing summary call is not repeated
+    /// before every model call.
+    summary_failed_at: Option<u64>,
 }
 
 impl Agent {
@@ -192,7 +207,9 @@ impl Agent {
         let mcp = &parts.config.mcp;
         let deferred = !mcp_tools.is_empty() && should_defer(mcp.defer_tools, mcp_tokens, window, mcp.defer_ratio);
         let compaction = CompactionState { window: Some(window), ..Default::default() };
-        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false };
+        let finish_check = FinishCheck::new(parts.config.finish_check && parts.config.finish == Finish::Reply && parts.config.environment.kind == "local");
+        let journal = JournalWriter::new(journal_path(&parts.trajectory_path));
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, stall: StallWatch::default() };
         agent.rebuild_tools();
         agent
     }
@@ -210,7 +227,17 @@ impl Agent {
         } else {
             tool_specs(&self.mcp_tools)
         };
+        if self.edit_tool_on() {
+            self.tools.insert(1, edit_spec());
+        }
         self.compaction.tools_tokens = estimate_tools_tokens(&self.tools);
+    }
+
+    /// Returns true when the `edit` tool is offered: tool mode, the local environment, and the
+    /// `edit_tool` setting on.
+    fn edit_tool_on(&self) -> bool {
+        let config = &self.parts.config;
+        config.edit_tool && config.action_format == ActionFormat::Tools && config.environment.kind == "local"
     }
 
     /// Reads the tools again when an MCP server became ready, failed or was turned on or off since
@@ -392,6 +419,9 @@ impl Agent {
         if self.deferred {
             tools.push(tool_search_tool());
         }
+        if self.edit_tool_on() {
+            tools.push(edit_tool());
+        }
         tools
     }
 
@@ -460,6 +490,7 @@ impl Agent {
         }
         self.finish_title_job(true);
         self.save();
+        self.save_trajectory_file();
         self.close();
         Ok(RunResult { exit_status: self.exit.0.clone(), submission: self.exit.1.clone(), trajectory_path: self.parts.trajectory_path.clone(), stats: self.stats.clone(), session_id: self.parts.session.id.clone(), next: self.next.clone() })
     }
@@ -549,6 +580,7 @@ impl Agent {
             self.parts.session.title = initial_title(typed);
         }
         self.messages.push(new_task_message(task, typed, self.parts.config.finish).with_images(images));
+        self.finish_check.start_turn();
     }
 
     /// Makes the step, cost and time limits count from now, for a front end that runs one turn
@@ -581,6 +613,7 @@ impl Agent {
         self.messages.push(Message::exit(&end.status, &end.submission));
         self.exit = (end.status.clone(), end.submission.clone());
         self.save();
+        self.save_trajectory_file();
     }
 
     /// Prints how a turn ended at the terminal, with the session's steps and cost.
@@ -818,6 +851,7 @@ impl Agent {
     /// ask, so the run ends.
     fn interrupted(&mut self) -> Result<Step> {
         self.save();
+        self.save_trajectory_file();
         self.show_status(Phase::Waiting);
         if !self.parts.interaction.interactive {
             return Ok(Step::Exit(INTERRUPTED_STATUS.into(), String::new()));
@@ -938,7 +972,13 @@ impl Agent {
             self.summary_not_worth_it(removable, window);
             return;
         }
-        self.compact_by_summary(CompactionReason::Threshold, "");
+        let estimate = self.request_estimate();
+        if self.compaction.summary_failed_at.is_some_and(|failed| estimate < failed + failed / 10) {
+            return;
+        }
+        if !self.compact_by_summary(CompactionReason::Threshold, "") {
+            self.compaction.summary_failed_at = Some(estimate);
+        }
     }
 
     /// The tokens compaction can never remove: the system prompt, the first message and the tool
@@ -1021,6 +1061,7 @@ impl Agent {
         self.compaction.reported = None;
         let after = self.request_estimate();
         self.parts.session.summary = summary_from_compaction(&outcome.summary);
+        self.compaction.summary_failed_at = None;
         self.notice(Tone::Info, "compaction", &format!("compacted: summarized {} {} · {} → {} tokens of {}", outcome.removed.len(), if outcome.removed.len() == 1 { "message" } else { "messages" }, short_tokens(before), short_tokens(after), short_tokens(window)));
         self.compaction.stuck_warned = false;
         self.compaction.records.push(summary_record(reason, self.stats.api_calls, (before, after, window), &outcome));
@@ -1119,6 +1160,10 @@ impl Agent {
         self.messages.push(assistant_message(response, &[]));
         show_assistant(self.stats.api_calls, self.stats.instance_cost, &response.content, &[]);
         self.parts.events.reply(&response.content, &[]);
+        if self.finish_check.should_ask() {
+            self.messages.push(Message::user(FINISH_CHECK_TEXT).with_extra(json!({ "interrupt_type": "FinishCheck" })));
+            return Step::Continue;
+        }
         Step::Exit(REPLIED_STATUS.into(), response.content.trim().to_string())
     }
 
@@ -1130,6 +1175,11 @@ impl Agent {
         self.format_errors += 1;
         let text = render_format_error(&self.templates.format_error, error, &response.finish_reason, !response.tool_calls.is_empty())?;
         self.show_format_error(response, error);
+        if !response.content.trim().is_empty() {
+            // The model sees what it wrote beside the error, so it can fix that reply instead of
+            // starting over.
+            self.messages.push(Message::new(Role::Assistant, response.content.clone()).with_extra(json!({ "rejected": true, "response": response.raw })));
+        }
         self.messages.push(Message::user(text).with_extra(json!({ "interrupt_type": "FormatError", "model_response": response.content, "cost": response.cost })));
         let max = self.parts.config.max_consecutive_format_errors;
         if max > 0 && self.format_errors >= max {
@@ -1159,11 +1209,21 @@ impl Agent {
     fn execute_actions(&mut self, actions: &[Action]) -> Result<Step> {
         let mut outputs = Vec::new();
         let mut submitted = None;
+        let mut stalled = false;
         for (index, action) in actions.iter().enumerate() {
             self.parts.events.action_started(index, action);
+            let is_bash = matches!(action, Action::Bash { .. });
+            let changes_files = is_bash || matches!(action, Action::Mcp { server, tool, .. } if is_edit(server, tool));
+            if changes_files {
+                self.finish_check.before_command(&self.parts.cwd);
+            }
             let observation = self.execute(action);
-            if matches!(action, Action::Bash { .. }) {
+            if let Action::Bash { command, .. } = action {
                 submitted = submission_from(&observation);
+                stalled |= self.stall.record(command, &observation.output);
+            }
+            if changes_files {
+                self.finish_check.after_command(&self.parts.cwd);
             }
             if submitted.is_none() || console::is_verbose() {
                 show_observation(&observation);
@@ -1176,6 +1236,9 @@ impl Agent {
         }
         let interrupted = submitted.is_none() && interrupt::take();
         self.push_observations(actions, &outputs, interrupted.then_some(NOT_RUN_INTERRUPTED))?;
+        if stalled && submitted.is_none() && !interrupted {
+            self.messages.push(Message::user(STALL_TEXT).with_extra(json!({ "interrupt_type": "Stall" })));
+        }
         if interrupted {
             return self.interrupted();
         }
@@ -1197,8 +1260,9 @@ impl Agent {
     /// @param action - the action
     fn execute_untimed(&mut self, action: &Action) -> Observation {
         match action {
-            Action::Bash { command, .. } => self.parts.environment.execute(command),
+            Action::Bash { command, timeout, .. } => self.parts.environment.execute_timed(command, *timeout),
             Action::Mcp { server, tool, arguments, .. } if is_tool_search(server, tool) => self.run_tool_search(arguments),
+            Action::Mcp { server, tool, arguments, .. } if is_edit(server, tool) => run_edit(&self.parts.cwd, arguments),
             Action::Mcp { server, tool, arguments, .. } => {
                 let observation = self.parts.mcp.call(server, tool, arguments.clone());
                 // A deferred tool called without a search first is loaded now, so the history
@@ -1218,7 +1282,7 @@ impl Agent {
         let vars = self.template_vars("");
         for (index, action) in actions.iter().enumerate() {
             let observation = match outputs.get(index) {
-                Some(observation) => observation.clone(),
+                Some(observation) => spill_long_output(observation.clone(), &outputs_dir(&self.parts.trajectory_path), self.messages.len() as u32),
                 None => {
                     let reason = reason.unwrap_or("action was not executed");
                     self.parts.events.action_not_run(index, action, reason);
@@ -1230,7 +1294,11 @@ impl Agent {
                 Some(id) => Message::tool(id, content),
                 None => Message::user(content),
             };
-            self.messages.push(message.with_images(observation.images.clone()).with_extra(json!({ "raw_output": observation.output, "returncode": observation.returncode, "exception_info": observation.exception_info, "timestamp": now_seconds(), "started_at": observation.started_at, "duration_ms": observation.duration_ms })));
+            let mut extra = json!({ "raw_output": observation.output, "returncode": observation.returncode, "exception_info": observation.exception_info, "timestamp": now_seconds(), "started_at": observation.started_at, "duration_ms": observation.duration_ms });
+            if let Some(file) = &observation.output_file {
+                extra["output_file"] = json!(file);
+            }
+            self.messages.push(message.with_images(observation.images.clone()).with_extra(extra));
         }
         Ok(())
     }
@@ -1247,7 +1315,7 @@ impl Agent {
             HumanInput::Quit => return Ok(Step::Exit("UserQuit".into(), String::new())),
             HumanInput::Interrupted => return self.interrupted(),
         };
-        let action = Action::Bash { command: command.clone(), tool_call_id: None };
+        let action = Action::Bash { command: command.clone(), tool_call_id: None, timeout: None };
         self.messages.push(Message::user(format!("User command: \n```bash\n{command}\n```")).with_extra(json!({ "actions": [action] })));
         self.show_status(running_phase(std::slice::from_ref(&action)));
         self.parts.events.action_started(0, &action);
@@ -1269,6 +1337,7 @@ impl Agent {
         vars["elapsed_seconds"] = json!(self.started.elapsed().as_secs());
         vars["action_format"] = json!(self.parts.config.action_format);
         vars["finish"] = json!(self.parts.config.finish);
+        vars["edit_tool"] = json!(self.edit_tool_on());
         // With deferral the prompt lists the tools by name only; their definitions come from
         // tool_search when the model needs them.
         let described: Vec<&McpTool> = if self.deferred { Vec::new() } else { self.mcp_tools.iter().collect() };
@@ -1277,9 +1346,35 @@ impl Agent {
         vars
     }
 
-    /// Writes the trajectory and the session's index entry. A failure to write is reported but
-    /// does not stop the run.
-    fn save(&self) {
+    /// Saves the step: appends what changed to the session journal and writes the session's
+    /// index entry. The trajectory JSON is written by `save_trajectory_file` when a turn ends.
+    /// A failure to write is reported but does not stop the run.
+    fn save(&mut self) {
+        let info = self.trajectory_info();
+        if let Err(error) = self.journal.write(&info, &self.messages) {
+            eprintln!("umbra: could not save the session journal: {error:#}");
+        }
+        let session = info.session;
+        let trajectory_path = absolute_path(&self.parts.trajectory_path).to_string_lossy().replace('\\', "/");
+        let journal = absolute_path(&journal_path(&self.parts.trajectory_path)).to_string_lossy().replace('\\', "/");
+        let entry = SessionIndexEntry { id: session.id, trajectory: trajectory_path, journal, cwd: session.cwd, model: session.model, task: session.task, started_at: session.started_at, updated_at: now_seconds(), exit_status: info.exit_status, api_calls: self.stats.api_calls, cost: self.stats.instance_cost, messages: self.messages.len(), title: session.title, summary: session.summary, mcp_off: session.mcp_off, work_seconds: session.work_seconds };
+        if let Err(error) = save_index(&entry) {
+            eprintln!("umbra: could not save the session index: {error:#}");
+        }
+    }
+
+    /// Writes the whole trajectory JSON, in the format other tools read. Called when a turn
+    /// ends, when the run ends and after Ctrl+C; between those the journal has every step.
+    fn save_trajectory_file(&self) {
+        let trajectory = Trajectory { info: self.trajectory_info(), messages: self.messages.clone(), trajectory_format: "mini-swe-agent-1.1".into() };
+        if let Err(error) = save_trajectory(&self.parts.trajectory_path, &trajectory) {
+            eprintln!("umbra: could not save the trajectory: {error:#}");
+        }
+    }
+
+    /// The trajectory's info block as it is now: totals, config, how the session ended, the
+    /// compactions and the session record.
+    fn trajectory_info(&self) -> TrajectoryInfo {
         let last = self.messages.iter().rev().find(|m| m.role == Role::Exit);
         let exit_status = last.and_then(|m| m.extra["exit_status"].as_str()).unwrap_or("").to_string();
         let submission = last.map(|m| m.content.clone()).unwrap_or_default();
@@ -1288,16 +1383,7 @@ impl Agent {
         if self.parts.interaction.interactive {
             session.work_seconds = work_clock::elapsed().as_secs_f64();
         }
-        let info = TrajectoryInfo { model_stats: self.stats.clone(), config: self.parts.config_record.clone(), umbra_version: env!("CARGO_PKG_VERSION").into(), exit_status: exit_status.clone(), submission, compactions: self.compaction.records.clone(), session: session.clone() };
-        let trajectory = Trajectory { info, messages: self.messages.clone(), trajectory_format: "mini-swe-agent-1.1".into() };
-        if let Err(error) = save_trajectory(&self.parts.trajectory_path, &trajectory) {
-            eprintln!("umbra: could not save the trajectory: {error:#}");
-        }
-        let trajectory_path = absolute_path(&self.parts.trajectory_path).to_string_lossy().replace('\\', "/");
-        let entry = SessionIndexEntry { id: session.id, trajectory: trajectory_path, cwd: session.cwd, model: session.model, task: session.task, started_at: session.started_at, updated_at: now_seconds(), exit_status, api_calls: self.stats.api_calls, cost: self.stats.instance_cost, messages: self.messages.len(), title: session.title, summary: session.summary, mcp_off: session.mcp_off, work_seconds: session.work_seconds };
-        if let Err(error) = save_index(&entry) {
-            eprintln!("umbra: could not save the session index: {error:#}");
-        }
+        TrajectoryInfo { model_stats: self.stats.clone(), config: self.parts.config_record.clone(), umbra_version: env!("CARGO_PKG_VERSION").into(), exit_status, submission, compactions: self.compaction.records.clone(), session }
     }
 }
 
@@ -1307,7 +1393,7 @@ pub fn tool_specs(mcp_tools: &[McpTool]) -> Vec<ToolSpec> {
     let bash = ToolSpec {
         name: "bash".into(),
         description: "Execute a bash command".into(),
-        input_schema: json!({ "type": "object", "properties": { "command": { "type": "string", "description": "The bash command to execute" } }, "required": ["command"] }),
+        input_schema: json!({ "type": "object", "properties": { "command": { "type": "string", "description": "The bash command to execute" }, "timeout": { "type": "integer", "description": "Seconds to allow the command before it is stopped. Optional; give more for a slow build or test run" } }, "required": ["command"] }),
     };
     let mut specs = vec![bash];
     specs.extend(mcp_tools.iter().map(|t| ToolSpec { name: t.qualified_name(), description: format!("[MCP server {}] {}", t.server, t.description), input_schema: t.input_schema.clone() }));

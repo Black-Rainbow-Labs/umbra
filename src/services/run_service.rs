@@ -18,7 +18,7 @@ use super::interaction_service::{prompt_with_hint, show_event, show_user_text, I
 use super::mcp::McpManager;
 use super::prompt_service::platform_vars;
 use super::providers::{check_credentials, create_provider};
-use super::session_service::{find_resume_target, load_resumed, ResumedSession};
+use super::session_service::{branch_at, find_resume_target, load_resumed, ResumedSession};
 use super::{usage_service, work_clock};
 use crate::cli::{CommonArgs, PromptArgs, RunArgs};
 use crate::models::config::{ActionFormat, ImagesConfig, Mode, UmbraConfig};
@@ -489,7 +489,10 @@ fn load_resume_target(args: &RunArgs) -> Result<(Option<ResumedSession>, Option<
         }
         return Ok((None, None));
     };
-    let resumed = load_resumed(&path)?;
+    let mut resumed = load_resumed(&path)?;
+    if let Some(keep) = args.at {
+        branch_at(&mut resumed, keep);
+    }
     let mut notice = format!("resuming session {} from {}: {} messages, {} model calls so far", resumed.session.id, path.display(), resumed.messages.len(), resumed.stats.api_calls);
     if resumed.repaired > 0 {
         notice.push_str(&format!(". {} tool calls that never ran were given a result", resumed.repaired));

@@ -57,6 +57,14 @@ pub struct UmbraConfig {
     pub cost_limit: f64,
     pub wall_time_limit_seconds: u64,
     pub max_consecutive_format_errors: u32,
+    /// When the model replies to end its turn right after a command that changed files, with no
+    /// command run since, send it one message asking it to run the check that proves the change
+    /// and compare the result with the request. Once per turn. Off by default: in task-2617 (E3) it
+    /// did not raise the hard tier pass rate by more than the noise band and cost 30% more tokens.
+    pub finish_check: bool,
+    /// Offer the `edit` tool beside `bash` in tool mode: an exact text replacement that keeps the
+    /// file's line endings and encoding.
+    pub edit_tool: bool,
     /// Ask for a follow up task when the agent submits, instead of exiting.
     pub confirm_exit: bool,
     /// An empty line at the task prompt or the follow up prompt asks again instead of ending the run.
@@ -112,6 +120,8 @@ impl Default for UmbraConfig {
             cost_limit: 0.0,
             wall_time_limit_seconds: 0,
             max_consecutive_format_errors: 3,
+            finish_check: false,
+            edit_tool: false,
             confirm_exit: true,
             keep_open: false,
             status_bar: true,
@@ -148,12 +158,18 @@ pub struct EnvironmentConfig {
     pub kind: String,
     /// Working directory. Empty means the directory Umbra was started in (local) or `/` (docker).
     pub cwd: String,
-    /// Seconds before a command is killed.
+    /// Seconds before a command is killed, unless the model asks for another timeout.
     pub timeout: u64,
+    /// The most seconds the model may ask a command to be allowed with the bash tool's
+    /// `timeout` argument.
+    pub max_timeout: u64,
     /// The program and flags that run a command string. Empty means bash, found automatically.
     pub shell: Vec<String>,
     /// Extra environment variables for every command.
     pub env: BTreeMap<String, String>,
+    /// Local bash only: each command starts in the working directory and with the exported
+    /// variables the previous command ended with, as in one shell kept for the session.
+    pub persistent_shell: bool,
     pub image: String,
     pub docker_executable: String,
     pub run_args: Vec<String>,
@@ -162,7 +178,7 @@ pub struct EnvironmentConfig {
 }
 
 impl Default for EnvironmentConfig {
-    /// The mini-swe-agent defaults: a 30 second timeout and pagers turned off.
+    /// A 120 second timeout that the model may raise to 600 for one command, and pagers turned off.
     fn default() -> Self {
         let env = [("PAGER", "cat"), ("MANPAGER", "cat"), ("LESS", "-R"), ("PIP_PROGRESS_BAR", "off"), ("TQDM_DISABLE", "1"), ("GIT_PAGER", "cat")]
             .into_iter()
@@ -171,8 +187,10 @@ impl Default for EnvironmentConfig {
         EnvironmentConfig {
             kind: "local".into(),
             cwd: String::new(),
-            timeout: 30,
+            timeout: 120,
+            max_timeout: 600,
             shell: Vec::new(),
+            persistent_shell: false,
             env,
             image: String::new(),
             docker_executable: "docker".into(),
@@ -220,6 +238,12 @@ pub struct ProviderConfig {
     /// Qwen style chat template keeps the reasoning of earlier turns. Defaults to on for a server
     /// on this machine and off for any other server.
     pub preserve_thinking: Option<bool>,
+    /// The model's context window in tokens, used instead of asking the server.
+    pub context_window: Option<u64>,
+    /// OpenAI compatible servers with a Qwen style chat template: `on` or `off` sends
+    /// `chat_template_kwargs.enable_thinking`, and `first` thinks only on the first request of a
+    /// turn (the one that answers a person's message). Unset leaves it to the server.
+    pub thinking: Option<String>,
 }
 
 /// Which other harnesses' files Umbra reads. All are on by default.
@@ -374,6 +398,9 @@ pub struct CompactionConfig {
     pub keep_recent_ratio: f64,
     /// Command outputs shorter than this many characters are never masked.
     pub mask_min_chars: usize,
+    /// Work to a window of at most this many tokens, even when the model's is larger. A long
+    /// session is then compacted before each request grows slow to process. 0 means no cap.
+    pub max_context_tokens: u64,
 }
 
 impl Default for CompactionConfig {
@@ -391,6 +418,7 @@ impl Default for CompactionConfig {
             min_reclaim_max: 20_000,
             keep_recent_ratio: 0.1,
             mask_min_chars: 400,
+            max_context_tokens: 0,
         }
     }
 }

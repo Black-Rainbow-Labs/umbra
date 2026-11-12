@@ -18,6 +18,15 @@ pub trait Environment {
     /// @param command - the shell command text
     fn execute(&mut self, command: &str) -> Observation;
 
+    /// Runs one command with the timeout the model asked for, when it asked for one. An
+    /// environment without its own timeout handling runs it with the configured timeout.
+    /// @param command - the shell command text
+    /// @param timeout - seconds the model asked for, or None for the configured timeout
+    fn execute_timed(&mut self, command: &str, timeout: Option<u64>) -> Observation {
+        let _ = timeout;
+        self.execute(command)
+    }
+
     /// Values the prompt templates can use, such as the working folder.
     fn template_vars(&self) -> Value;
 

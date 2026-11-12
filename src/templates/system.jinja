@@ -20,10 +20,22 @@ A reply that runs no command ends your turn. The user reads it and then sends th
 
 # Commands
 
+{%- if persistent_shell is defined and persistent_shell %}
+- Commands run one after another in the same shell state: the working directory and exported variables carry over to the next command.
+{%- else %}
 - Every command runs in a new shell. The working directory and environment variables do not carry over, so use absolute paths or prefix a command with `cd <dir> &&`.
+{%- endif %}
 - Commands that wait for input, open an editor or a pager, or never exit will time out. Pass the flags that make a command run without asking.
 - Read long files a part at a time, for example `sed -n '1,120p' file`. Search with `grep -rn` or `rg`.
+{%- if edit_tool is defined and edit_tool %}
+- Create a file with a heredoc (`cat <<'EOF' > file`). Change an existing file with the edit tool: copy old_text exactly from the file.
+{%- else %}
 - Create a file with a heredoc (`cat <<'EOF' > file`) and edit one with a short script or `sed`.
+{%- endif %}
+- Change only the bytes the request asks you to change. Keep each file's line endings (LF or CRLF), encoding and byte order mark, including on the lines you add.
+{%- if system == "Windows" %}
+- This is Windows with Git Bash. Python's text mode writes CRLF here: open files with `newline=''` and the file's own encoding. Git Bash writes `C:\a b\c` as `/c/a b/c`; Windows programs such as python and node take `C:/a b/c`. Quote paths that have spaces.
+{%- endif %}
 {%- if system == "Darwin" %}
 - This is macOS: use `sed -i ''` instead of `sed -i`.
 {%- endif %}

@@ -260,3 +260,40 @@ fn a_resume_without_a_task_asks_for_one() {
     let output = setup.umbra(&["-m", &model, "--resume", &session_id(&first)], "", false);
     assert_eq!(output.status.code(), Some(2), "with no terminal and no task it fails: {}", text(&output));
 }
+
+#[test]
+fn each_step_is_appended_to_the_journal_and_a_cut_journal_still_resumes() {
+    let setup = Setup::new("journal-cut");
+    let first = setup.first_run("one.json", json!([call("echo a"), call("echo b"), submit("x")]), "remember PINE-7");
+    let id = session_id(&first);
+    let trajectory = setup.scratch.path("home").join(".umbra/trajectories").join(format!("{id}.traj.json"));
+    let journal = setup.scratch.path("home").join(".umbra/trajectories").join(format!("{id}.traj.journal.jsonl"));
+    let lines = std::fs::read_to_string(&journal).unwrap();
+    assert_eq!(lines.lines().filter(|l| l.contains("\"t\":\"msg\"")).count(), first["messages"].as_array().unwrap().len(), "each message is written to the journal once");
+    // A crash in the middle of a step: no trajectory written for the turn, and the journal's
+    // last line cut off part way.
+    std::fs::remove_file(&trajectory).unwrap();
+    let bytes = std::fs::read(&journal).unwrap();
+    std::fs::write(&journal, &bytes[..bytes.len() - 20]).unwrap();
+    let model = replay_model(&setup.scratch, "two.json", &json!([submit("y")]));
+    let output = setup.umbra(&["-m", &model, "--resume", &id, "carry on"], "", false);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let request = setup.requests().last().unwrap().clone();
+    assert_eq!(request["messages"][1]["content"].as_str().map(|t| t.contains("PINE-7")), Some(true), "the history survived the cut");
+}
+
+#[test]
+fn a_branch_at_message_n_keeps_the_first_n_messages() {
+    let setup = Setup::new("branch-at");
+    let first = setup.first_run("one.json", json!([call("echo a"), call("echo b"), submit("x")]), "task");
+    let id = session_id(&first);
+    let model = replay_model(&setup.scratch, "two.json", &json!([submit("y")]));
+    let output = setup.umbra(&["-m", &model, "--resume", &id, "--at", "4", "--fork", "another way"], "", false);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let request = setup.requests().last().unwrap().clone();
+    assert_eq!(roles(&request), ["system", "user", "assistant", "tool", "user"], "4 messages kept, then the new task");
+    let forked = read_trajectory(&trajectory_from_output(&output));
+    assert_ne!(session_id(&forked), id, "a branch is a new session");
+    let output = setup.umbra(&["-m", &model, "--resume", &id, "--at", "4", "again"], "", false);
+    assert_ne!(output.status.code(), Some(0), "--at needs --fork");
+}

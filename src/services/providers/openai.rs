@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use super::super::stall_service::repair_json;
 use super::credentials::api_key;
 use super::pricing::{cost_of, price_for};
 use super::{apply_extra_body, is_overflow_text, retry_count, with_retries, Provider, ProviderError, ToolSpec};
@@ -42,7 +43,7 @@ impl OpenAiProvider {
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.iter().map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.input_schema } })).collect());
         }
-        if let Some(max_tokens) = self.config.max_tokens {
+        if let Some(max_tokens) = self.config.max_tokens.or_else(|| is_local_url(&self.config.base_url).then_some(LOCAL_MAX_TOKENS)) {
             body["max_tokens"] = json!(max_tokens);
         }
         if let Some(temperature) = self.config.temperature {
@@ -50,6 +51,12 @@ impl OpenAiProvider {
         }
         if self.config.preserve_thinking.unwrap_or_else(|| is_local_url(&self.config.base_url)) {
             body["chat_template_kwargs"] = json!({ "preserve_thinking": true });
+        }
+        if let Some(enable) = thinking_for(self.config.thinking.as_deref(), messages) {
+            if !body["chat_template_kwargs"].is_object() {
+                body["chat_template_kwargs"] = json!({});
+            }
+            body["chat_template_kwargs"]["enable_thinking"] = json!(enable);
         }
         apply_extra_body(&mut body, &self.config);
         body
@@ -166,6 +173,9 @@ impl Provider for OpenAiProvider {
     /// llama.cpp or NInfer server on this machine reports `n_ctx` at `/props`, and vLLM,
     /// llama.cpp and OpenRouter list a size for each model at `/models`.
     fn context_window(&mut self) -> Option<u64> {
+        if let Some(window) = self.config.context_window.filter(|w| *w > 0) {
+            return Some(window);
+        }
         if let Some(window) = known_context_window(&self.model) {
             return Some(window);
         }
@@ -181,6 +191,25 @@ impl Provider for OpenAiProvider {
         fetch_json(&agent, &format!("{base}/models"), &headers).and_then(|models| window_from_models(&models, &self.model))
     }
 }
+
+/// Decides `enable_thinking` for one request from the `thinking` setting: `on`, `off`, or
+/// `first`, which thinks only when the newest message is the person's (the first request of a
+/// turn). None sends nothing.
+/// @param setting - the provider's `thinking` setting
+/// @param messages - the conversation
+fn thinking_for(setting: Option<&str>, messages: &[Message]) -> Option<bool> {
+    match setting? {
+        "on" => Some(true),
+        "off" => Some(false),
+        "first" => Some(messages.iter().rev().find(|m| m.role != Role::Exit).is_some_and(|m| m.role == Role::User && m.tool_call_id.is_none())),
+        _ => None,
+    }
+}
+
+/// The reply length limit sent to a server on this machine when `max_tokens` is not set. Without
+/// it the server's own default applies (8192 on llama.cpp), and a thinking model can spend all of
+/// it on reasoning, so the reply is cut off with no text or tool call in it.
+const LOCAL_MAX_TOKENS: u32 = 16000;
 
 /// Returns true for a server on this machine.
 /// @param url - the base URL
@@ -304,12 +333,13 @@ pub fn parse_response(raw: &Value) -> ModelResponse {
     ModelResponse { content: message["content"].as_str().unwrap_or("").to_string(), tool_calls, finish_reason: choice["finish_reason"].as_str().unwrap_or("").to_string(), usage, cost: 0.0, raw: raw.clone(), timing: Value::Null }
 }
 
-/// Reads one tool call, giving it an id when the server sent none.
+/// Reads one tool call, giving it an id when the server sent none. Arguments that are not valid
+/// JSON are repaired when the fault is a raw line break or a trailing comma.
 /// @param index - the call's position, used for a missing id
 /// @param call - the tool call JSON
 fn parse_tool_call(index: usize, call: &Value) -> ToolCall {
     let text = call["function"]["arguments"].as_str().unwrap_or("{}");
-    let arguments = serde_json::from_str::<Value>(text).unwrap_or_else(|_| Value::String(text.to_string()));
+    let arguments = serde_json::from_str::<Value>(text).ok().or_else(|| repair_json(text)).unwrap_or_else(|| Value::String(text.to_string()));
     let id = call["id"].as_str().filter(|s| !s.is_empty()).map(String::from).unwrap_or_else(|| format!("call_{index}"));
     ToolCall { id, name: call["function"]["name"].as_str().unwrap_or("").to_string(), arguments }
 }
@@ -574,6 +604,17 @@ mod tests {
     }
 
     #[test]
+    fn sends_a_reply_limit_to_a_local_server_when_none_is_set() {
+        let config = |url: &str, max: Option<u32>| ProviderConfig { kind: "openai".into(), base_url: url.into(), max_tokens: max, ..Default::default() };
+        let body = OpenAiProvider::new(config("http://127.0.0.1:8080/v1", None), "m").request_body(&[], &[]);
+        assert_eq!(body["max_tokens"], 16000);
+        let body = OpenAiProvider::new(config("http://localhost:8080/v1", Some(4096)), "m").request_body(&[], &[]);
+        assert_eq!(body["max_tokens"], 4096);
+        let body = OpenAiProvider::new(config("https://api.openai.com/v1", None), "m").request_body(&[], &[]);
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
     fn asks_a_local_server_to_preserve_thinking() {
         let config = |url: &str, preserve: Option<bool>| ProviderConfig { kind: "openai".into(), base_url: url.into(), preserve_thinking: preserve, ..Default::default() };
         let body = OpenAiProvider::new(config("http://127.0.0.1:8080/v1", None), "m").request_body(&[], &[]);
@@ -582,6 +623,20 @@ mod tests {
         assert!(body.get("chat_template_kwargs").is_none());
         let body = OpenAiProvider::new(config("http://localhost:8080/v1", Some(false)), "m").request_body(&[], &[]);
         assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
+    fn the_thinking_setting_turns_thinking_on_off_or_on_for_the_first_request_of_a_turn() {
+        let config = |thinking: &str| ProviderConfig { kind: "openai".into(), base_url: "http://127.0.0.1:8080/v1".into(), thinking: Some(thinking.into()), ..Default::default() };
+        let user = vec![Message::user("go")];
+        let after_tool = vec![Message::user("go"), Message::new(Role::Assistant, ""), Message::tool("1", "out")];
+        let enable = |thinking: &str, messages: &[Message]| OpenAiProvider::new(config(thinking), "m").request_body(messages, &[])["chat_template_kwargs"]["enable_thinking"].clone();
+        assert_eq!(enable("off", &user), json!(false));
+        assert_eq!(enable("on", &after_tool), json!(true));
+        assert_eq!(enable("first", &user), json!(true));
+        assert_eq!(enable("first", &after_tool), json!(false));
+        let body = OpenAiProvider::new(config("first"), "m").request_body(&user, &[]);
+        assert_eq!(body["chat_template_kwargs"]["preserve_thinking"], true, "preserve_thinking is kept beside it");
     }
 
     #[test]

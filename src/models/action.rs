@@ -10,7 +10,14 @@ use super::image::ImageData;
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Action {
     /// A shell command run in the environment.
-    Bash { command: String, #[serde(default, skip_serializing_if = "Option::is_none")] tool_call_id: Option<String> },
+    Bash {
+        command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_call_id: Option<String>,
+        /// Seconds the model asked this command to be allowed, within the configured maximum.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout: Option<u64>,
+    },
     /// A call to a tool on an MCP server.
     Mcp { server: String, tool: String, arguments: Value, #[serde(default, skip_serializing_if = "Option::is_none")] tool_call_id: Option<String> },
 }
@@ -47,6 +54,9 @@ pub struct Observation {
     /// How long the action took, in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// The file holding the whole output, when it was too long to show the model whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_file: Option<String>,
 }
 
 impl Observation {

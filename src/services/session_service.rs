@@ -9,6 +9,8 @@ use crate::models::compaction::CompactionRecord;
 use crate::models::message::{Message, Role};
 use crate::models::session::{SessionIndexEntry, SessionInfo};
 use crate::models::trajectory::ModelStats;
+use crate::models::trajectory::Trajectory;
+use crate::repositories::journal_repository::{journal_path, load_journal};
 use crate::repositories::session_repository::{find_session, list_sessions, load_trajectory, new_session_id, sessions_in};
 use crate::utils::console::read_line;
 
@@ -89,11 +91,34 @@ pub fn time_ago(seconds: f64) -> String {
     }
 }
 
+/// Reads a saved session: from its journal when it is at least as new as the trajectory file,
+/// since the journal has every step and the trajectory JSON only the end of each turn, otherwise
+/// from the trajectory (a trajectory changed after the journal, by a person or a tool, wins). A
+/// journal that cannot be read falls back to the trajectory.
+/// @param path - the trajectory file
+pub fn load_session_record(path: &Path) -> Result<Trajectory> {
+    let journal = journal_path(path);
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let journal_is_newest = match (modified(&journal), modified(path)) {
+        (Some(j), Some(t)) => j >= t,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    if journal_is_newest {
+        match load_journal(&journal) {
+            Ok(trajectory) => return Ok(trajectory),
+            Err(error) if !path.is_file() => return Err(error),
+            Err(_) => {}
+        }
+    }
+    load_trajectory(path)
+}
+
 /// Loads a trajectory to continue it: removes the exit marker, gives unanswered tool calls a
 /// result, and fills in the session block for trajectories written before Umbra had one.
 /// @param path - the trajectory file
 pub fn load_resumed(path: &Path) -> Result<ResumedSession> {
-    let trajectory = load_trajectory(path)?;
+    let trajectory = load_session_record(path)?;
     let mut messages = trajectory.messages;
     while messages.last().is_some_and(|m| m.role == Role::Exit) {
         messages.pop();
@@ -143,6 +168,15 @@ pub fn repair_history(messages: &mut Vec<Message>) -> usize {
         index = end + missing.len();
     }
     added
+}
+
+/// Cuts a resumed history back to its first `keep` messages, for `--at` with `--fork`, and
+/// gives tool calls left without a result one. The system message is always kept.
+/// @param resumed - the loaded session, changed in place
+/// @param keep - how many messages to keep
+pub fn branch_at(resumed: &mut ResumedSession, keep: usize) {
+    resumed.messages.truncate(keep.max(1));
+    resumed.repaired += repair_history(&mut resumed.messages);
 }
 
 /// Lists sessions for `umbra sessions`: this folder's, or every folder's.

@@ -158,6 +158,10 @@ pub struct RunArgs {
     /// as it was.
     #[arg(long)]
     pub fork: bool,
+    /// With --resume and --fork: branch from an earlier point, keeping only the first N messages
+    /// of the saved history.
+    #[arg(long, value_name = "N", requires = "fork")]
+    pub at: Option<usize>,
     /// Set by `umbra resume --all`: the session picker lists every folder's sessions.
     #[arg(skip)]
     pub pick_all: bool,

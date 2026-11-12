@@ -21,6 +21,9 @@ pub struct LocalEnvironment {
     config: EnvironmentConfig,
     cwd: PathBuf,
     shell: Vec<String>,
+    /// With `persistent_shell`: the file each command saves its working directory and exported
+    /// variables to, and the next command reads them from (task-2617, E10).
+    state_file: Option<PathBuf>,
 }
 
 impl LocalEnvironment {
@@ -30,7 +33,8 @@ impl LocalEnvironment {
     pub fn new(config: EnvironmentConfig, default_cwd: &Path) -> Self {
         let cwd = if config.cwd.is_empty() { default_cwd.to_path_buf() } else { PathBuf::from(&config.cwd) };
         let shell = if config.shell.is_empty() { find_default_shell() } else { config.shell.clone() };
-        LocalEnvironment { config, cwd, shell }
+        let state_file = (config.persistent_shell && is_posix_shell(&shell)).then(new_state_file);
+        LocalEnvironment { config, cwd, shell, state_file }
     }
 
     /// Runs the first shell entry as a program with the given arguments, with the timeout and
@@ -38,11 +42,19 @@ impl LocalEnvironment {
     /// @param args - the program's arguments
     /// @param label - the command text, for the timeout message
     pub fn execute_args(&self, args: &[String], label: &str) -> Observation {
+        self.execute_args_for(args, label, self.config.timeout)
+    }
+
+    /// Runs the shell with the given arguments and a timeout in seconds.
+    /// @param args - the program's arguments
+    /// @param label - the command text, for the timeout message
+    /// @param seconds - how long the command may run
+    fn execute_args_for(&self, args: &[String], label: &str, seconds: u64) -> Observation {
         let mut process = Command::new(&self.shell[0]);
         process.args(args).current_dir(&self.cwd).envs(&self.config.env).envs(crate::services::control_service::env_vars()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         own_process_group(&mut process);
         match process.spawn() {
-            Ok(child) => wait_for_output(child, Duration::from_secs(self.config.timeout.max(1)), label),
+            Ok(child) => wait_for_output(child, Duration::from_secs(seconds.max(1)), label, self.config.max_timeout.max(self.config.timeout)),
             Err(e) => Observation::failed("", format!("An error occurred while executing the command: could not start {}: {e}", self.shell[0])),
         }
     }
@@ -52,22 +64,65 @@ impl Environment for LocalEnvironment {
     /// Runs one command with stdout and stderr merged, killing it after the timeout.
     /// @param command - the shell command text
     fn execute(&mut self, command: &str) -> Observation {
+        self.execute_timed(command, None)
+    }
+
+    /// Runs one command with the timeout the model asked for, no more than `max_timeout`, or
+    /// the configured timeout when it asked for none.
+    /// @param command - the shell command text
+    /// @param timeout - seconds the model asked for, or None
+    fn execute_timed(&mut self, command: &str, timeout: Option<u64>) -> Observation {
         let mut args: Vec<String> = self.shell[1..].to_vec();
-        args.push(wrap_command(&self.shell, command));
-        self.execute_args(&args, command)
+        let command_text = match &self.state_file {
+            Some(state) => with_saved_state(command, state),
+            None => command.to_string(),
+        };
+        args.push(wrap_command(&self.shell, &command_text));
+        let seconds = timeout.map_or(self.config.timeout, |asked| asked.clamp(1, self.config.max_timeout.max(self.config.timeout)));
+        self.execute_args_for(&args, command, seconds)
     }
 
     /// Values the prompt templates can use: the platform, the working folder, the timeout, and the
     /// path of the running Umbra binary, which the agent can run to change Umbra itself.
     fn template_vars(&self) -> Value {
         let umbra_bin = std::env::current_exe().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-        json!({ "cwd": self.cwd.to_string_lossy(), "timeout": self.config.timeout, "shell": self.shell.join(" "), "environment_kind": "local", "umbra_bin": umbra_bin })
+        json!({ "cwd": self.cwd.to_string_lossy(), "timeout": self.config.timeout, "shell": self.shell.join(" "), "environment_kind": "local", "umbra_bin": umbra_bin, "persistent_shell": self.state_file.is_some() })
+    }
+
+    /// Removes the shell state file.
+    fn close(&mut self) {
+        if let Some(state) = self.state_file.take() {
+            let _ = std::fs::remove_file(state);
+        }
     }
 
     /// The settings recorded in the trajectory.
     fn describe(&self) -> Value {
         json!({ "environment": self.config, "environment_type": "umbra.local", "shell": self.shell })
     }
+}
+
+/// Returns true for bash and the shells like it, which `exec 2>&1` and the state file work in.
+/// @param shell - the shell program and flags
+fn is_posix_shell(shell: &[String]) -> bool {
+    let program = Path::new(&shell[0]).file_stem().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    ["bash", "sh", "zsh", "dash"].contains(&program.as_str())
+}
+
+/// A new, unused path for a session's shell state file in the system temp folder.
+fn new_state_file() -> PathBuf {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    std::env::temp_dir().join(format!("umbra-shell-{}-{nanos}.sh", std::process::id()))
+}
+
+/// Wraps a command so it starts in the working directory and with the exported variables the
+/// previous command ended with, and saves its own for the next one. The command's exit code is
+/// kept. A command that calls `exit` itself saves nothing, so the next one starts as this one did.
+/// @param command - the command text
+/// @param state - the state file
+fn with_saved_state(command: &str, state: &Path) -> String {
+    let path = state.to_string_lossy().replace('\\', "/").replace('\'', "'\\''");
+    format!("[ -f '{path}' ] && . '{path}' 2>/dev/null\n{command}\n__umbra_rc=$?\n{{ export -p; printf 'cd %q\\n' \"$PWD\"; }} > '{path}' 2>/dev/null\nexit $__umbra_rc")
 }
 
 /// Makes the shell send stderr to stdout so the output keeps its original order. Only shells
@@ -114,7 +169,8 @@ enum Ending {
 /// @param child - the running shell
 /// @param timeout - how long to wait
 /// @param command - the command text, for the timeout message
-fn wait_for_output(mut child: Child, timeout: Duration, command: &str) -> Observation {
+/// @param max_timeout - the most seconds a command may ask for, named in the timeout message
+fn wait_for_output(mut child: Child, timeout: Duration, command: &str, max_timeout: u64) -> Observation {
     let job = ProcessJob::track(&child);
     let stdout = spawn_reader(child.stdout.take());
     let stderr = spawn_reader(child.stderr.take());
@@ -130,9 +186,18 @@ fn wait_for_output(mut child: Child, timeout: Duration, command: &str) -> Observ
     output.push_str(&stderr.recv_timeout(grace).unwrap_or_default());
     match ending {
         Ending::Exited(code) => Observation { output, returncode: code.unwrap_or(-1), exception_info: String::new(), images: Vec::new(), ..Default::default() },
-        Ending::TimedOut => Observation::failed(output, format!("An error occurred while executing the command: Command '{command}' timed out after {} seconds", timeout.as_secs())),
+        Ending::TimedOut => Observation::failed(output, timeout_message(command, timeout.as_secs(), max_timeout)),
         Ending::Interrupted(seconds) => Observation::failed(output, format!("{INTERRUPTED_COMMAND} after {seconds:.1} seconds")),
     }
+}
+
+/// The error a command gets when it runs past its timeout: what happened, and the two ways to
+/// run something long.
+/// @param command - the command text
+/// @param seconds - the timeout it had
+/// @param max_timeout - the most seconds a command may ask for
+fn timeout_message(command: &str, seconds: u64, max_timeout: u64) -> String {
+    format!("Command '{command}' timed out after {seconds} seconds and was stopped; any output it printed is above. If it needs longer, run it again with a larger timeout argument (up to {max_timeout} seconds). For something longer than that, start it in the background with its output in a file, for example `nohup <command> > run.log 2>&1 &`, and check the file. If it was waiting for input, pass the flag that makes it run without asking.")
 }
 
 /// The start of the error a command gets when Ctrl+C stops it.

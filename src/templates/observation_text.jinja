@@ -25,3 +25,7 @@ If you really need to see something from the full command's output, you can redi
 {{ output.output[-5000:] }}
 </output_tail>
 {%- endif -%}
+{%- if output.output_file is defined and output.output_file %}
+<full_output_file>{{ output.output_file }}</full_output_file>
+<note>The whole output is in this file, with any line over 2000 characters that was cut above. Search it with grep -n or read a part with sed -n instead of running the command again.</note>
+{%- endif -%}

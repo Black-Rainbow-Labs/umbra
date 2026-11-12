@@ -190,3 +190,118 @@ fn no_model_is_reported_before_the_prompt() {
     assert!(shown.contains("umbra setup"), "the message names the setup command:\n{shown}");
     assert!(!shown.contains("What do you want to do?"), "no prompt is shown when no model can answer it:\n{shown}");
 }
+
+#[test]
+fn a_reply_right_after_a_file_change_gets_one_finish_check() {
+    let scratch = Scratch::new("finish-check");
+    let work = scratch.path("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(scratch.path("home/.umbra")).unwrap();
+    std::fs::write(scratch.path("home/.umbra/config.toml"), "finish_check = true
+").unwrap();
+    let model = script(&scratch, json!([
+        { "content": "Writing the file.", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo hello > out.txt" } }] },
+        "Done, the file is written.",
+        "Still done."
+    ]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "--cwd", &slash(&work), "-o", &slash(&traj), "write a file"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let trajectory = read_trajectory(&traj);
+    let messages = trajectory["messages"].as_array().unwrap();
+    let checks = messages.iter().filter(|m| m["extra"]["interrupt_type"] == "FinishCheck").count();
+    assert_eq!(checks, 1, "exactly one finish check");
+    assert_eq!(trajectory["info"]["exit_status"], "Replied");
+    assert_eq!(trajectory["info"]["submission"], "Still done.");
+}
+
+#[test]
+fn a_reply_after_a_check_command_ends_the_turn() {
+    let scratch = Scratch::new("finish-check-ran");
+    let work = scratch.path("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(scratch.path("home/.umbra")).unwrap();
+    std::fs::write(scratch.path("home/.umbra/config.toml"), "finish_check = true
+").unwrap();
+    let model = script(&scratch, json!([
+        { "content": "Writing.", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo hello > out.txt" } }] },
+        { "content": "Checking.", "tool_calls": [{ "name": "bash", "arguments": { "command": "cat out.txt" } }] },
+        "Done."
+    ]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "--cwd", &slash(&work), "-o", &slash(&traj), "write a file"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let trajectory = read_trajectory(&traj);
+    let checks = trajectory["messages"].as_array().unwrap().iter().filter(|m| m["extra"]["interrupt_type"] == "FinishCheck").count();
+    assert_eq!(checks, 0);
+    assert_eq!(trajectory["info"]["submission"], "Done.");
+}
+
+#[test]
+fn the_edit_tool_changes_only_the_match_when_it_is_on() {
+    let scratch = Scratch::new("edit-tool");
+    let work = scratch.path("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("a.txt"), b"one\r\ntwo\r\n").unwrap();
+    std::fs::create_dir_all(scratch.path("home/.umbra")).unwrap();
+    std::fs::write(scratch.path("home/.umbra/config.toml"), "edit_tool = true\nfinish_check = false\n").unwrap();
+    let model = script(&scratch, json!([
+        { "content": "Editing.", "tool_calls": [{ "name": "edit", "arguments": { "path": "a.txt", "old_text": "two", "new_text": "two\nthree" } }] },
+        "Done."
+    ]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "--cwd", &slash(&work), "-o", &slash(&traj), "add a line"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    assert_eq!(std::fs::read(work.join("a.txt")).unwrap(), b"one\r\ntwo\r\nthree\r\n");
+    let tools = read_trajectory(&traj)["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").count();
+    assert_eq!(tools, 1);
+}
+
+#[test]
+fn the_model_can_give_one_command_a_longer_timeout_up_to_the_maximum() {
+    let scratch = Scratch::new("timeout-arg");
+    scratch.write("short.toml", "[environment]\ntimeout = 1\nmax_timeout = 3\n");
+    let model = script(&scratch, json!([
+        { "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "sleep 2 && echo slept", "timeout": 30 } }] },
+        { "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "sleep 20", "timeout": 30 } }] },
+        { "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" } }] }
+    ]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "-c", &slash(&scratch.path("short.toml")), "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "task"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let messages = read_trajectory(&traj)["messages"].as_array().unwrap().clone();
+    assert_eq!(messages[3]["extra"]["raw_output"].as_str().unwrap().trim(), "slept", "the asked for timeout let a 2 second command finish");
+    let stopped = messages[5]["extra"]["exception_info"].as_str().unwrap();
+    assert!(stopped.contains("timed out after 3 seconds") && stopped.contains("in the background"), "the maximum caps the ask: {stopped}");
+}
+
+#[test]
+fn the_same_command_and_output_three_times_gets_one_stall_message() {
+    let scratch = Scratch::new("stall");
+    let same = json!({ "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo same" } }] });
+    let model = script(&scratch, json!([same.clone(), same.clone(), same.clone(), same, "Done."]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "--cwd", &slash(&scratch.root), "-o", &slash(&traj), "task"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let messages = read_trajectory(&traj)["messages"].as_array().unwrap().clone();
+    let stalls: Vec<usize> = messages.iter().enumerate().filter(|(_, m)| m["extra"]["interrupt_type"] == "Stall").map(|(i, _)| i).collect();
+    assert_eq!(stalls.len(), 1, "one stall message for the streak");
+    assert_eq!(messages[stalls[0] - 1]["role"], "tool", "it follows the third result");
+}
+
+#[test]
+fn with_persistent_shell_cd_and_export_carry_over_and_the_exit_code_is_kept() {
+    let scratch = Scratch::new("persistent-shell");
+    std::fs::create_dir_all(scratch.path("work/sub")).unwrap();
+    scratch.write("shell.toml", "[environment]\npersistent_shell = true\n");
+    let call = |c: &str| json!({ "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": c } }] });
+    let model = script(&scratch, json!([call("cd sub && export UMBRA_X=kept"), call("pwd; echo $UMBRA_X; false"), "Done."]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "-c", &slash(&scratch.path("shell.toml")), "--cwd", &slash(&scratch.path("work")), "-o", &slash(&traj), "task"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let messages = read_trajectory(&traj)["messages"].as_array().unwrap().clone();
+    let second = &messages[5]["extra"];
+    let printed = second["raw_output"].as_str().unwrap();
+    assert!(printed.trim_end().ends_with("kept") && printed.contains("/sub"), "the second command started in sub with UMBRA_X set: {printed}");
+    assert_eq!(second["returncode"], 1, "the command's own exit code is kept");
+}
