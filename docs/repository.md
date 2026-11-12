@@ -17,8 +17,8 @@ src/
                          umbra config and umbra session, updates
   services/acp/          the ACP server: JSON-RPC, sessions, session updates
   templates/             the Jinja prompt templates
-  ui/                    the fullscreen view: blocks, frame, markdown, syntax colors,
-                         header, overlays, selection
+  ui/                    the fullscreen view: blocks, frame, markdown, math, Mermaid
+                         diagrams, syntax colors, header, overlays, selection
   utils/                 paths, frontmatter, variable expansion, HTTP, terminal output,
                          the status bar, the banner, the clipboard
 tests/                   integration tests that run the real binary

@@ -70,6 +70,7 @@ now.
 | [`umbra-improvements-v2-tdd.md`](../tasks/umbra-improvements-v2-tdd.md) | The structured terminal view |
 | [`umbra-fixes-part-5-tdd.md`](../tasks/umbra-fixes-part-5-tdd.md) | The status bar under the input, syntax colors, `umbra config` and `umbra session`, and updates |
 | [`umbra-hillclimb-tdd.md`](../tasks/umbra-hillclimb-tdd.md) | The experiments that improve Umbra against pi |
+| [`umbra-issues-v34-tdd.md`](../tasks/umbra-issues-v34-tdd.md) | Writing only the changed rows, Mermaid diagrams, math, footnotes, and `umbra resume` with no model configured |
 
 ## Data files
 

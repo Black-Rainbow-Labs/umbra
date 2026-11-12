@@ -166,7 +166,12 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
         bail!("stdin is not a terminal, so Umbra cannot ask before running commands. Pass --yolo to run without asking");
     }
     // Before the prompt, so a task is never asked for and then dropped because no model can run it.
-    check_credentials(&config, &config.model)?;
+    // `umbra resume` with no model configured waits for the picker: the chosen session names the
+    // model it ran on.
+    let model_from_pick = pick && config.model.is_empty();
+    if !model_from_pick {
+        check_credentials(&config, &config.model)?;
+    }
     let context = load_run_context(&config, &discovery_context(&config, &cwd));
     // Closes the fullscreen view on every way out of this function, errors included.
     let _view = LeaveViewOnDrop;
@@ -187,6 +192,9 @@ pub fn run_task(args: &RunArgs) -> Result<i32> {
         match pick_in_view(&cwd, args.pick_all) {
             Some(id) => (resumed, resume_notice) = resume_by_id(&id, &mut args)?,
             None => return Ok(0),
+        }
+        if model_from_pick {
+            take_picked_model(&mut config, resumed.as_ref())?;
         }
     }
     loop {
@@ -347,6 +355,25 @@ fn pick_in_view(cwd: &Path, all: bool) -> Option<String> {
             _ => return None,
         }
     }
+}
+
+/// Gives a run that started with no model the model of the session chosen in the picker, and
+/// checks its credentials. A missing credential stops the run with that error, and a session that
+/// recorded no model stops it with the error for no model set.
+/// @param config - the merged config, changed in place
+/// @param resumed - the chosen session
+fn take_picked_model(config: &mut UmbraConfig, resumed: Option<&ResumedSession>) -> Result<()> {
+    let model = resumed.map(|r| r.session.model.clone()).unwrap_or_default();
+    check_credentials(config, &model)?;
+    config.model = model;
+    live::set_config(config.clone());
+    let shown = super::providers::resolve_model(config, &config.model);
+    usage_service::start(config, &config.model);
+    live::update_header(|h| h.model = shown.clone());
+    if crate::utils::console::status_bar_on() && screen::is_active() {
+        crate::utils::console::update_status(crate::utils::status_bar::StatusInfo { model: shown, ..Default::default() });
+    }
+    Ok(())
 }
 
 /// Makes a resumed session use its own model, when that model can still be used. Called only

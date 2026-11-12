@@ -93,7 +93,7 @@ umbra --resume 17941855 --fork "try it a different way"   # continue a copy, lea
 | Command | What it does |
 |---|---|
 | `umbra sessions` | Lists this folder's sessions, newest first. `--all` lists every folder's |
-| `umbra resume` | Opens the session picker. Without a terminal, it prints the list the way `umbra sessions` does and asks for an id |
+| `umbra resume` | Opens the session picker. Without a terminal, it prints the list the way `umbra sessions` does and asks for an id. No model needs to be configured: the chosen session runs on the model it recorded |
 | `umbra resume <id>` | Resumes that session |
 | `umbra resume --all` | The picker with every folder's sessions |
 | `-r`, `--resume [session]` | Resumes a session by its id, the start of its id, or a trajectory file. With no value, opens the picker |
@@ -112,7 +112,9 @@ title of at most six words and a one sentence summary. `sessions.auto_title = fa
 request off. A compaction summary replaces the session summary.
 
 **What a resume keeps.** A resumed session continues in its own folder, with its own model unless
-`-m` says otherwise, and in the same trajectory file. The model sees the whole history, the images
+`-m` says otherwise, and in the same trajectory file. This holds when no model is set in
+`~/.umbra/config.toml` or `UMBRA_MODEL`, for `umbra resume`, `umbra resume <id>`, `--resume <id>`
+and `--continue`. A session that recorded no model stops with the error for no model set. The model sees the whole history, the images
 included, and the next task arrives the way a follow up task does. The MCP servers turned off in the
 session are turned off again. The step and cost limits count from the resume. After a resume the
 fullscreen view shows the earlier prompts, replies and command groups.

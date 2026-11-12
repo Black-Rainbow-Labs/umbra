@@ -271,12 +271,30 @@ fn draw_centered(view: &mut View, rows: &mut [String], width: usize, ctx: &Layou
     }
 }
 
+/// A laid out frame: its rows, top first, and where the cursor goes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Painted {
+    pub rows: Vec<String>,
+    pub cursor_row: usize,
+    pub cursor_col: usize,
+    pub show_cursor: bool,
+}
+
 /// Draws a whole frame and records the hit map in `view.frame`. The frame is wrapped in
 /// synchronized output so a terminal that supports it shows no flicker.
 /// @param view - the view
 /// @param width - the screen width
 /// @param height - the screen height
 pub fn render_frame(view: &mut View, width: usize, height: usize) -> String {
+    let painted = layout_frame(view, width, height);
+    compose(&painted.rows, height, painted.cursor_row, painted.cursor_col, painted.show_cursor)
+}
+
+/// Lays out a whole frame and records the hit map in `view.frame`, without turning it into bytes.
+/// @param view - the view
+/// @param width - the screen width
+/// @param height - the screen height
+pub fn layout_frame(view: &mut View, width: usize, height: usize) -> Painted {
     view.offer_update();
     let ctx = view.ctx();
     let (input, cursor_row, cursor_col) = input_rows(view, width);
@@ -323,7 +341,36 @@ pub fn render_frame(view: &mut View, width: usize, height: usize) -> String {
     rows.truncate(height);
     let overlay_open = view.overlay.is_some();
     view.frame = FrameInfo { room, lines, hits, overlay: (panel_top, panel_end) };
-    compose(&rows, height, input_top + cursor_row, cursor_col, !overlay_open)
+    Painted { rows, cursor_row: input_top + cursor_row, cursor_col, show_cursor: !overlay_open }
+}
+
+/// The bytes that change the screen from the last frame written to a new one: only the rows that
+/// differ, each moved to and cleared before it is written, inside synchronized output. Returns an
+/// empty string when nothing changed, so a frame that changes nothing writes nothing.
+/// @param last - the frame on the screen
+/// @param next - the new frame
+/// @param height - the screen height
+pub fn compose_changes(last: &Painted, next: &Painted, height: usize) -> String {
+    let count = last.rows.len().max(next.rows.len()).min(height);
+    let changed: Vec<usize> = (0..count).filter(|&i| last.rows.get(i) != next.rows.get(i)).collect();
+    let cursor_same = last.cursor_row == next.cursor_row && last.cursor_col == next.cursor_col && last.show_cursor == next.show_cursor;
+    if changed.is_empty() && cursor_same {
+        return String::new();
+    }
+    let mut out = String::from("\x1b[?2026h\x1b[?25l");
+    for index in changed {
+        out.push_str(&format!("\x1b[{};1H\x1b[0m\x1b[2K", index + 1));
+        if let Some(row) = next.rows.get(index) {
+            out.push_str(row);
+            out.push_str("\x1b[0m");
+        }
+    }
+    out.push_str(&format!("\x1b[{};{}H", (next.cursor_row + 1).min(height), next.cursor_col + 1));
+    if next.show_cursor {
+        out.push_str("\x1b[?25h");
+    }
+    out.push_str("\x1b[?2026l");
+    out
 }
 
 /// Keeps the view from scrolling past the top of the transcript. A collapse, a resize or the row
@@ -348,7 +395,7 @@ fn clamp_scroll(view: &mut View, width: usize, room: usize, ctx: &LayoutCtx) {
 /// @param cursor_row - the cursor's screen row
 /// @param cursor_col - the cursor's column
 /// @param show_cursor - false while an overlay has the keyboard
-fn compose(rows: &[String], height: usize, cursor_row: usize, cursor_col: usize, show_cursor: bool) -> String {
+pub fn compose(rows: &[String], height: usize, cursor_row: usize, cursor_col: usize, show_cursor: bool) -> String {
     let mut out = String::from("\x1b[?2026h\x1b[?25l\x1b[H");
     // Each row is cleared before it is written, not after. A row as wide as the screen leaves the
     // cursor on the last column with a wrap pending, and an erase to the end of the line from
@@ -420,5 +467,48 @@ pub fn scroll_to(view: &mut View, target: Target) {
         view.scroll = total.saturating_sub(position + room);
     } else if position >= end {
         view.scroll = total.saturating_sub(position + 1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Applies the bytes of `compose_changes` to a screen of plain rows: each cursor move to a row
+    /// followed by an erase replaces that row with the text after it.
+    /// @param screen - the rows on the screen, changed in place
+    /// @param bytes - the bytes written
+    fn apply(screen: &mut Vec<String>, bytes: &str) {
+        let pattern = regex::Regex::new("\x1b\\[(\\d+);1H\x1b\\[0m\x1b\\[2K([^\x1b]*)").unwrap();
+        for caps in pattern.captures_iter(bytes) {
+            let row: usize = caps[1].parse::<usize>().unwrap() - 1;
+            if screen.len() <= row {
+                screen.resize(row + 1, String::new());
+            }
+            screen[row] = caps[2].to_string();
+        }
+    }
+
+    /// A painted frame of plain rows with the cursor on the last row.
+    /// @param rows - the rows
+    fn painted(rows: &[&str]) -> Painted {
+        Painted { rows: rows.iter().map(|r| r.to_string()).collect(), cursor_row: rows.len() - 1, cursor_col: 2, show_cursor: true }
+    }
+
+    #[test]
+    fn only_changed_rows_are_written_and_an_unchanged_frame_writes_nothing() {
+        let first = painted(&["header", "line 1", "line 2", "› "]);
+        let second = painted(&["header", "line 1", "line two", "› "]);
+        assert_eq!(compose_changes(&first, &first, 4), "");
+        let bytes = compose_changes(&first, &second, 4);
+        assert!(bytes.contains("\x1b[3;1H") && !bytes.contains("\x1b[1;1H") && !bytes.contains("header"), "{bytes:?}");
+        assert!(bytes.starts_with("\x1b[?2026h") && bytes.ends_with("\x1b[?2026l"), "{bytes:?}");
+        let mut screen = first.rows.clone();
+        apply(&mut screen, &bytes);
+        assert_eq!(screen, second.rows);
+        let shorter = painted(&["header", "› "]);
+        let mut screen = first.rows.clone();
+        apply(&mut screen, &compose_changes(&first, &shorter, 4));
+        assert_eq!(screen, vec!["header", "› ", "", ""]);
     }
 }

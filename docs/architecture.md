@@ -92,10 +92,23 @@ sequenceDiagram
 The fullscreen view in `src/ui` keeps the transcript as a list of typed blocks and not as printed
 lines: the header, a user prompt, a reply (kept as markdown source), a group of commands, a notice,
 and plain text. Each block lays itself out again when the width changes, and the layout is cached
-for each block and width. Each frame is a full repaint that also builds a hit map from screen cells
-to targets, so a click can open a command group, a header row, a status bar box or an item of an
-overlay. The input thread decodes keys, bracketed paste and SGR mouse reports and sends them to the
-topmost overlay, or to the focused element, or to the input line.
+for each block and width. Each frame lays out every row and builds a hit map from screen cells to
+targets, so a click can open a command group, a header row, a status bar box or an item of an
+overlay. `utils::screen` keeps the last frame written and writes only the rows that differ, inside
+synchronized output, and nothing when no row differs. It writes the whole screen after a resize and
+every two seconds. Over pipes (`UMBRA_FORCE_FULLSCREEN=1`, as the tests run it) every frame is
+written whole. The input thread decodes keys, bracketed paste and SGR mouse reports, applies all the
+keys of one read, and draws one frame for them. Keys go to the topmost overlay, or to the focused
+element, or to the input line.
+
+- **Replies.** `ui::markdown` lays out a reply with `pulldown-cmark`, with tables, task lists,
+  footnotes and math turned on. `ui::math` draws TeX: one line of Unicode for inline math, and a
+  block of rows for display math. `ui::mermaid` draws a `mermaid` fence: flowcharts with the layered
+  method (cycles broken, longest path layers, placeholders in the layers a long link crosses,
+  ordering by the average position of neighbors), sequence diagrams and pie charts, on a grid that
+  keeps lines as connection bits so crossings and corners get the right box character.
+- **The header.** The banner is built from the logo's pixels once for each set of values, width and
+  reveal step, and kept. The logo writes a color code only where the colors change.
 
 - **Redraw ticker.** A thread wakes every 100 ms and redraws only while something changes with
   time: a command is running, the agent is working, an MCP server is starting or the logo is being

@@ -14,7 +14,7 @@ use super::keys::Key;
 use super::status_bar::StatusInfo;
 use super::terminal_mode::{enable_raw, reassert_raw, restore, terminal_height};
 use crate::ui::block::Block;
-use crate::ui::frame::render_frame;
+use crate::ui::frame::{compose, compose_changes, layout_frame, render_frame, Painted};
 use crate::ui::transcript::Transcript;
 pub use crate::ui::view::KeyOutcome;
 use crate::ui::view::View;
@@ -41,6 +41,14 @@ static TICK: (Mutex<()>, Condvar) = (Mutex::new(()), Condvar::new());
 
 /// Set when a redraw was asked for from code that may hold the view's lock.
 static DIRTY: AtomicBool = AtomicBool::new(false);
+
+/// The frame on the screen, its size, and when the whole screen was last written. A new frame
+/// writes only the rows that differ from it. None means the next frame writes every row.
+static SHOWN: Mutex<Option<(Painted, (usize, usize), Instant)>> = Mutex::new(None);
+
+/// How often the whole screen is written even when only some rows changed, so stray output from
+/// another process cannot stay on the screen for long.
+const FULL_REPAINT: Duration = Duration::from_secs(2);
 
 thread_local! {
     /// Set while code catches its own panics, so the panic hook leaves the screen alone.
@@ -71,6 +79,7 @@ pub fn enter(mouse: bool, color: bool) -> bool {
         return false;
     }
     *VIEW.lock().unwrap_or_else(|e| e.into_inner()) = Some(View::new(color));
+    forget_shown();
     write_raw(ENTER);
     if mouse {
         write_raw(MOUSE_ON);
@@ -89,9 +98,15 @@ pub fn leave() {
         return;
     }
     VIEW.lock().unwrap_or_else(|e| e.into_inner()).take();
+    forget_shown();
     write_raw(LEAVE);
     restore();
     poke();
+}
+
+/// Makes the next frame write every row, after the screen was cleared or resized.
+fn forget_shown() {
+    *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Leaves the alternate screen without taking any lock, for a panic or a forced exit, where the
@@ -198,18 +213,36 @@ pub fn open_overlay(overlay: Box<dyn crate::ui::overlay::Overlay>) {
     with_view(|view| view.overlay = Some(overlay));
 }
 
-/// Applies a key or a mouse report to the view, draws it again, then runs any work the key asked
-/// for once the lock is released.
-/// @param key - the key the person pressed
-pub fn handle_key(key: Key) -> KeyOutcome {
-    let mut outcome = KeyOutcome::None;
-    let mut effects = Vec::new();
-    with_view(|view| (outcome, effects) = view.apply_key(key));
-    for effect in effects {
-        effect();
+/// Applies every key of one read to the view and draws one frame for them, instead of one frame
+/// per key. A fast turn of the mouse wheel, or reports that piled up while a slow terminal was
+/// drawing, become a single frame. A key that asks for work to run without the lock ends the batch:
+/// the frame is drawn, the work runs, and the keys after it start the next batch.
+/// @param keys - the keys, in the order they came
+pub fn handle_keys(keys: Vec<Key>) -> Vec<KeyOutcome> {
+    let mut outcomes = Vec::new();
+    let mut pending = keys.into_iter().peekable();
+    while pending.peek().is_some() {
+        let (mut effects, mut ran) = (Vec::new(), false);
+        with_view(|view| {
+            ran = true;
+            for key in pending.by_ref() {
+                let (outcome, found) = view.apply_key(key);
+                outcomes.push(outcome);
+                if !found.is_empty() {
+                    effects = found;
+                    break;
+                }
+            }
+        });
+        if !ran {
+            outcomes.extend(pending.by_ref().map(|_| KeyOutcome::None));
+        }
+        for effect in effects {
+            effect();
+        }
     }
     poke();
-    outcome
+    outcomes
 }
 
 /// Runs a change on the view and draws it again. Does nothing when the view is off.
@@ -222,8 +255,38 @@ fn with_view(change: impl FnOnce(&mut View)) {
         view.size = size;
     }
     change(view);
-    let frame = render_frame(view, size.0, size.1);
-    write_raw(&frame);
+    write_frame(view, size);
+}
+
+/// Draws the view and writes it. Over pipes, as the tests run it, every frame is written whole.
+/// On a terminal only the rows that changed since the last frame are written, a frame that changed
+/// nothing writes nothing, and the whole screen is written after a resize and every two seconds.
+/// @param view - the view
+/// @param size - the screen size as (columns, rows)
+fn write_frame(view: &mut View, size: (usize, usize)) {
+    if forced() {
+        write_raw(&render_frame(view, size.0, size.1));
+        return;
+    }
+    let next = layout_frame(view, size.0, size.1);
+    let mut shown = SHOWN.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    let bytes = match shown.as_ref() {
+        Some((last, at_size, full_at)) if *at_size == size && now.duration_since(*full_at) < FULL_REPAINT => {
+            let changes = compose_changes(last, &next, size.1);
+            *shown = Some((next, size, *full_at));
+            changes
+        }
+        Some((last, at_size, _)) if *at_size == size && compose_changes(last, &next, size.1).is_empty() => return,
+        _ => {
+            let whole = compose(&next.rows, size.1, next.cursor_row, next.cursor_col, next.show_cursor);
+            *shown = Some((next, size, now));
+            whole
+        }
+    };
+    if !bytes.is_empty() {
+        write_raw(&bytes);
+    }
 }
 
 /// Draws the screen again with no change.
@@ -246,6 +309,7 @@ fn watch_size() {
         let size = screen_size();
         if size != last {
             last = size;
+            forget_shown();
             redraw();
         }
     }
@@ -307,7 +371,7 @@ fn write_raw(text: &str) {
 pub fn char_width(c: char) -> usize {
     let code = c as u32;
     match code {
-        0x0300..=0x036f | 0x200b..=0x200f | 0xfe00..=0xfe0f => 0,
+        0x0300..=0x036f | 0x200b..=0x200f | 0x20d0..=0x20ff | 0xfe00..=0xfe0f => 0,
         0x1100..=0x115f | 0x2e80..=0xa4cf | 0xac00..=0xd7a3 | 0xf900..=0xfaff | 0xfe30..=0xfe4f | 0xff00..=0xff60 | 0xffe0..=0xffe6 | 0x1f300..=0x1faff | 0x20000..=0x3fffd => 2,
         _ => 1,
     }

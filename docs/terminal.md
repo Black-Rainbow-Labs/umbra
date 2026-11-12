@@ -65,7 +65,70 @@ out in a terminal narrower than about 64 columns.
 ## Replies and commands in the transcript
 
 A reply is drawn from its Markdown: headings, bold, italic, strikethrough, inline code, fenced code,
-lists, quotes, tables, links and rules. Code in a fenced block is colored by the fence's language.
+lists, quotes, tables, links, rules, footnotes, math and Mermaid diagrams. Code in a fenced block is
+colored by the fence's language.
+
+### Footnotes
+
+A footnote reference such as `[^1]` is drawn as `[1]`, numbered in the order the references first
+appear. The definitions are drawn at the end of the reply, under a short rule:
+
+```text
+Here is a sentence with a footnote.[1]
+
+────────────────────
+[1] This is the footnote text.
+```
+
+### Math
+
+Math between `$...$` or `\(...\)` is drawn inside the line with Unicode characters, such as
+`x² + y² = r²` and `α → ∞`. Math between `$$...$$` or `\[...\]` is drawn as a block of rows
+centered in the reply, with fractions stacked, roots under a line, limits above and below `∑`, `∏`
+and `∫`, and matrices in tall brackets:
+
+```text
+       n       n(n + 1)
+       ∑  i = ──────────
+      i=1         2
+```
+
+Superscripts and subscripts use Unicode small characters when every character has one, and
+`^(...)` or `_(...)` when one does not. A block of math wider than the reply is drawn on one line.
+A TeX command Umbra does not know is drawn as its name.
+
+### Mermaid diagrams
+
+A fenced code block whose language is `mermaid` is drawn as a diagram with box characters. This
+flowchart is `A[Start] --> B{Is it working?}`, `B -->|Yes| C[Ship it]` and `B -->|No| D[Debug]`:
+
+| Diagram | What is drawn |
+|---|---|
+| `graph` and `flowchart` | Nodes as boxes in layers, with `TD`, `TB`, `BT`, `LR` and `RL`. Rectangles, rounded shapes and decisions have their own corners. Links show `▼` and the other arrowheads, dotted and thick lines, and their labels |
+| `sequenceDiagram` | A box and a lifeline for each participant, each message as a labeled arrow, notes as boxes, `loop`, `alt` and the other blocks as dotted rows, and `autonumber` |
+| `pie` | One bar per slice, scaled to the largest slice, with its percent |
+
+```text
+       ┌───────┐
+       │ Start │
+       └───┬───┘
+           │
+           ▼
+  ╱────────────────╲
+  │ Is it working? │
+  ╲────────┬───────╱
+           │
+     ╭─────┴──────╮
+    Yes          No
+     ▼            ▼
+┌─────────┐   ┌───────┐
+│ Ship it │   │ Debug │
+└─────────┘   └───────┘
+```
+
+A flowchart in `LR` or `RL` that is wider than the reply is drawn top down. Any other diagram type,
+a block that does not parse, or a diagram still wider than the reply is shown as its source in a
+code block.
 
 Consecutive shell commands are one collapsed row:
 
@@ -254,6 +317,11 @@ starts the new version with `--resume` on the same session. `updates.check = fal
 
 Every part that can be clicked can also be used from the keyboard. While the view is scrolled up,
 new output does not move it, and a line under the transcript says how many rows are below.
+
+Umbra writes only the rows of the screen that changed since the last frame, and writes nothing when
+no row changed. All the keys and mouse reports that arrive together are drawn as one frame, so a
+fast turn of the mouse wheel moves the view at once, even in a terminal that draws slowly. The whole
+screen is written again after a resize and at most every two seconds.
 
 ## Selecting and copying text
 

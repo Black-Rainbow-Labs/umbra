@@ -73,6 +73,14 @@ struct Layout {
     suppress_gap: bool,
     width: usize,
     color: bool,
+    /// Footnote names in the order of their numbers.
+    note_names: Vec<String>,
+    /// The footnote definition being laid out: its first row and its number.
+    note_open: Option<(usize, usize)>,
+    /// The laid out footnote definitions with their numbers, drawn at the end.
+    notes: Vec<(usize, Vec<MdRow>)>,
+    /// True after display math inside a paragraph, so the text after it starts on a new row after a blank one.
+    after_math: bool,
 }
 
 /// The text a row starts with for the containers around a block.
@@ -161,8 +169,8 @@ fn skip_sequence(chars: &mut std::iter::Peekable<std::str::Chars>) {
 /// @param width - the number of columns available
 /// @param color - true to emit SGR codes and OSC 8 links
 fn layout(source: &str, width: usize, color: bool) -> Vec<MdRow> {
-    let clean = sanitize(source);
-    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let clean = super::math::convert_delimiters(&sanitize(source));
+    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_FOOTNOTES | Options::ENABLE_MATH;
     let mut lay = Layout {
         rows: Vec::new(),
         frames: Vec::new(),
@@ -175,11 +183,16 @@ fn layout(source: &str, width: usize, color: bool) -> Vec<MdRow> {
         suppress_gap: false,
         width,
         color,
+        note_names: Vec::new(),
+        note_open: None,
+        notes: Vec::new(),
+        after_math: false,
     };
     for event in Parser::new_ext(&clean, options) {
         handle_event(&mut lay, event);
     }
     flush_inline(&mut lay);
+    append_notes(&mut lay);
     lay.rows
 }
 
@@ -217,11 +230,94 @@ fn handle_event(lay: &mut Layout, event: Event) {
         Event::Rule => rule_row(lay),
         Event::TaskListMarker(done) => set_task_marker(lay, done),
         Event::FootnoteReference(name) => {
-            let style = current_style(lay);
-            push_text(lay, &format!("[^{}]", sanitize(&name)), &style, false);
+            let number = note_number(lay, &name);
+            let style = Style { link: None, ..current_style(lay) };
+            lay.inline.push(Tok::Word(format!("[{number}]"), style));
         }
-        _ => {}
+        Event::InlineMath(text) => {
+            let style = current_style(lay);
+            lay.inline.push(Tok::Word(super::math::inline(&text), style));
+        }
+        Event::DisplayMath(text) => display_math(lay, &text),
     }
+}
+
+/// The number of a footnote, given the next number at its first use.
+/// @param lay - the layout state
+/// @param name - the footnote's name
+fn note_number(lay: &mut Layout, name: &str) -> usize {
+    match lay.note_names.iter().position(|n| n == name) {
+        Some(index) => index + 1,
+        None => {
+            lay.note_names.push(name.to_string());
+            lay.note_names.len()
+        }
+    }
+}
+
+/// Starts a footnote definition: laid out like a list item whose marker is its number.
+/// @param lay - the layout state
+/// @param name - the footnote's name
+fn start_note(lay: &mut Layout, name: &str) {
+    flush_inline(lay);
+    let number = note_number(lay, name);
+    let marker = format!("[{number}] ");
+    let indent = text_width(&marker);
+    lay.note_open = Some((lay.rows.len(), number));
+    lay.frames.push(Frame { quote: false, marker: Some(marker), indent });
+    lay.suppress_gap = true;
+}
+
+/// Ends a footnote definition and moves its rows out of the flow, to be drawn at the end.
+/// @param lay - the layout state
+fn end_note(lay: &mut Layout) {
+    end_item(lay);
+    let Some((start, number)) = lay.note_open.take() else { return };
+    let rows = lay.rows.split_off(start.min(lay.rows.len()));
+    lay.notes.push((number, rows));
+    lay.suppress_gap = false;
+}
+
+/// Draws the footnote definitions at the end of the reply, under a short dim rule, in number order.
+/// @param lay - the layout state
+fn append_notes(lay: &mut Layout) {
+    if lay.notes.is_empty() {
+        return;
+    }
+    let mut notes = std::mem::take(&mut lay.notes);
+    notes.sort_by_key(|(number, _)| *number);
+    if !lay.rows.is_empty() {
+        emit_blank(lay);
+    }
+    let rule = dim_text(&"─".repeat(avail(lay).min(20)), lay.color);
+    emit_line(lay, &rule, false, Deco::Plain);
+    for (_, rows) in notes {
+        lay.rows.extend(rows);
+    }
+}
+
+/// Draws display math as its own rows: stacked when it fits the width, else on one wrapped line.
+/// Text before it in the same paragraph is written first, and a blank row separates them.
+/// @param lay - the layout state
+/// @param text - the TeX source
+fn display_math(lay: &mut Layout, text: &str) {
+    if !lay.inline.is_empty() {
+        flush_inline(lay);
+        emit_blank(lay);
+    }
+    match super::math::display(text, avail(lay)) {
+        Some(lines) => {
+            for line in lines {
+                emit_line(lay, &line, false, Deco::Plain);
+            }
+        }
+        None => {
+            let style = current_style(lay);
+            push_text(lay, &super::math::inline(text), &style, false);
+            flush_inline(lay);
+        }
+    }
+    lay.after_math = true;
 }
 
 /// Handles the start of a block or inline container.
@@ -256,6 +352,7 @@ fn start_tag(lay: &mut Layout, tag: Tag) {
         Tag::Strong => push_modified_style(lay, |s| s.bold = true),
         Tag::Strikethrough => push_modified_style(lay, |s| s.strike = true),
         Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => start_link(lay, &dest_url),
+        Tag::FootnoteDefinition(name) => start_note(lay, &name),
         _ => {}
     }
 }
@@ -293,6 +390,7 @@ fn end_tag(lay: &mut Layout, tag: TagEnd) {
             lay.styles.pop();
         }
         TagEnd::Link | TagEnd::Image => end_link(lay),
+        TagEnd::FootnoteDefinition => end_note(lay),
         _ => {}
     }
 }
@@ -461,6 +559,7 @@ fn set_task_marker(lay: &mut Layout, done: bool) {
 /// @param lay - the layout state
 fn begin_block(lay: &mut Layout) {
     flush_inline(lay);
+    lay.after_math = false;
     if !lay.rows.is_empty() && !lay.suppress_gap {
         emit_blank(lay);
     }
@@ -549,6 +648,9 @@ fn flush_inline(lay: &mut Layout) {
     let toks = std::mem::take(&mut lay.inline);
     if toks.is_empty() {
         return;
+    }
+    if std::mem::take(&mut lay.after_math) {
+        emit_blank(lay);
     }
     let width = avail(lay);
     for (line, cont) in wrap_tokens(&toks, width) {
@@ -737,6 +839,14 @@ fn place_word(w: &mut Wrapper, text: &str, style: &Style) {
 fn finish_code(lay: &mut Layout) {
     let Some((buffer, lang)) = lay.code.take() else { return };
     let color = lay.color;
+    if lang.eq_ignore_ascii_case("mermaid") {
+        if let Some(rows) = super::mermaid::render(&buffer, avail(lay), color) {
+            for row in rows {
+                emit_line(lay, &row, false, Deco::Plain);
+            }
+            return;
+        }
+    }
     let border = dim_text("│ ", color);
     if !lang.is_empty() {
         let body = format!("{border}{}", dim_text(&lang, color));
@@ -998,6 +1108,9 @@ mod tests {
             ("table_too_wide", "| One | Two | Three | Four | Five | Six | Seven | Eight | Nine |\n|---|---|---|---|---|---|---|---|---|\n| a1 | b1 | c1 | d1 | e1 | f1 | g1 | h1 | i1 |\n| a2 has more text | b2 | c2 | d2 | e2 | f2 | g2 | h2 | i2 |"),
             ("link", "See [the docs](https://example.com/docs) and <https://example.com> and [js](javascript:alert(1)) and [a very long link text](https://example.com/a/very/long/path/that/exceeds/width/of/narrow/terminal/rows) done."),
             ("rule", "Above\n\n---\n\nBelow"),
+            ("footnote", "Footnote and horizontal rule\n\nHere is a sentence with a footnote.[^1] And another.[^note]\n\n[^note]: The second note, which is long enough to wrap onto a second row at the narrow width.\n\n[^1]: This is the footnote text.\n\n---\n\nAfter the rule."),
+            ("math", "Inline $x^2 + y^2 = r^2$ and \\(\\alpha \\to \\infty\\).\n\n$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$\n\nThe quadratic formula:\n\\[x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}\\]\nAfter."),
+            ("mermaid", "```mermaid\ngraph LR\n  A[Read] --> B[Plan] --> C[Write]\n```\n\n```mermaid\nclassDiagram\n  Animal <|-- Duck\n```"),
         ]
     }
 

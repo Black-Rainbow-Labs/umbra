@@ -102,9 +102,21 @@ pub fn render_banner(info: &BannerInfo, width: usize, color: bool) -> Vec<String
 /// @param color - true to add ANSI colors
 /// @param step - the step to build
 pub fn render_banner_step(info: &BannerInfo, width: usize, color: bool, step: usize) -> Vec<String> {
+    static LAST: std::sync::Mutex<Option<(String, Vec<String>)>> = std::sync::Mutex::new(None);
+    // The fullscreen view asks for the header several times a frame and at every frame, with the
+    // same values almost every time. Building the logo from its pixels takes most of a millisecond.
+    let key = format!("{info:?}|{width}|{color}|{step}");
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((cached, lines)) = last.as_ref() {
+        if *cached == key {
+            return lines.clone();
+        }
+    }
     let mut frames = render_banner_frames(info, width, color);
     let index = step.min(frames.len().saturating_sub(1));
-    frames.swap_remove(index)
+    let lines = frames.swap_remove(index);
+    *last = Some((key, lines.clone()));
+    lines
 }
 
 /// Builds every step of the banner's reveal: the logo's letters alone first, then one more stripe at
@@ -416,14 +428,63 @@ fn logo_lines(pixels: &Pixels, color: bool, truecolor: bool) -> Vec<String> {
     let blank = vec![None; pixels.first().map_or(0, |r| r.len())];
     pixels.chunks(2).map(|pair| {
         let bottom = pair.get(1).unwrap_or(&blank);
-        pair[0].iter().zip(bottom).map(|(&top, &under)| {
-            if color {
-                cell_text(top, under, truecolor)
-            } else {
-                block_char(top == Some(FILL), under == Some(FILL)).to_string()
-            }
-        }).collect()
+        if color {
+            return colored_row(&pair[0], bottom, truecolor);
+        }
+        pair[0].iter().zip(bottom).map(|(&top, &under)| block_char(top == Some(FILL), under == Some(FILL))).collect()
     }).collect()
+}
+
+/// One colored terminal row of the logo. A color code is written only where the colors change
+/// from the cell before, and one reset ends the row, which keeps the logo near a third of the
+/// bytes it took with a code and a reset around every cell.
+/// @param top - the row's upper pixels
+/// @param bottom - the row's lower pixels
+/// @param truecolor - true when the terminal shows 24 bit color
+fn colored_row(top: &[Option<Rgb>], bottom: &[Option<Rgb>], truecolor: bool) -> String {
+    let mut out = String::new();
+    let mut current: (Option<Rgb>, Option<Rgb>) = (None, None);
+    for (&upper, &lower) in top.iter().zip(bottom) {
+        let (glyph, fg, bg) = cell_parts(upper, lower);
+        let wanted = if glyph == ' ' { (None, None) } else { (fg, bg) };
+        if wanted != current && glyph != ' ' || (glyph == ' ' && current.1.is_some()) {
+            out.push_str(&sgr_for(wanted, truecolor));
+            current = wanted;
+        }
+        out.push(glyph);
+    }
+    if current != (None, None) {
+        out.push_str("\x1b[0m");
+    }
+    out
+}
+
+/// The SGR code that sets a cell's colors from a clean state.
+/// @param colors - the foreground and background, if any
+/// @param truecolor - true when the terminal shows 24 bit color
+fn sgr_for(colors: (Option<Rgb>, Option<Rgb>), truecolor: bool) -> String {
+    let mut codes = vec!["0".to_string()];
+    if let Some(fg) = colors.0 {
+        codes.push(color_code(38, fg, truecolor));
+    }
+    if let Some(bg) = colors.1 {
+        codes.push(color_code(48, bg, truecolor));
+    }
+    format!("\x1b[{}m", codes.join(";"))
+}
+
+/// The character and colors of one cell from its two pixels. An empty pixel is left to the
+/// terminal's own background.
+/// @param top - the top pixel's color
+/// @param bottom - the bottom pixel's color
+fn cell_parts(top: Option<Rgb>, bottom: Option<Rgb>) -> (char, Option<Rgb>, Option<Rgb>) {
+    match (top, bottom) {
+        (Some(t), Some(b)) if t != b => ('▀', Some(t), Some(b)),
+        (Some(t), Some(_)) => ('█', Some(t), None),
+        (Some(t), None) => ('▀', Some(t), None),
+        (None, Some(b)) => ('▄', Some(b), None),
+        (None, None) => (' ', None, None),
+    }
 }
 
 /// The character for a cell from which of its two pixels are filled.
@@ -435,20 +496,6 @@ fn block_char(top: bool, bottom: bool) -> char {
         (true, false) => '▀',
         (false, true) => '▄',
         (false, false) => ' ',
-    }
-}
-
-/// One colored cell. An empty pixel is left to the terminal's own background.
-/// @param top - the top pixel's color
-/// @param bottom - the bottom pixel's color
-/// @param truecolor - true when the terminal shows 24 bit color
-fn cell_text(top: Option<Rgb>, bottom: Option<Rgb>, truecolor: bool) -> String {
-    match (top, bottom) {
-        (Some(t), Some(b)) if t != b => format!("\x1b[{};{}m▀\x1b[0m", color_code(38, t, truecolor), color_code(48, b, truecolor)),
-        (Some(t), Some(_)) => format!("\x1b[{}m█\x1b[0m", color_code(38, t, truecolor)),
-        (Some(t), None) => format!("\x1b[{}m▀\x1b[0m", color_code(38, t, truecolor)),
-        (None, Some(b)) => format!("\x1b[{}m▄\x1b[0m", color_code(38, b, truecolor)),
-        (None, None) => " ".to_string(),
     }
 }
 
@@ -637,5 +684,21 @@ mod tests {
         assert_eq!(display_folder("C:\\Users\\jason\\dev\\x", Some("C:\\Users\\jason")), "~/dev/x");
         assert_eq!(display_folder("/home/jasonb/x", Some("/home/jason")), "/home/jasonb/x");
         assert_eq!(display_folder("/srv/x", None), "/srv/x");
+    }
+}
+#[cfg(test)]
+mod size_tests {
+    /// The colored logo writes a color code only where the colors change, so the finished banner is
+    /// well under the 17,804 bytes it took with a code and a reset around every cell.
+    #[test]
+    fn the_colored_logo_is_small_and_reads_the_same() {
+        let info = super::BannerInfo { version: "0.7.2".into(), model: "anthropic/claude-sonnet-5-5".into(), folder: "~/dev/umbra".into(), mode: "confirm".into(), skills: 12, mcp: vec![("", "2 running".into())], model_menu: true };
+        let pixels = super::logo_frames().pop().unwrap();
+        let lines = super::logo_lines(&pixels, true, true);
+        let bytes: usize = lines.iter().map(|l| l.len()).sum();
+        assert!(bytes < 7_000, "the logo takes {bytes} bytes");
+        let plain: Vec<String> = lines.iter().map(|l| regex::Regex::new("\x1b\\[[0-9;]*m").unwrap().replace_all(l, "").to_string()).collect();
+        assert!(plain.iter().all(|l| l.chars().count() == pixels[0].len()), "{plain:#?}");
+        assert_eq!(super::render_banner_step(&info, 120, true, 5), super::render_banner_step(&info, 120, true, 5));
     }
 }
