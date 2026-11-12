@@ -34,7 +34,7 @@ flowchart LR
     F --> B
 ```
 
-Umbra is one program with no runtime to install. The Windows download for 0.7.2 is about 3 MB.
+Umbra is one program with no runtime to install. The Windows download for 0.7.2 is 3.8 MB.
 
 | What | How Umbra does it |
 |---|---|
