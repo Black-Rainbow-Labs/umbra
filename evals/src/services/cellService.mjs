@@ -76,7 +76,7 @@ export async function runCell(ctx) {
   const scratch = await prepareWorkspace(task, `${ctx.runId}__${task.id}__${adapter.name}__${ctx.rep}`);
   const requestsPath = path.join(cellDir, "requests.jsonl");
   const proxyBox = { current: null, killer: null };
-  const proxy = await startProxy({ upstreamHost: UPSTREAM.host, upstreamPort: UPSTREAM.port, upstreamKind: UPSTREAM.kind, upstreamTls: UPSTREAM.tls, sampling: ctx.sampling, requestsPath, onChatRequest: (count) => proxyBox.onChat?.(count) });
+  const proxy = await startProxy({ upstreamHost: UPSTREAM.host, upstreamPort: UPSTREAM.port, sampling: ctx.sampling, requestsPath, onChatRequest: (count) => proxyBox.onChat?.(count) });
   proxyBox.proxy = proxy;
   let phases;
   try {

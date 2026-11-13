@@ -3,7 +3,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { readJson } from "../src/utils/files.mjs";
-import { UPSTREAM_KIND } from "../src/utils/config.mjs";
 
 export const name = "umbra";
 const PROVIDER = "evalproxy";
@@ -27,29 +26,8 @@ export function armSettings() {
 function writeHomeConfig(input) {
   const dir = path.join(input.homeDir, ".umbra");
   fs.mkdirSync(dir, { recursive: true });
-  const provider = UPSTREAM_KIND === "anthropic" ? anthropicProviderLines(input) : [`kind = "openai"`, `base_url = "${input.proxyBaseUrl}/v1"`];
-  const toml = [`model = "${PROVIDER}/${input.model}"`, ...windowLines(input), ...armSettings(), "", `[providers.${PROVIDER}]`, ...provider, ""].join("\n");
+  const toml = [`model = "${PROVIDER}/${input.model}"`, ...armSettings(), "", `[providers.${PROVIDER}]`, `kind = "openai"`, `base_url = "${input.proxyBaseUrl}/v1"`, ""].join("\n");
   fs.writeFileSync(path.join(dir, "config.toml"), toml);
-}
-
-/**
- * Returns the provider lines for the Anthropic upstream (task-2643): Umbra's own Messages API
- * code with a placeholder key, which the proxy replaces with the real credential.
- * @param input - the AdapterInput
- */
-function anthropicProviderLines(input) {
-  return [`kind = "anthropic"`, `base_url = "${input.proxyBaseUrl}"`, `auth = "api_key"`, `api_key = "eval-proxy"`];
-}
-
-/**
- * Returns the line that gives Umbra the task's context window on the Anthropic upstream. On the
- * local server Umbra reads the window from `/props`, which the proxy rewrites. It is a dotted
- * top level key, so an arm setting such as `compaction.max_context_tokens = 96000` can sit beside it.
- * @param input - the AdapterInput
- */
-function windowLines(input) {
-  if (UPSTREAM_KIND !== "anthropic" || !input.contextWindow) return [];
-  return [`compaction.context_window = ${input.contextWindow}`];
 }
 
 /**

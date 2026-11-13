@@ -5,13 +5,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readJsonl, writeJson } from "../src/utils/files.mjs";
-import { UPSTREAM_KIND } from "../src/utils/config.mjs";
 
 export const name = "pi";
 const PROVIDER = "evalproxy";
 const PI_CLI = process.env.PI_CLI_JS || "C:/nvm4w/nodejs/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
-// Umbra uses 200,000 for a Claude model without a [1m] id, so pi gets the same window there.
-const DEFAULT_WINDOW = UPSTREAM_KIND === "anthropic" ? 200000 : 262144;
+const DEFAULT_WINDOW = 262144;
 const MALFORMED_PATTERNS = [/Tool .{0,80} not found/, /Validation failed for tool/];
 
 /**
@@ -21,13 +19,12 @@ const MALFORMED_PATTERNS = [/Tool .{0,80} not found/, /Validation failed for too
  */
 function writeAgentDir(input) {
   fs.mkdirSync(input.homeDir, { recursive: true });
-  const model = { id: input.model, name: "eval model", reasoning: true, contextWindow: input.contextWindow || DEFAULT_WINDOW, maxTokens: 16000 };
-  // The Anthropic upstream (task-2643) uses pi's own Messages API code with a placeholder key,
-  // which the proxy replaces with the real credential.
-  const provider = UPSTREAM_KIND === "anthropic"
-    ? { baseUrl: input.proxyBaseUrl, api: "anthropic-messages", apiKey: "eval-proxy", models: [model] }
-    : { baseUrl: `${input.proxyBaseUrl}/v1`, api: "openai-completions", apiKey: "local", models: [{ ...model, compat: { supportsDeveloperRole: false, thinkingFormat: "qwen-chat-template", supportsStore: false } }] };
-  writeJson(path.join(input.homeDir, "models.json"), { providers: { [PROVIDER]: provider } });
+  const model = {
+    id: input.model, name: "eval model", reasoning: true,
+    contextWindow: input.contextWindow || DEFAULT_WINDOW, maxTokens: 16000,
+    compat: { supportsDeveloperRole: false, thinkingFormat: "qwen-chat-template", supportsStore: false },
+  };
+  writeJson(path.join(input.homeDir, "models.json"), { providers: { [PROVIDER]: { baseUrl: `${input.proxyBaseUrl}/v1`, api: "openai-completions", apiKey: "local", models: [model] } } });
   writeJson(path.join(input.homeDir, "settings.json"), { defaultProvider: PROVIDER, defaultModel: input.model });
 }
 

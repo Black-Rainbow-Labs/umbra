@@ -125,32 +125,6 @@ through chunk by chunk.
   window is marked `windowExceeded`, and a cell on a task with a context window fails if any of
   its requests is marked.
 
-## The Anthropic upstream (task-2643)
-
-`EVAL_UPSTREAM=anthropic` runs both agents on `claude-haiku-5-5` (`EVAL_MODEL` overrides it)
-instead of the local server. Every run before task-2643 used the local Qwen model, and the two
-kinds of run must never be compared with each other.
-
-- Both agents use their own Messages API code: Umbra a provider with `kind = "anthropic"`, pi a
-  provider with `api: "anthropic-messages"`. Each points at the proxy with the placeholder key
-  `eval-proxy`. The proxy forwards `POST /v1/messages` over HTTPS to `api.anthropic.com` and
-  replaces the key with `ANTHROPIC_API_KEY`, or when that is unset, with the access token of
-  Claude Code's saved login (`~/.claude/.credentials.json`, read on every request). With the
-  login token it also puts Claude Code's identity line first in the system prompt, for both agents.
-- Claude models accept only their default sampling, so the proxy removes `temperature`, `top_p`
-  and `top_k`. It sets `thinking` to `{"type": "adaptive"}` and removes `output_config.effort`,
-  so both agents think at the model's default effort. `EVAL_THINKING_OVERRIDE=0` leaves both
-  fields to the agent. What the agent asked for is kept in `agentSampling`.
-- Usage comes from the Messages API: `prompt_tokens` is input plus cache read plus cache write
-  tokens, `cached_tokens` is the cache reads, and `cache_write_tokens` is recorded too. The API
-  does not report thinking tokens apart from `output_tokens`, so `reasoning_tokens` is null.
-  First content is the first content block the model starts, of any kind.
-- A task's context window reaches Umbra as `compaction.context_window` in its config, and pi
-  as `contextWindow` in `models.json`, as before. Without a task window both get 200,000, the
-  window Umbra assumes for a Claude model.
-- The server check sends one tiny request with the credential. There is no single slot to wait
-  for, so only an error counts as busy.
-
 ## Metrics
 
 `report` computes, per agent, overall and per category. Every token number is from
