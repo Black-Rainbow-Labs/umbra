@@ -174,7 +174,9 @@ pub struct EnvironmentConfig {
     /// Extra environment variables for every command.
     pub env: BTreeMap<String, String>,
     /// Local bash only: each command starts in the working directory and with the exported
-    /// variables the previous command ended with, as in one shell kept for the session.
+    /// variables the previous command ended with, as in one shell kept for the session. On by
+    /// default since task-2643 (E10): on the hard tier it cut requests per passed task from 26 to
+    /// 22 and completion tokens per passed task 21%, with no session scenario failing.
     pub persistent_shell: bool,
     pub image: String,
     pub docker_executable: String,
@@ -196,7 +198,7 @@ impl Default for EnvironmentConfig {
             timeout: 120,
             max_timeout: 600,
             shell: Vec::new(),
-            persistent_shell: false,
+            persistent_shell: true,
             env,
             image: String::new(),
             docker_executable: "docker".into(),
