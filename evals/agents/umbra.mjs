@@ -43,7 +43,7 @@ export function buildLaunch(input) {
   if (input.resume?.mode === "fork") args.push("--fork");
   args.push("-t", input.prompt);
   const env = { ...process.env, UMBRA_HOME_OVERRIDE: input.homeDir, UMBRA_BANNER: "0", UMBRA_STATUS_BAR: "0", UMBRA_FULLSCREEN: "0" };
-  return { command: UMBRA_BIN, args, env, cwd: input.workspaceDir, artifacts: { trajectoryPath } };
+  return { command: UMBRA_BIN, args, env, cwd: input.workspaceDir, artifacts: { trajectoryPath, outputFiles: [trajectoryPath] } };
 }
 
 /**
