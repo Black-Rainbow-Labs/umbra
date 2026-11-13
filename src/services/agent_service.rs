@@ -4,6 +4,7 @@
 //! In the submit style it ends when a command prints COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT.
 //! Either way a limit also ends it.
 
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -175,6 +176,9 @@ pub struct Agent {
     stall: StallWatch,
     /// True once the session's index entry has been written in this run.
     index_written: bool,
+    /// A hash of the trajectory JSON last written in this run, so an unchanged one is not
+    /// written again.
+    trajectory_written: Cell<Option<u64>>,
 }
 
 /// What the agent tracks for compaction.
@@ -211,7 +215,7 @@ impl Agent {
         let compaction = CompactionState { window: Some(window), ..Default::default() };
         let finish_check = FinishCheck::new(parts.config.finish_check && parts.config.finish == Finish::Reply && parts.config.environment.kind == "local");
         let journal = JournalWriter::new(journal_path(&parts.trajectory_path));
-        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, stall: StallWatch::default(), index_written: false };
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, stall: StallWatch::default(), index_written: false, trajectory_written: Cell::new(None) };
         agent.rebuild_tools();
         agent
     }
@@ -1379,12 +1383,18 @@ impl Agent {
 
     /// Writes the whole trajectory JSON, in the format other tools read, and the session's index
     /// entry. Called when a turn ends, when the run ends and after Ctrl+C; between those the
-    /// journal has every step.
+    /// journal has every step. The trajectory is not written again when nothing in it changed
+    /// since the last write: the end of a turn and the end of the run come one after the other,
+    /// and the second write of a 300 step session was about 1 MB.
     fn save_trajectory_file(&self) {
         let info = self.trajectory_info();
         let trajectory = Trajectory { info: info.clone(), messages: self.messages.clone(), trajectory_format: "mini-swe-agent-1.1".into() };
-        if let Err(error) = save_trajectory(&self.parts.trajectory_path, &trajectory) {
-            eprintln!("umbra: could not save the trajectory: {error:#}");
+        let hash = trajectory_hash(&trajectory);
+        if self.trajectory_written.get() != Some(hash) {
+            match save_trajectory(&self.parts.trajectory_path, &trajectory) {
+                Ok(()) => self.trajectory_written.set(Some(hash)),
+                Err(error) => eprintln!("umbra: could not save the trajectory: {error:#}"),
+            }
         }
         self.write_index(info);
     }
@@ -1520,4 +1530,13 @@ fn running_phase(actions: &[Action]) -> Phase {
 /// Seconds since the Unix epoch, as a float.
 pub fn now_seconds() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
+/// A hash of a trajectory's JSON, to tell whether it changed since it was last written.
+/// @param trajectory - the trajectory
+fn trajectory_hash(trajectory: &Trajectory) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(trajectory).unwrap_or_default().hash(&mut hasher);
+    hasher.finish()
 }
