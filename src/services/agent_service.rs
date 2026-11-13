@@ -173,6 +173,8 @@ pub struct Agent {
     journal: JournalWriter,
     /// Notices the same command giving the same output three times in a row.
     stall: StallWatch,
+    /// True once the session's index entry has been written in this run.
+    index_written: bool,
 }
 
 /// What the agent tracks for compaction.
@@ -209,7 +211,7 @@ impl Agent {
         let compaction = CompactionState { window: Some(window), ..Default::default() };
         let finish_check = FinishCheck::new(parts.config.finish_check && parts.config.finish == Finish::Reply && parts.config.environment.kind == "local");
         let journal = JournalWriter::new(journal_path(&parts.trajectory_path));
-        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, stall: StallWatch::default() };
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, stall: StallWatch::default(), index_written: false };
         agent.rebuild_tools();
         agent
     }
@@ -1346,14 +1348,26 @@ impl Agent {
         vars
     }
 
-    /// Saves the step: appends what changed to the session journal and writes the session's
-    /// index entry. The trajectory JSON is written by `save_trajectory_file` when a turn ends.
-    /// A failure to write is reported but does not stop the run.
+    /// Saves the step: appends what changed to the session journal. The session's index entry is
+    /// written on the first save, so the session can be found and resumed from the start, and
+    /// again with the trajectory JSON by `save_trajectory_file` when a turn ends, when the run
+    /// ends and after Ctrl+C. Between those the index only changes its counters, and rewriting
+    /// it on every step cost about 1 KB per step. A failure to write is reported but does not
+    /// stop the run.
     fn save(&mut self) {
         let info = self.trajectory_info();
         if let Err(error) = self.journal.write(&info, &self.messages) {
             eprintln!("umbra: could not save the session journal: {error:#}");
         }
+        if !self.index_written {
+            self.write_index(info);
+            self.index_written = true;
+        }
+    }
+
+    /// Writes the session's index entry from the info block.
+    /// @param info - the trajectory's info block now
+    fn write_index(&self, info: TrajectoryInfo) {
         let session = info.session;
         let trajectory_path = absolute_path(&self.parts.trajectory_path).to_string_lossy().replace('\\', "/");
         let journal = absolute_path(&journal_path(&self.parts.trajectory_path)).to_string_lossy().replace('\\', "/");
@@ -1363,13 +1377,16 @@ impl Agent {
         }
     }
 
-    /// Writes the whole trajectory JSON, in the format other tools read. Called when a turn
-    /// ends, when the run ends and after Ctrl+C; between those the journal has every step.
+    /// Writes the whole trajectory JSON, in the format other tools read, and the session's index
+    /// entry. Called when a turn ends, when the run ends and after Ctrl+C; between those the
+    /// journal has every step.
     fn save_trajectory_file(&self) {
-        let trajectory = Trajectory { info: self.trajectory_info(), messages: self.messages.clone(), trajectory_format: "mini-swe-agent-1.1".into() };
+        let info = self.trajectory_info();
+        let trajectory = Trajectory { info: info.clone(), messages: self.messages.clone(), trajectory_format: "mini-swe-agent-1.1".into() };
         if let Err(error) = save_trajectory(&self.parts.trajectory_path, &trajectory) {
             eprintln!("umbra: could not save the trajectory: {error:#}");
         }
+        self.write_index(info);
     }
 
     /// The trajectory's info block as it is now: totals, config, how the session ended, the
