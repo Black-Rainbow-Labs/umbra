@@ -10,13 +10,18 @@
 //! record never loses data. A reply in a form this code does not know (an Anthropic reply, a reply
 //! that was not streamed, a tool call whose arguments are not in compact JSON) keeps those parts.
 //!
+//! Four fields of a llama.cpp style `timings` object are ratios of others (tokens per second and
+//! milliseconds per token, for the prompt and for the reply). The server rounds the times it
+//! prints, so no one formula gives back every value; a code such as `ps1` names the formula that
+//! gives back that field exactly, and a field no formula matches is kept (task-2643, E21).
+//!
 //! `model`, `object` and `streamed` of the reply JSON are the same from one reply to the next, so
 //! a record may take them from the assistant message before it in the file (the carry).
 
 use serde_json::{json, Map, Value};
 
 /// The codes an assistant record may leave out, in the order they are tried.
-const ASSISTANT_CODES: [&str; 11] = ["ct", "ro", "tc", "fr", "ix", "mo", "ob", "st", "ru", "us", "ac"];
+const ASSISTANT_CODES: [&str; 22] = ["ct", "ro", "tc", "fr", "ix", "mo", "ob", "st", "ru", "us", "ac", "ps0", "ps1", "ps2", "ps4", "ps5", "pt0", "is0", "is1", "is2", "is3", "it0"];
 /// The codes a tool record may leave out.
 const TOOL_CODES: [&str; 2] = ["rw", "rc"];
 
@@ -134,6 +139,12 @@ fn restore_assistant_part(message: &mut Value, code: &str, carry: &Carry) -> Opt
         }
         _ => {}
     }
+    if let Some(field) = timing_field(code) {
+        let timings = message.pointer_mut("/extra/response/timings")?;
+        let value = timing_ratio(code, timings)?;
+        timings.as_object_mut()?.insert(field.into(), json!(value));
+        return Some(());
+    }
     let content = message["content"].clone();
     let calls = message["tool_calls"].clone();
     let finish = message["extra"]["finish_reason"].clone();
@@ -156,6 +167,9 @@ fn restore_assistant_part(message: &mut Value, code: &str, carry: &Carry) -> Opt
 /// @param record - the record's message part
 /// @param code - the part's code
 fn remove_part(record: &mut Value, code: &str) -> bool {
+    if let Some(field) = timing_field(code) {
+        return record.pointer_mut("/extra/response/timings").and_then(Value::as_object_mut).is_some_and(|map| map.remove(field).is_some());
+    }
     let (object, key) = match code {
         "ct" | "ro" | "tc" => (record.pointer_mut("/extra/response/choices/0/message"), code_key(code)),
         "fr" | "ix" => (record.pointer_mut("/extra/response/choices/0"), code_key(code)),
@@ -165,6 +179,35 @@ fn remove_part(record: &mut Value, code: &str) -> bool {
         _ => return false,
     };
     object.and_then(Value::as_object_mut).is_some_and(|map| map.remove(key).is_some())
+}
+
+/// The timings field a ratio code rebuilds, or None for any other code.
+/// @param code - the code
+fn timing_field(code: &str) -> Option<&'static str> {
+    match code.get(..2)? {
+        "ps" => Some("predicted_per_second"),
+        "pt" => Some("predicted_per_token_ms"),
+        "is" => Some("prompt_per_second"),
+        "it" => Some("prompt_per_token_ms"),
+        _ => None,
+    }
+}
+
+/// Computes a timings ratio with the formula a code names. The reply rate counts the tokens after
+/// the first, as the server does.
+/// @param code - the code
+/// @param timings - the timings object
+fn timing_ratio(code: &str, timings: &Value) -> Option<f64> {
+    let (ms, n) = if code.starts_with('p') { (timings["predicted_ms"].as_f64()?, timings["predicted_n"].as_f64()? - 1.0) } else { (timings["prompt_ms"].as_f64()?, timings["prompt_n"].as_f64()?) };
+    Some(match code {
+        "ps0" | "is0" => 1e3 / ms * n,
+        "ps1" | "is1" => n * 1e3 / ms,
+        "ps2" | "is2" => n / ms * 1e3,
+        "ps4" => 1.0 / (ms / n) * 1e3,
+        "ps5" | "is3" => 1e3 / (ms / n),
+        "pt0" | "it0" => ms / n,
+        _ => return None,
+    })
 }
 
 /// The JSON key a code stands for.
@@ -285,7 +328,7 @@ mod tests {
                     "id": "chatcmpl-1", "model": "m", "object": "chat.completion", "streamed": true,
                     "choices": [{ "index": 0, "finish_reason": "tool_calls", "message": { "role": "assistant", "content": "", "reasoning_content": "Step 1.\n", "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "bash", "arguments": "{\"command\":\"echo step 1 >> log.txt\"}" } }] } }],
                     "usage": { "prompt_tokens": 6178, "completion_tokens": 44, "total_tokens": 6222, "completion_tokens_details": { "reasoning_tokens": 10 }, "prompt_tokens_details": { "cached_tokens": 6144 } },
-                    "timings": { "cache_n": 6144, "prompt_n": 34 }
+                    "timings": { "cache_n": 6144, "prompt_n": 34, "prompt_ms": 116.137635, "prompt_per_second": 292.7560906505458, "prompt_per_token_ms": 3.415812794117647, "predicted_n": 52, "predicted_ms": 229.984459, "predicted_per_second": 221.75411426386856, "predicted_per_token_ms": 4.509499196078432 }
                 }
             }
         })
@@ -298,7 +341,8 @@ mod tests {
         carry.update(&message);
         let record = compact(&message, &carry).expect("a streamed reply compacts");
         let codes: Vec<&str> = record["o"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
-        assert_eq!(codes, ["ct", "ro", "tc", "fr", "ix", "mo", "ob", "st", "ru", "ac"], "every copy is left out; the raw usage is rebuilt from extra.usage, so extra.usage stays");
+        assert_eq!(codes, ["ct", "ro", "tc", "fr", "ix", "mo", "ob", "st", "ru", "ac", "is1", "it0"], "every copy is left out; the raw usage is rebuilt from extra.usage, so extra.usage stays; the prompt ratios match a formula, the reply ratios of this reply match none and are kept");
+        assert!(record["m"]["extra"]["response"]["timings"].get("predicted_per_second").is_some());
         assert_eq!(expand(&record, &carry).unwrap(), message);
         assert!(record.to_string().len() < message.to_string().len() * 2 / 3, "the record is much shorter");
         assert_eq!(record["m"]["extra"]["response"]["choices"][0]["message"]["reasoning_content"], "Step 1.\n", "the reasoning text is kept");
