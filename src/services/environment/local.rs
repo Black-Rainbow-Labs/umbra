@@ -230,13 +230,50 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> Ending {
 fn spawn_reader<R: Read + Send + 'static>(pipe: Option<R>) -> mpsc::Receiver<String> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut bytes);
-        }
-        let _ = sender.send(String::from_utf8_lossy(&bytes).into_owned());
+        let text = pipe.map(|pipe| read_bounded(pipe, KEPT_OUTPUT_BYTES)).unwrap_or_default();
+        let _ = sender.send(text);
     });
     receiver
+}
+
+/// The most bytes kept from the start of a pipe, and again from its end.
+const KEPT_OUTPUT_BYTES: usize = 1_000_000;
+
+/// Reads a pipe to the end, keeping the first and the last `keep` bytes. Bytes in between are
+/// counted and named in one line where they were left out (task-2643, E23): a command that
+/// printed without end kept all 420 MB it printed in memory, in the session journal and in the
+/// trajectory, while the model is shown 5,000 characters from each end.
+/// @param pipe - the pipe
+/// @param keep - how many bytes to keep at each end
+fn read_bounded<R: Read>(mut pipe: R, keep: usize) -> String {
+    let mut head: Vec<u8> = Vec::new();
+    let mut tail: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
+    let mut dropped: u64 = 0;
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let read = match pipe.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        let mut bytes = &chunk[..read];
+        let room = keep.saturating_sub(head.len()).min(bytes.len());
+        head.extend_from_slice(&bytes[..room]);
+        bytes = &bytes[room..];
+        tail.extend(bytes);
+        if tail.len() > keep {
+            let over = tail.len() - keep;
+            tail.drain(..over);
+            dropped += over as u64;
+        }
+    }
+    let mut text = String::from_utf8_lossy(&head).into_owned();
+    if dropped > 0 {
+        text.push_str(&format!("
+[umbra: {dropped} bytes of output were not kept here]
+"));
+    }
+    text.push_str(&String::from_utf8_lossy(tail.make_contiguous()));
+    text
 }
 
 /// Kills the shell and everything it started.
@@ -250,4 +287,26 @@ fn kill_tree(child: &mut Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_under_the_limit_is_kept_whole() {
+        let text = "line one\nline two\n".repeat(100);
+        assert_eq!(read_bounded(text.as_bytes(), 10_000), text);
+    }
+
+    #[test]
+    fn output_over_the_limit_keeps_both_ends_and_says_how_much_was_left_out() {
+        let text: String = (0..30_000).map(|i| format!("{i:05}\n")).collect();
+        let kept = read_bounded(text.as_bytes(), 1_000);
+        assert!(kept.starts_with(&text[..1_000]), "the start is kept");
+        assert!(kept.ends_with(&text[text.len() - 1_000..]), "the end is kept");
+        let left_out = text.len() - 2_000;
+        assert!(kept.contains(&format!("[umbra: {left_out} bytes of output were not kept here]")), "{}", &kept[990..1_070]);
+        assert!(kept.len() < 2_100);
+    }
 }
