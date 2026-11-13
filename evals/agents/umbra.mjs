@@ -19,6 +19,16 @@ export function armSettings() {
 }
 
 /**
+ * Returns the lines an experiment arm puts inside the eval provider's table, from
+ * `UMBRA_EVAL_PROVIDER_CONFIG` (TOML lines separated by `;`, for example `thinking = "off"`).
+ * Provider settings such as `thinking` cannot be given as top level dotted keys, because the
+ * provider table is defined after them.
+ */
+export function armProviderSettings() {
+  return (process.env.UMBRA_EVAL_PROVIDER_CONFIG || "").split(";").map((line) => line.trim()).filter(Boolean);
+}
+
+/**
  * Writes `<home>/.umbra/config.toml` with a provider that points at the measuring proxy.
  * The built in `local` provider points at port 8080, so the base URL is set explicitly.
  * @param input - the AdapterInput
@@ -26,7 +36,7 @@ export function armSettings() {
 function writeHomeConfig(input) {
   const dir = path.join(input.homeDir, ".umbra");
   fs.mkdirSync(dir, { recursive: true });
-  const toml = [`model = "${PROVIDER}/${input.model}"`, ...armSettings(), "", `[providers.${PROVIDER}]`, `kind = "openai"`, `base_url = "${input.proxyBaseUrl}/v1"`, ""].join("\n");
+  const toml = [`model = "${PROVIDER}/${input.model}"`, ...armSettings(), "", `[providers.${PROVIDER}]`, `kind = "openai"`, `base_url = "${input.proxyBaseUrl}/v1"`, ...armProviderSettings(), ""].join("\n");
   fs.writeFileSync(path.join(dir, "config.toml"), toml);
 }
 

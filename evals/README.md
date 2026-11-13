@@ -176,10 +176,16 @@ that list is empty for 3 reps.
   tool has no default timeout. Both are left at their defaults; the eval measures the harnesses as
   shipped.
 - pi asks for `max_tokens` 16000 (from `maxTokens` in `models.json`, the value in the user's own
-  pi config). Umbra sends no `max_tokens`. The proxy does not change either.
+  pi config). Umbra sends `max_tokens` 16000 to a local server when none is configured (task-2617,
+  E13; before that it sent none, and the server's 8,192 default cut off long replies). The proxy
+  does not change either.
 - pi's thinking level and Umbra's `thinking` provider setting do not matter here, because the proxy
   sets `enable_thinking` on every request. `EVAL_THINKING_OVERRIDE=0` turns that off for the
   thinking policy runs, which are reported apart from the main comparison.
+- An experiment arm changes Umbra's config with `UMBRA_EVAL_CONFIG` (top level TOML lines separated
+  by `;`, for example `finish_check = false; compaction.max_context_tokens = 96000`) and
+  `UMBRA_EVAL_PROVIDER_CONFIG` (lines inside the eval provider's table, for example
+  `thinking = "off"`). Both are recorded in run.json.
 
 ## The tasks
 

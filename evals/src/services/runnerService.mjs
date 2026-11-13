@@ -42,7 +42,7 @@ function agentVersions() {
 function umbraBuild() {
   const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
   const git = (args) => (spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", windowsHide: true }).stdout || "").trim();
-  return { bin: umbraAdapter.UMBRA_BIN, commit: git(["rev-parse", "--short", "HEAD"]), dirty: git(["status", "--porcelain", "--", "src", "Cargo.toml", "Cargo.lock"]) !== "", settings: umbraAdapter.armSettings() };
+  return { bin: umbraAdapter.UMBRA_BIN, commit: git(["rev-parse", "--short", "HEAD"]), dirty: git(["status", "--porcelain", "--", "src", "Cargo.toml", "Cargo.lock"]) !== "", settings: umbraAdapter.armSettings(), providerSettings: umbraAdapter.armProviderSettings() };
 }
 
 /**
