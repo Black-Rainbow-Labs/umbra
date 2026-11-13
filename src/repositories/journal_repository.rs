@@ -12,6 +12,10 @@
 //! - `truncate`: the history was cut back to `len` messages; later `msg` lines follow from there.
 //!   A compaction that rewrites earlier messages is a truncate followed by the rewritten messages.
 //! - `info`: the parts of the trajectory's `info` block that changed since the last `info` line.
+//! - `s` (format 2, task-2643): the change in `model_stats` since it was last written, as
+//!   integer differences in `n` (calls, input, output, cache read and reasoning tokens,
+//!   compactions) and the new total cost in `c` when it changed. `model_stats` changes on
+//!   every step, and writing it whole each time was about 180 bytes per step.
 //!
 //! A crash in the middle of a write leaves at most the last line cut off. The reader skips a
 //! line that does not parse, so the session resumes from the line before it.
@@ -26,7 +30,7 @@ use serde_json::{json, Value};
 
 use super::journal_codec::{compact, expand, Carry};
 use crate::models::message::Message;
-use crate::models::trajectory::{Trajectory, TrajectoryInfo};
+use crate::models::trajectory::{ModelStats, Trajectory, TrajectoryInfo};
 
 /// The value of the `format` field of the `start` line. Format 2 adds the compact `a` and `r`
 /// records; a reader that knows only format 1 refuses the file instead of loading it with
@@ -95,26 +99,31 @@ impl JournalWriter {
             carry.update(&value);
             lines.push(line.to_string());
         }
-        if let Some(line) = self.changed_info(info) {
-            lines.push(line);
-        }
+        lines.extend(self.changed_info(info));
         self.append(&lines)?;
         self.written = hashes;
         self.carry = carry;
         Ok(())
     }
 
-    /// Returns an `info` line holding the parts of `info` that changed, or None.
+    /// Returns the lines for the parts of `info` that changed: an `info` line, and an `s` line
+    /// for `model_stats` once it has been written whole.
     /// @param info - the trajectory's info block now
-    fn changed_info(&mut self, info: &TrajectoryInfo) -> Option<String> {
+    fn changed_info(&mut self, info: &TrajectoryInfo) -> Vec<String> {
         let mut changed = serde_json::Map::new();
+        let mut lines = Vec::new();
         for (name, value) in info_parts(info) {
             let text = value.to_string();
             match self.info.iter_mut().find(|(n, _)| n == name) {
                 Some((_, last)) if *last == text => {}
                 Some((_, last)) => {
+                    match stats_line(name, last, &info.model_stats) {
+                        Some(line) => lines.push(line),
+                        None => {
+                            changed.insert(name.into(), value);
+                        }
+                    }
                     *last = text;
-                    changed.insert(name.into(), value);
                 }
                 None => {
                     self.info.push((name.into(), text));
@@ -122,11 +131,11 @@ impl JournalWriter {
                 }
             }
         }
-        if changed.is_empty() {
-            return None;
+        if !changed.is_empty() {
+            changed.insert("t".into(), json!("info"));
+            lines.insert(0, Value::Object(changed).to_string());
         }
-        changed.insert("t".into(), json!("info"));
-        Some(Value::Object(changed).to_string())
+        lines
     }
 
     /// Writes lines to the journal: the first write replaces the file, later ones append.
@@ -144,6 +153,39 @@ impl JournalWriter {
         file.write_all(text.as_bytes()).with_context(|| format!("writing {}", self.path.display()))?;
         self.started = true;
         Ok(())
+    }
+}
+
+/// The `s` line for a change in `model_stats`, or None when the part is not `model_stats` or a
+/// total went down (then the whole value is written in an `info` line).
+/// @param name - the info part's name
+/// @param last - the part as last written, as JSON text
+/// @param now - the stats now
+fn stats_line(name: &str, last: &str, now: &ModelStats) -> Option<String> {
+    if name != "model_stats" {
+        return None;
+    }
+    let before: ModelStats = serde_json::from_str(last).ok()?;
+    let pairs = [(now.api_calls as u64, before.api_calls as u64), (now.input_tokens, before.input_tokens), (now.output_tokens, before.output_tokens), (now.cache_read_tokens, before.cache_read_tokens), (now.reasoning_tokens, before.reasoning_tokens), (now.compactions as u64, before.compactions as u64)];
+    let deltas: Option<Vec<u64>> = pairs.iter().map(|(a, b)| a.checked_sub(*b)).collect();
+    let mut line = json!({ "t": "s", "n": deltas? });
+    if now.instance_cost != before.instance_cost {
+        line["c"] = json!(now.instance_cost);
+    }
+    Some(line.to_string())
+}
+
+/// Adds an `s` line's changes to the `model_stats` of the info being read.
+/// @param stats - `model_stats` as read so far
+/// @param record - the `s` line
+fn apply_stats_line(stats: &mut Value, record: &Value) {
+    let keys = ["api_calls", "input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens", "compactions"];
+    for (key, delta) in keys.iter().zip(record["n"].as_array().into_iter().flatten()) {
+        let total = stats[*key].as_u64().unwrap_or(0) + delta.as_u64().unwrap_or(0);
+        stats[*key] = json!(total);
+    }
+    if let Some(cost) = record.get("c") {
+        stats["instance_cost"] = cost.clone();
     }
 }
 
@@ -227,6 +269,7 @@ fn read_journal(path: &Path) -> Result<ReadJournal> {
             }
             Some("truncate") => messages.truncate(record["len"].as_u64().unwrap_or(0) as usize),
             Some("info") => record.as_object().into_iter().flatten().filter(|(k, _)| *k != "t").for_each(|(k, v)| info[k] = v.clone()),
+            Some("s") => apply_stats_line(&mut info["model_stats"], &record),
             _ => {}
         }
     }
@@ -280,6 +323,32 @@ mod tests {
         let loaded = load_journal(&path).unwrap();
         assert_eq!(loaded.messages.len(), 3);
         assert_eq!(loaded.info.model_stats.api_calls, 1);
+    }
+
+    #[test]
+    fn stats_after_the_first_write_are_short_delta_lines_that_read_back_exactly() {
+        let path = scratch("stats");
+        let mut writer = JournalWriter::new(path.clone());
+        let mut messages = vec![Message::system("s"), Message::user("u")];
+        let mut info = TrajectoryInfo::default();
+        info.model_stats.instance_cost = 0.1;
+        writer.write(&info, &messages).unwrap();
+        for step in 0..3u64 {
+            messages.push(Message::new(Role::Assistant, "a"));
+            info.model_stats.api_calls += 1;
+            info.model_stats.input_tokens += 1000 + step;
+            info.model_stats.output_tokens += 50;
+            info.model_stats.cache_read_tokens += 900;
+            info.model_stats.reasoning_tokens += 7;
+            info.model_stats.instance_cost += 0.0123;
+            writer.write(&info, &messages).unwrap();
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let short: Vec<&str> = text.lines().filter(|l| l.contains("\"t\":\"s\"")).collect();
+        assert_eq!(short.len(), 3, "one short line per step after the first");
+        assert!(short.iter().all(|l| l.len() < 80), "{short:?}");
+        let loaded = load_journal(&path).unwrap();
+        assert_eq!(serde_json::to_value(&loaded.info.model_stats).unwrap(), serde_json::to_value(&info.model_stats).unwrap());
     }
 
     #[test]
