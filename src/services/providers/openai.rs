@@ -92,7 +92,7 @@ impl OpenAiProvider {
         }
         let mut response = parse_response(&raw);
         response.cost = cost_of(&response.usage, price_for(&self.model, &self.config));
-        response.timing = call_timing(started.elapsed(), first_token, &raw["timings"]);
+        response.timing = call_timing(started.elapsed(), first_token);
         Ok(response)
     }
 }
@@ -134,18 +134,16 @@ impl OpenAiProvider {
     }
 }
 
-/// Builds the timing record of one call, kept in the trajectory so a run's speed and the
-/// server's prompt cache can be read without a proxy.
+/// Builds the timing record of one call, kept in the trajectory so a run's speed can be read
+/// without a proxy. The server's own `timings` object, which shows its prompt cache, stays in
+/// the raw reply (`extra.response.timings`) and is not copied here, because the copy added
+/// about 300 bytes to every step of the session journal and the trajectory.
 /// @param total - how long the whole call took
 /// @param first_token - how long until the first content, reasoning or tool call text, if streamed
-/// @param server - the server's own `timings` object, or null
-fn call_timing(total: Duration, first_token: Option<Duration>, server: &Value) -> Value {
+fn call_timing(total: Duration, first_token: Option<Duration>) -> Value {
     let mut timing = json!({ "total_ms": total.as_millis() as u64 });
     if let Some(first) = first_token {
         timing["first_token_ms"] = json!(first.as_millis() as u64);
-    }
-    if server.is_object() {
-        timing["timings"] = server.clone();
     }
     timing
 }
@@ -534,8 +532,9 @@ mod tests {
         let raw = assembler.finish().unwrap();
         let parsed = parse_response(&raw);
         assert_eq!(parsed.usage.reasoning_tokens, 3);
-        let timing = call_timing(Duration::from_millis(40), first, &raw["timings"]);
-        assert_eq!(timing["timings"]["cache_n"], 8);
+        let timing = call_timing(Duration::from_millis(40), first);
+        assert_eq!(raw["timings"]["cache_n"], 8);
+        assert!(timing.get("timings").is_none(), "the server timings stay in the raw reply only");
         assert_eq!(timing["total_ms"], 40);
         assert!(timing["first_token_ms"].is_u64());
     }
