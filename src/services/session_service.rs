@@ -10,7 +10,7 @@ use crate::models::message::{Message, Role};
 use crate::models::session::{SessionIndexEntry, SessionInfo};
 use crate::models::trajectory::ModelStats;
 use crate::models::trajectory::Trajectory;
-use crate::repositories::journal_repository::{journal_path, load_journal};
+use crate::repositories::journal_repository::{journal_is_newest, journal_path, load_journal};
 use crate::repositories::session_repository::{find_session, list_sessions, load_trajectory, new_session_id, sessions_in};
 use crate::repositories::trajectory_repository::save_trajectory;
 use crate::utils::console::read_line;
@@ -122,13 +122,7 @@ pub fn time_ago(seconds: f64) -> String {
 /// @param path - the trajectory file
 pub fn load_session_record(path: &Path) -> Result<Trajectory> {
     let journal = journal_path(path);
-    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    let journal_is_newest = match (modified(&journal), modified(path)) {
-        (Some(j), Some(t)) => j >= t,
-        (Some(_), None) => true,
-        _ => false,
-    };
-    if journal_is_newest {
+    if journal_is_newest(path) {
         match load_journal(&journal) {
             Ok(trajectory) => return Ok(trajectory),
             Err(error) if !path.is_file() => return Err(error),

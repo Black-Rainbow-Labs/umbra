@@ -34,6 +34,18 @@ pub fn journal_path(trajectory: &Path) -> PathBuf {
     trajectory.with_extension("journal.jsonl")
 }
 
+/// True when a session's journal exists and is at least as new as its trajectory JSON, so the
+/// journal is the session's record.
+/// @param trajectory - the trajectory path
+pub fn journal_is_newest(trajectory: &Path) -> bool {
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (modified(&journal_path(trajectory)), modified(trajectory)) {
+        (Some(j), Some(t)) => j >= t,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
 /// Appends a session to its journal, writing only what changed since the last write.
 #[derive(Debug, Default)]
 pub struct JournalWriter {
@@ -81,9 +93,8 @@ impl JournalWriter {
     /// Returns an `info` line holding the parts of `info` that changed, or None.
     /// @param info - the trajectory's info block now
     fn changed_info(&mut self, info: &TrajectoryInfo) -> Option<String> {
-        let parts = [("model_stats", json!(info.model_stats)), ("exit_status", json!(info.exit_status)), ("submission", json!(info.submission)), ("compactions", json!(info.compactions)), ("session", json!(info.session))];
         let mut changed = serde_json::Map::new();
-        for (name, value) in parts {
+        for (name, value) in info_parts(info) {
             let text = value.to_string();
             match self.info.iter_mut().find(|(n, _)| n == name) {
                 Some((_, last)) if *last == text => {}
@@ -120,6 +131,38 @@ impl JournalWriter {
         self.started = true;
         Ok(())
     }
+}
+
+/// The parts of the info block an `info` line can hold, by name.
+/// @param info - the trajectory's info block
+fn info_parts(info: &TrajectoryInfo) -> [(&'static str, Value); 5] {
+    [("model_stats", json!(info.model_stats)), ("exit_status", json!(info.exit_status)), ("submission", json!(info.submission)), ("compactions", json!(info.compactions)), ("session", json!(info.session))]
+}
+
+/// A writer that continues an existing journal: later writes append to it, the way they would had
+/// the run never stopped, instead of writing the whole session again (task-2643, E18). A last line
+/// cut off by a crash is removed first, so a new line is never joined to half of an old one.
+/// Returns None, and the session is written whole as before, when the file is missing, is not an
+/// Umbra journal, or has a line other than the last that does not read.
+/// @param path - the journal file
+pub fn continue_journal(path: &Path) -> Option<JournalWriter> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let (last, earlier) = lines.split_last()?;
+    if earlier.iter().any(|line| !line.trim().is_empty() && serde_json::from_str::<Value>(line).is_err()) {
+        return None;
+    }
+    let last_reads = serde_json::from_str::<Value>(last).is_ok();
+    if !last_reads {
+        let keep = text.len() - last.len();
+        std::fs::OpenOptions::new().write(true).open(path).and_then(|file| file.set_len(keep as u64)).ok()?;
+    } else if !last.ends_with('\n') {
+        std::fs::OpenOptions::new().append(true).open(path).and_then(|mut file| file.write_all(b"\n")).ok()?;
+    }
+    let trajectory = load_journal(path).ok()?;
+    let written = trajectory.messages.iter().map(message_hash).collect();
+    let info = info_parts(&trajectory.info).into_iter().map(|(name, value)| (name.to_string(), value.to_string())).collect();
+    Some(JournalWriter { path: path.to_path_buf(), written, info, started: true })
 }
 
 /// A hash of one message, to tell which messages are already in the journal.
@@ -203,6 +246,44 @@ mod tests {
         let loaded = load_journal(&path).unwrap();
         assert_eq!(loaded.messages.len(), 4);
         assert_eq!(loaded.messages[2].content, "[masked]");
+    }
+
+    #[test]
+    fn a_continued_journal_appends_instead_of_starting_again() {
+        let path = scratch("continue");
+        let mut writer = JournalWriter::new(path.clone());
+        let mut messages = vec![Message::system("s"), Message::user("u"), Message::new(Role::Assistant, "a"), Message::exit("Submitted", "done")];
+        writer.write(&TrajectoryInfo::default(), &messages).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        messages.pop();
+        messages.push(Message::user("next"));
+        let mut continued = continue_journal(&path).expect("an Umbra journal continues");
+        continued.write(&TrajectoryInfo::default(), &messages).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.starts_with(&before), "the old lines are kept as they were");
+        assert_eq!(after[before.len()..].lines().count(), 2, "a truncate past the exit marker, then the new message");
+        let loaded = load_journal(&path).unwrap();
+        assert_eq!(loaded.messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), ["s", "u", "a", "next"]);
+    }
+
+    #[test]
+    fn a_continued_journal_drops_a_cut_last_line_before_appending() {
+        let path = scratch("continue-cut");
+        let mut writer = JournalWriter::new(path.clone());
+        let mut messages = vec![Message::system("s"), Message::user("remember PINE-7")];
+        writer.write(&TrajectoryInfo::default(), &messages).unwrap();
+        messages.push(Message::new(Role::Assistant, "a long reply that will be cut off part way through"));
+        writer.write(&TrajectoryInfo::default(), &messages).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() - 30]).unwrap();
+        let mut continued = continue_journal(&path).expect("a cut journal continues");
+        messages.truncate(2);
+        messages.push(Message::user("carry on"));
+        continued.write(&TrajectoryInfo::default(), &messages).unwrap();
+        let loaded = load_journal(&path).unwrap();
+        assert_eq!(loaded.messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), ["s", "remember PINE-7", "carry on"]);
+        std::fs::write(&path, "{\"t\":\"start\",\"format\":\"umbra-journal-1\"}\nnot json\n{\"t\":\"msg\"}\n").unwrap();
+        assert!(continue_journal(&path).is_none(), "a bad line before the last is not appended to");
     }
 
     #[test]

@@ -42,7 +42,7 @@ use crate::models::model_response::ModelResponse;
 use crate::models::session::{SessionIndexEntry, SessionInfo};
 use crate::models::trajectory::{ModelStats, Trajectory, TrajectoryInfo};
 use crate::repositories::session_repository::save_index;
-use crate::repositories::journal_repository::{journal_path, JournalWriter};
+use crate::repositories::journal_repository::{continue_journal, journal_is_newest, journal_path, JournalWriter};
 use crate::repositories::trajectory_repository::save_trajectory;
 use crate::utils::console;
 use crate::utils::interrupt;
@@ -556,6 +556,12 @@ impl Agent {
     /// Continues a saved session from its history and totals.
     /// @param session - the saved session
     pub fn open_resumed(&mut self, session: ResumedSession) {
+        // The same session (not a fork) read from its journal continues that journal.
+        if session.trajectory_path == self.parts.trajectory_path && journal_is_newest(&self.parts.trajectory_path) {
+            if let Some(writer) = continue_journal(&journal_path(&self.parts.trajectory_path)) {
+                self.journal = writer;
+            }
+        }
         self.messages = session.messages;
         self.stats = session.stats;
         self.compaction.records = session.compactions;
