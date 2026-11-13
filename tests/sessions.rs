@@ -59,7 +59,7 @@ impl Setup {
         let model = replay_model(&self.scratch, script, &replies);
         let output = self.umbra(&["-m", &model, "--cwd", &slash(&self.work), task], "", false);
         assert_eq!(output.status.code(), Some(0), "{}", text(&output));
-        let path = trajectory_from_output(&output);
+        let path = exported_trajectory(&self.scratch.path("home"), &output);
         read_trajectory(&path)
     }
 
@@ -82,12 +82,26 @@ impl Setup {
     }
 }
 
-/// Reads the trajectory path out of the run summary.
+/// Reads the session file out of the run summary: the trajectory when one was written, or the
+/// journal (`session <path>`), which is all a run without -o writes (task-2643, E17).
 /// @param output - the run's output
-fn trajectory_from_output(output: &std::process::Output) -> PathBuf {
+fn session_line(output: &std::process::Output) -> PathBuf {
     let all = text(output);
-    let line = all.lines().map(str::trim_start).find(|l| l.starts_with("trajectory ")).unwrap_or_else(|| panic!("no trajectory line in:\n{all}"));
-    PathBuf::from(line.trim_start_matches("trajectory ").trim())
+    let line = all.lines().map(str::trim_start).find(|l| l.starts_with("trajectory ") || l.starts_with("session ")).unwrap_or_else(|| panic!("no trajectory or session line in:\n{all}"));
+    PathBuf::from(line.split_once(' ').unwrap().1.trim())
+}
+
+/// The trajectory path of a run's session, written with `umbra export` when the run wrote only
+/// its journal.
+/// @param home - the isolated home
+/// @param output - the run's output
+fn exported_trajectory(home: &Path, output: &std::process::Output) -> PathBuf {
+    let file = session_line(output);
+    let name = file.to_string_lossy().to_string();
+    let Some(stem) = name.strip_suffix(".journal.jsonl") else { return file };
+    let exported = run_umbra_with(home, &["export", &name], &[], "");
+    assert_eq!(exported.status.code(), Some(0), "{}", text(&exported));
+    PathBuf::from(format!("{stem}.json"))
 }
 
 /// The session id of a trajectory.
@@ -113,7 +127,7 @@ fn resume_by_id_continues_the_same_session_file() {
     let request = setup.requests().last().unwrap().clone();
     assert_eq!(roles(&request), ["system", "user", "assistant", "tool", "assistant", "tool", "user"], "the old history is sent without its exit marker");
     assert_eq!(request["messages"][6]["content"], "read the note");
-    let path = trajectory_from_output(&output);
+    let path = exported_trajectory(&setup.scratch.path("home"), &output);
     assert!(path.to_string_lossy().contains(&id), "the same session file is written");
     let trajectory = read_trajectory(&path);
     assert_eq!(trajectory["info"]["model_stats"]["api_calls"], 3, "the totals continue");
@@ -131,7 +145,7 @@ fn a_resume_runs_in_the_sessions_folder_with_its_model() {
     let id = session_id(&first);
     let output = setup.umbra(&["--resume", &id, "again"], "", false);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
-    let trajectory = read_trajectory(&trajectory_from_output(&output));
+    let trajectory = read_trajectory(&exported_trajectory(&setup.scratch.path("home"), &output));
     assert!(trajectory["info"]["config"]["model"]["replay_file"].as_str().unwrap().ends_with("one.json"), "the session's model is used");
     // Compared as real paths: a runner's temp folder can be a link (/var -> /private/var on macOS)
     // or a Windows short name (RUNNER~1), and the recorded folder is the real one.
@@ -163,7 +177,7 @@ fn resume_by_prefix_or_path_and_unknown_ids_fail() {
     let model = replay_model(&setup.scratch, "two.json", &json!([submit("y")]));
     let output = setup.umbra(&["-m", &model, "-r", &id[..id.len() - 2], "by prefix"], "", false);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
-    let path = trajectory_from_output(&output);
+    let path = exported_trajectory(&setup.scratch.path("home"), &output);
     let output = setup.umbra(&["-m", &model, "--resume", &slash(&path), "by path"], "", false);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let output = setup.umbra(&["-m", &model, "--resume", "999", "nothing"], "", false);
@@ -176,13 +190,13 @@ fn fork_copies_the_history_and_leaves_the_old_file_alone() {
     let setup = Setup::new("fork");
     let first = setup.first_run("one.json", json!([submit("x")]), "task");
     let id = session_id(&first);
-    let old_path = setup.scratch.path("home").join(".umbra/trajectories").join(format!("{id}.traj.json"));
+    let old_path = setup.scratch.path("home").join(".umbra/trajectories").join(format!("{id}.traj.journal.jsonl"));
     let before = std::fs::read(&old_path).unwrap();
     let model = replay_model(&setup.scratch, "two.json", &json!([submit("y")]));
     let output = setup.umbra(&["-m", &model, "--resume", &id, "--fork", "try another way"], "", false);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     assert_eq!(std::fs::read(&old_path).unwrap(), before, "the old session is unchanged");
-    let forked = read_trajectory(&trajectory_from_output(&output));
+    let forked = read_trajectory(&exported_trajectory(&setup.scratch.path("home"), &output));
     assert_ne!(session_id(&forked), id);
     assert_eq!(forked["info"]["session"]["resumes"][0]["forked_from"], id.as_str());
 }
@@ -239,7 +253,7 @@ fn images_are_sent_again_after_a_resume() {
     let output = setup.umbra(&["-m", &model, "--cwd", &slash(&setup.work), "-i", "shot.png", "task"], "", false);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     std::fs::remove_file(setup.work.join("shot.png")).unwrap();
-    let id = session_id(&read_trajectory(&trajectory_from_output(&output)));
+    let id = session_id(&read_trajectory(&exported_trajectory(&setup.scratch.path("home"), &output)));
     let model = replay_model(&setup.scratch, "two.json", &json!([submit("y")]));
     let output = setup.umbra(&["-m", &model, "--resume", &id, "what was in the image?"], "", false);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
@@ -272,7 +286,7 @@ fn each_step_is_appended_to_the_journal_and_a_cut_journal_still_resumes() {
     assert_eq!(lines.lines().filter(|l| l.contains("\"t\":\"msg\"")).count(), first["messages"].as_array().unwrap().len(), "each message is written to the journal once");
     // A crash in the middle of a step: no trajectory written for the turn, and the journal's
     // last line cut off part way.
-    std::fs::remove_file(&trajectory).unwrap();
+    let _ = std::fs::remove_file(&trajectory);
     let bytes = std::fs::read(&journal).unwrap();
     std::fs::write(&journal, &bytes[..bytes.len() - 20]).unwrap();
     let model = replay_model(&setup.scratch, "two.json", &json!([submit("y")]));
@@ -292,8 +306,33 @@ fn a_branch_at_message_n_keeps_the_first_n_messages() {
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let request = setup.requests().last().unwrap().clone();
     assert_eq!(roles(&request), ["system", "user", "assistant", "tool", "user"], "4 messages kept, then the new task");
-    let forked = read_trajectory(&trajectory_from_output(&output));
+    let forked = read_trajectory(&exported_trajectory(&setup.scratch.path("home"), &output));
     assert_ne!(session_id(&forked), id, "a branch is a new session");
     let output = setup.umbra(&["-m", &model, "--resume", &id, "--at", "4", "again"], "", false);
     assert_ne!(output.status.code(), Some(0), "--at needs --fork");
+}
+
+#[test]
+fn a_run_without_output_writes_only_the_journal_and_export_writes_the_json() {
+    let setup = Setup::new("journal-only");
+    let model = replay_model(&setup.scratch, "one.json", &json!([call("echo a"), submit("done")]));
+    let output = setup.umbra(&["-m", &model, "--cwd", &slash(&setup.work), "task"], "", false);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let journal = session_line(&output);
+    assert!(journal.to_string_lossy().ends_with(".traj.journal.jsonl"), "the summary names the journal: {}", journal.display());
+    let name = journal.to_string_lossy().to_string();
+    let json_path = PathBuf::from(format!("{}.json", name.strip_suffix(".journal.jsonl").unwrap()));
+    assert!(!json_path.exists(), "no trajectory JSON is written without -o");
+    let out = setup.scratch.path("exported.json");
+    let exported = run_umbra_with(&setup.scratch.path("home"), &["export", &name, "-o", &slash(&out)], &[], "");
+    assert_eq!(exported.status.code(), Some(0), "{}", text(&exported));
+    let trajectory = read_trajectory(&out);
+    assert_eq!(trajectory["trajectory_format"], "mini-swe-agent-1.1");
+    assert_eq!(trajectory["info"]["submission"].as_str().unwrap().trim(), "done");
+    assert_eq!(trajectory["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").count(), 2);
+    let with_o = setup.scratch.path("asked.traj.json");
+    let model = replay_model(&setup.scratch, "two.json", &json!([submit("again")]));
+    let output = setup.umbra(&["-m", &model, "--cwd", &slash(&setup.work), "-o", &slash(&with_o), "task"], "", false);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    assert!(with_o.is_file(), "-o still writes the trajectory JSON");
 }

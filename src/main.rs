@@ -10,7 +10,7 @@ mod utils;
 use clap::Parser;
 
 use cli::{Cli, Command, McpArgs};
-use services::{acp, cli_service, inspect_service, run_service, setup_service, update_service};
+use services::{acp, cli_service, inspect_service, run_service, session_service, setup_service, update_service};
 
 /// Runs the chosen subcommand and exits with its status code.
 fn main() {
@@ -31,6 +31,7 @@ fn main() {
         Some(Command::Prompt(args)) => run_service::print_prompt(&args).map(|_| 0),
         Some(Command::Sessions(args)) => inspect_service::list_sessions(&args).map(|_| 0),
         Some(Command::Resume(args)) => run_service::resume_command(&args),
+        Some(Command::Export(args)) => session_service::export_command(&args).map(|_| 0),
         Some(Command::Acp(args)) if args.setup => setup_service::run_setup(&cli::SetupArgs::default()),
         Some(Command::Acp(args)) => acp::serve(&args),
         Some(Command::Setup(args)) => setup_service::run_setup(&args),

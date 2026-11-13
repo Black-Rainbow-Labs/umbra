@@ -43,6 +43,9 @@ pub enum Command {
     Sessions(SessionsArgs),
     /// Pick a saved session from a list and continue it. With an id, continue that session.
     Resume(ResumeArgs),
+    /// Write a saved session as a trajectory JSON file in the mini-swe-agent-1.1 format. Sessions
+    /// are stored as a journal, so this is how to get the JSON when -o was not given.
+    Export(ExportArgs),
     /// Run as an Agent Client Protocol server on stdin and stdout, for an editor such as Zed,
     /// a JetBrains IDE or Unluminous.
     Acp(AcpArgs),
@@ -385,6 +388,16 @@ pub struct ResumeArgs {
     pub all: bool,
     #[command(flatten)]
     pub run: RunArgs,
+}
+
+/// Options for `umbra export`.
+#[derive(Debug, Clone, Args, Default)]
+pub struct ExportArgs {
+    /// The session id, the start of it, or a trajectory or journal path.
+    pub session: String,
+    /// Where to write the JSON. Defaults to the session's trajectory path, next to its journal.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
 }
 
 /// Options for `umbra sessions`.

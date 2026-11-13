@@ -26,6 +26,7 @@ use crate::models::image::ImageData;
 use crate::models::session::{ResumeRecord, SessionInfo};
 use crate::repositories::config_repository::{load_config, merge_values};
 use crate::repositories::session_repository::{find_session, new_session_id};
+use crate::repositories::journal_repository::journal_path;
 use crate::repositories::trajectory_repository::trajectory_path;
 use crate::ui::block::Block;
 use crate::ui::live::{self, HeaderInfo};
@@ -721,7 +722,24 @@ fn report(result: &RunResult, quiet: bool) {
         let details = format!("exit status {} · {} model calls · tokens in/out {}/{} · {} compactions", result.exit_status, result.stats.api_calls, result.stats.input_tokens, result.stats.output_tokens, result.stats.compactions);
         show_event(Tone::Info, "·", &details);
     }
-    emit(&paint("90", &format!("  trajectory {}", result.trajectory_path.display())));
+    if trajectory_is_newest(&result.trajectory_path) {
+        emit(&paint("90", &format!("  trajectory {}", result.trajectory_path.display())));
+    } else {
+        emit(&paint("90", &format!("  session {}", journal_path(&result.trajectory_path).display())));
+    }
+}
+
+/// True when the trajectory JSON exists and is at least as new as the session journal, so it is
+/// the session's record. Without -o a run writes only the journal, and an older trajectory left
+/// by `umbra export` is not the record any more.
+/// @param trajectory - the trajectory path
+fn trajectory_is_newest(trajectory: &Path) -> bool {
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (modified(trajectory), modified(&journal_path(trajectory))) {
+        (Some(t), Some(j)) => t >= j,
+        (Some(_), None) => true,
+        _ => false,
+    }
 }
 
 /// Closes the fullscreen view when dropped, so an error that ends a run early still gives the

@@ -88,8 +88,9 @@ Ctrl+C does in a terminal. The next prompt carries on in the same session.
 
 ## Sessions
 
-Every ACP session is an ordinary Umbra session, saved after every step in
-`~/.umbra/trajectories/` and listed in `~/.umbra/sessions/`.
+Every ACP session is an ordinary Umbra session, saved after every step as a journal in
+`~/.umbra/trajectories/` and listed in `~/.umbra/sessions/`. `umbra export <id>` writes it as a
+trajectory JSON file.
 
 | Request | What Umbra does |
 |---|---|

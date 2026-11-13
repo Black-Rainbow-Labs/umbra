@@ -12,6 +12,7 @@ use crate::models::trajectory::ModelStats;
 use crate::models::trajectory::Trajectory;
 use crate::repositories::journal_repository::{journal_path, load_journal};
 use crate::repositories::session_repository::{find_session, list_sessions, load_trajectory, new_session_id, sessions_in};
+use crate::repositories::trajectory_repository::save_trajectory;
 use crate::utils::console::read_line;
 
 /// The result given to a tool call that never got one because the session stopped first.
@@ -44,8 +45,31 @@ pub fn find_resume_target(resume: Option<&str>, continue_last: bool, cwd: &Path,
     match resume {
         None => Ok(None),
         Some("") => pick_session(cwd, interactive).map(Some),
-        Some(key) if Path::new(key).is_file() => Ok(Some(PathBuf::from(key))),
+        Some(key) if Path::new(key).is_file() || journal_path(Path::new(key)).is_file() => Ok(Some(trajectory_for(Path::new(key)))),
         Some(key) => Ok(Some(PathBuf::from(find_session(key)?.trajectory))),
+    }
+}
+
+/// Writes a saved session as a trajectory JSON file, for `umbra export`, and prints where.
+/// @param args - the session to export and where to write it
+pub fn export_command(args: &crate::cli::ExportArgs) -> Result<()> {
+    let key = args.session.as_str();
+    let path = if Path::new(key).is_file() || journal_path(Path::new(key)).is_file() { trajectory_for(Path::new(key)) } else { PathBuf::from(find_session(key)?.trajectory) };
+    let trajectory = load_session_record(&path)?;
+    let out = args.output.clone().unwrap_or_else(|| path.clone());
+    save_trajectory(&out, &trajectory)?;
+    println!("{}", out.display());
+    Ok(())
+}
+
+/// The trajectory path a session file names. A journal path (`x.traj.journal.jsonl`) names the
+/// session of `x.traj.json`, since a session saved without `-o` has only its journal.
+/// @param path - a trajectory or journal path
+pub fn trajectory_for(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_suffix(".journal.jsonl") {
+        Some(stem) => PathBuf::from(format!("{stem}.json")),
+        None => path.to_path_buf(),
     }
 }
 

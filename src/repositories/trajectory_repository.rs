@@ -1,5 +1,6 @@
-//! Writes the trajectory file. It is rewritten after every step, so a crash still leaves a
-//! valid record of everything up to that point.
+//! Writes the trajectory JSON file, in the mini-swe-agent-1.1 format. Umbra writes it when it is
+//! asked for (`-o`, the `output` setting, `umbra export`); the session journal next to it is the
+//! record written after every step.
 
 use std::path::{Path, PathBuf};
 

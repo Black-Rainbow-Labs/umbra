@@ -34,7 +34,7 @@ mouse = true                           # mouse reporting in the fullscreen view:
 syntax_highlight = true                # color the code in fenced code blocks of replies
 verbose = false                        # every detail: step costs, whole outputs, full errors
 whitelist_actions = ["ls", "cat ", "git (status|diff|log)"]   # run without asking
-output = ""                            # trajectory path; empty means ~/.umbra/trajectories/<time>.traj.json
+output = ""                            # write the trajectory JSON here at each turn end; empty writes only the session journal
 
 [environment]
 kind = "local"                         # local or docker

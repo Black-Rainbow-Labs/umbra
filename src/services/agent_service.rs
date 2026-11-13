@@ -1369,13 +1369,19 @@ impl Agent {
         }
     }
 
-    /// Writes the whole trajectory JSON, in the format other tools read, and the session's index
-    /// entry. Called when a turn ends, when the run ends and after Ctrl+C; between those the
-    /// journal has every step. The trajectory is not written again when nothing in it changed
-    /// since the last write: the end of a turn and the end of the run come one after the other,
-    /// and the second write of a 300 step session was about 1 MB.
+    /// Writes the session's index entry and, when a trajectory file was asked for (`-o` or the
+    /// `output` setting), the whole trajectory JSON in the format other tools read. Called when a
+    /// turn ends, when the run ends and after Ctrl+C. The session journal is the session's store:
+    /// it has every step, resume reads it, and `umbra export` writes the trajectory JSON from it.
+    /// Rewriting the whole trajectory at every turn end wrote about 3 KB per step of a long
+    /// session, more with each turn (task-2643, E17). The trajectory is not written again when
+    /// nothing in it changed since the last write.
     fn save_trajectory_file(&self) {
         let info = self.trajectory_info();
+        if self.parts.config.output.is_empty() {
+            self.write_index(info);
+            return;
+        }
         let trajectory = Trajectory { info: info.clone(), messages: self.messages.clone(), trajectory_format: "mini-swe-agent-1.1".into() };
         let hash = trajectory_hash(&trajectory);
         if self.trajectory_written.get() != Some(hash) {

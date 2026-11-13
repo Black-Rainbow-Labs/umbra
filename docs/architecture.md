@@ -323,8 +323,9 @@ once, in case the main thread is stuck somewhere that does not check the flag.
 
 ## Sessions
 
-A session is one trajectory file, identified by its start time in milliseconds. After every step
-Umbra writes the trajectory and a small index entry, `~/.umbra/sessions/<id>.json`, that holds the
+A session is one journal file, `~/.umbra/trajectories/<id>.traj.journal.jsonl`, identified by its
+start time in milliseconds. After every step Umbra appends what changed to the journal, and at the
+start and at each turn end it writes a small index entry, `~/.umbra/sessions/<id>.json`, that holds the
 folder, model, first task, title, summary, status, call count, cost, the MCP servers turned off and
 the agent time, so `umbra sessions` and the resume picker can list sessions without reading
 trajectories that may hold large images.
@@ -337,7 +338,13 @@ the first sentence of that summary replaces the session summary. `umbra resume` 
 a picker of these titles and summaries, and `umbra resume <id>` resumes directly. After a resume
 the fullscreen view rebuilds the transcript from the trajectory.
 
-Resuming reads the trajectory back: the messages, `info.model_stats`, `info.compactions` and
+The trajectory JSON in the mini-swe-agent-1.1 format is written only when it is asked for: with
+`-o <file>` or the `output` setting it is written at each turn end, and `umbra export <id>` writes it
+from the journal at any time. Before task-2643 it was rewritten whole at every turn end next to the
+journal, which for a long session wrote about 3 KB per step, more with each turn. A trajectory JSON
+that is newer than the journal, for example one a person edited, is still read in its place.
+
+Resuming reads the session back: the messages, `info.model_stats`, `info.compactions` and
 `info.session`. The exit marker is removed, and any tool call with no result gets one saying it was
 not run, which is what a session interrupted in the middle of a step needs. The original system
 prompt is kept, so the model sees the same start and the provider's prompt cache still matches. The

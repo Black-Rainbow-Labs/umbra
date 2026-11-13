@@ -103,7 +103,9 @@ umbra -m local/qwen "create sum.py that prints the sum of 1 to 100, run it, and 
 ```
 
 Umbra shows each command before it runs and waits for you to press Enter. Add `-y` to run
-commands without asking. Each run's full record is saved to `~/.umbra/trajectories/`.
+commands without asking. Each run's full record is saved as a session journal in
+`~/.umbra/trajectories/`. `umbra export <id>` writes it as a trajectory JSON file, and `-o <file>`
+writes that file during the run.
 
 To build from a checkout instead, you need Rust 1.85 or newer: `cargo install --path .`.
 
@@ -551,6 +553,7 @@ search or a browser.
 | `umbra update [--check]` | Checks for a newer release and installs it. |
 | `umbra sessions [--all]` | Lists saved sessions, newest first. |
 | `umbra resume [id] [--all]` | Opens a picker of saved sessions, or resumes the session with that id or the start of its id. `--all` lists every folder's sessions. |
+| `umbra export <id> [-o file]` | Writes a saved session as a trajectory JSON file in the mini-swe-agent-1.1 format, next to its journal or to the `-o` file. |
 | `umbra acp` | Runs as an ACP agent on stdin and stdout, for an editor. Takes `-m`, `--yolo`, `--mode`, `-l` and `--step-limit`. |
 | `umbra setup` | Asks for a provider and model, saves it in `~/.umbra/config.toml`, and checks that the model answers. |
 
