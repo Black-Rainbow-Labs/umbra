@@ -15,15 +15,21 @@
 //! prints, so no one formula gives back every value; a code such as `ps1` names the formula that
 //! gives back that field exactly, and a field no formula matches is kept (task-2643, E21).
 //!
+//! A tool result's `content` is the observation template's short form of the output and return
+//! code, so it can be built again from `raw_output` and `returncode` (`cw` with CRLF line ends,
+//! `cl` with LF, which depends on how the binary was built); its `tool_call_id` is the id of the
+//! next unanswered call of the assistant message before it (`id`); an empty `exception_info`
+//! (`ei`) and an assistant cost of 0.0 (`c0`) are left out (task-2643, E22).
+//!
 //! `model`, `object` and `streamed` of the reply JSON are the same from one reply to the next, so
 //! a record may take them from the assistant message before it in the file (the carry).
 
 use serde_json::{json, Map, Value};
 
 /// The codes an assistant record may leave out, in the order they are tried.
-const ASSISTANT_CODES: [&str; 22] = ["ct", "ro", "tc", "fr", "ix", "mo", "ob", "st", "ru", "us", "ac", "ps0", "ps1", "ps2", "ps4", "ps5", "pt0", "is0", "is1", "is2", "is3", "it0"];
+const ASSISTANT_CODES: [&str; 23] = ["c0", "ct", "ro", "tc", "fr", "ix", "mo", "ob", "st", "ru", "us", "ac", "ps0", "ps1", "ps2", "ps4", "ps5", "pt0", "is0", "is1", "is2", "is3", "it0"];
 /// The codes a tool record may leave out.
-const TOOL_CODES: [&str; 2] = ["rw", "rc"];
+const TOOL_CODES: [&str; 6] = ["cw", "cl", "rw", "rc", "id", "ei"];
 
 /// The reply fields that usually stay the same from one assistant message to the next.
 #[derive(Debug, Clone, Default)]
@@ -31,15 +37,24 @@ pub struct Carry {
     model: Value,
     object: Value,
     streamed: Value,
+    /// The tool call ids of the last assistant message.
+    calls: Vec<Value>,
+    /// How many tool results followed that message so far.
+    results: usize,
 }
 
 impl Carry {
     /// Takes the carried fields from an assistant message that was just written or read.
     /// @param message - the message JSON
     pub fn update(&mut self, message: &Value) {
+        if message["role"] == "tool" {
+            self.results += 1;
+        }
         if message["role"] != "assistant" {
             return;
         }
+        self.calls = message["tool_calls"].as_array().map(|calls| calls.iter().map(|c| c["id"].clone()).collect()).unwrap_or_default();
+        self.results = 0;
         let response = &message["extra"]["response"];
         self.model = response["model"].clone();
         self.object = response["object"].clone();
@@ -101,18 +116,54 @@ fn expand_parts(kind: &str, body: &Value, codes: &[&str], carry: &Carry) -> Opti
         }
         "r" => {
             message["role"] = json!("tool");
-            let shown: Value = serde_json::from_str(message["content"].as_str()?).ok()?;
             for code in codes {
-                match *code {
-                    "rw" => message["extra"]["raw_output"] = shown.get("output")?.clone(),
-                    "rc" => message["extra"]["returncode"] = shown.get("returncode")?.clone(),
-                    _ => return None,
-                }
+                restore_tool_part(&mut message, code, carry)?;
             }
         }
         _ => return None,
     }
     Some(message)
+}
+
+/// Puts one left out part of a tool result back.
+/// @param message - the message JSON being rebuilt
+/// @param code - the part's code
+/// @param carry - the carry, for the call id
+fn restore_tool_part(message: &mut Value, code: &str, carry: &Carry) -> Option<()> {
+    match code {
+        "cw" | "cl" => {
+            let line_end = if code == "cw" { "\r\n" } else { "\n" };
+            let content = short_observation(&message["extra"]["returncode"], message["extra"]["raw_output"].as_str()?, line_end)?;
+            message.as_object_mut()?.insert("content".into(), json!(content));
+        }
+        "rw" | "rc" => {
+            let shown: Value = serde_json::from_str(message["content"].as_str()?).ok()?;
+            let (key, from) = if code == "rw" { ("raw_output", "output") } else { ("returncode", "returncode") };
+            message["extra"].as_object_mut()?.insert(key.into(), shown.get(from)?.clone());
+        }
+        "id" => {
+            let id = carry.calls.get(carry.results)?.clone();
+            message.as_object_mut()?.insert("tool_call_id".into(), id);
+        }
+        "ei" => {
+            message["extra"].as_object_mut()?.insert("exception_info".into(), json!(""));
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
+/// The observation template's short form for an output under 10,000 characters with no
+/// exception and no saved output file. minijinja's `tojson` escapes the HTML characters.
+/// @param returncode - the return code JSON
+/// @param output - the output text
+/// @param line_end - the template's line end
+fn short_observation(returncode: &Value, output: &str, line_end: &str) -> Option<String> {
+    if !returncode.is_number() {
+        return None;
+    }
+    let shown = serde_json::to_string(output).ok()?.replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026").replace('\'', "\\u0027");
+    Some(format!("{{{line_end}  \"returncode\": {returncode},{line_end}  \"output\": {shown}{line_end}}}"))
 }
 
 /// Puts one left out part of an assistant message back. The reply JSON parts come first in the
@@ -122,6 +173,10 @@ fn expand_parts(kind: &str, body: &Value, codes: &[&str], carry: &Carry) -> Opti
 /// @param carry - the carried reply fields
 fn restore_assistant_part(message: &mut Value, code: &str, carry: &Carry) -> Option<()> {
     match code {
+        "c0" => {
+            message["extra"].as_object_mut()?.insert("cost".into(), json!(0.0));
+            return Some(());
+        }
         "ru" => {
             let raw = raw_usage_from(&message["extra"]["usage"])?;
             message.pointer_mut("/extra/response")?.as_object_mut()?.insert("usage".into(), raw);
@@ -167,6 +222,15 @@ fn restore_assistant_part(message: &mut Value, code: &str, carry: &Carry) -> Opt
 /// @param record - the record's message part
 /// @param code - the part's code
 fn remove_part(record: &mut Value, code: &str) -> bool {
+    match code {
+        "cw" | "cl" | "id" => {
+            let key = if code == "id" { "tool_call_id" } else { "content" };
+            return record.as_object_mut().is_some_and(|map| map.remove(key).is_some());
+        }
+        "ei" => return record.pointer_mut("/extra").and_then(Value::as_object_mut).is_some_and(|map| map.get("exception_info") == Some(&json!("")) && map.remove("exception_info").is_some()),
+        "c0" => return record.pointer_mut("/extra").and_then(Value::as_object_mut).is_some_and(|map| map.get("cost") == Some(&json!(0.0)) && map.remove("cost").is_some()),
+        _ => {}
+    }
     if let Some(field) = timing_field(code) {
         return record.pointer_mut("/extra/response/timings").and_then(Value::as_object_mut).is_some_and(|map| map.remove(field).is_some());
     }
@@ -341,7 +405,7 @@ mod tests {
         carry.update(&message);
         let record = compact(&message, &carry).expect("a streamed reply compacts");
         let codes: Vec<&str> = record["o"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
-        assert_eq!(codes, ["ct", "ro", "tc", "fr", "ix", "mo", "ob", "st", "ru", "ac", "is1", "it0"], "every copy is left out; the raw usage is rebuilt from extra.usage, so extra.usage stays; the prompt ratios match a formula, the reply ratios of this reply match none and are kept");
+        assert_eq!(codes, ["c0", "ct", "ro", "tc", "fr", "ix", "mo", "ob", "st", "ru", "ac", "is1", "it0"], "every copy is left out; the raw usage is rebuilt from extra.usage, so extra.usage stays; the prompt ratios match a formula, the reply ratios of this reply match none and are kept");
         assert!(record["m"]["extra"]["response"]["timings"].get("predicted_per_second").is_some());
         assert_eq!(expand(&record, &carry).unwrap(), message);
         assert!(record.to_string().len() < message.to_string().len() * 2 / 3, "the record is much shorter");
@@ -362,9 +426,17 @@ mod tests {
     #[test]
     fn a_tool_result_leaves_out_the_output_shown_in_its_content() {
         let message = json!({ "role": "tool", "tool_call_id": "call_1", "content": "{\r\n  \"returncode\": 0,\r\n  \"output\": \"hello\\n\"\r\n}", "extra": { "raw_output": "hello\n", "returncode": 0, "exception_info": "", "timestamp": 2.0 } });
-        let record = compact(&message, &Carry::default()).unwrap();
-        assert_eq!(record["o"], json!(["rw", "rc"]));
-        assert_eq!(expand(&record, &Carry::default()).unwrap(), message);
+        let mut carry = Carry::default();
+        carry.update(&streamed_reply());
+        let record = compact(&message, &carry).unwrap();
+        assert_eq!(record["o"], json!(["cw", "id", "ei"]), "the content is rebuilt, the call id comes from the reply before it");
+        assert!(record["m"].get("content").is_none());
+        assert_eq!(expand(&record, &carry).unwrap(), message);
+        let mut odd = message.clone();
+        odd["content"] = json!("{\r\n  \"returncode\": 0,\r\n  \"output\": \"hello\\n\", \"exception_info\": \"x\"\r\n}");
+        let record = compact(&odd, &Carry::default()).unwrap();
+        assert_eq!(record["o"], json!(["rw", "rc", "ei"]), "a content that is not the short form is kept, and the output is taken from it");
+        assert_eq!(expand(&record, &Carry::default()).unwrap(), odd);
         let cut = json!({ "role": "tool", "tool_call_id": "call_2", "content": "<output_head>...</output_head>", "extra": { "raw_output": "long", "returncode": 0 } });
         assert!(compact(&cut, &Carry::default()).is_none(), "content that is not the output keeps raw_output");
     }
