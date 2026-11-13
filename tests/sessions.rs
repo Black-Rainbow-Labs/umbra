@@ -283,7 +283,8 @@ fn each_step_is_appended_to_the_journal_and_a_cut_journal_still_resumes() {
     let trajectory = setup.scratch.path("home").join(".umbra/trajectories").join(format!("{id}.traj.json"));
     let journal = setup.scratch.path("home").join(".umbra/trajectories").join(format!("{id}.traj.journal.jsonl"));
     let lines = std::fs::read_to_string(&journal).unwrap();
-    assert_eq!(lines.lines().filter(|l| l.contains("\"t\":\"msg\"")).count(), first["messages"].as_array().unwrap().len(), "each message is written to the journal once");
+    let message_lines = lines.lines().filter(|l| ["\"t\":\"msg\"", "\"t\":\"a\"", "\"t\":\"r\""].iter().any(|t| l.contains(t))).count();
+    assert_eq!(message_lines, first["messages"].as_array().unwrap().len(), "each message is written to the journal once, whole or as a compact record");
     // A crash in the middle of a step: no trajectory written for the turn, and the journal's
     // last line cut off part way.
     let _ = std::fs::remove_file(&trajectory);

@@ -7,6 +7,8 @@
 //! Lines, each a JSON object with a `t` field:
 //! - `start`: the format, Umbra's version and the run's config. Always the first line.
 //! - `msg`: one message appended to the history.
+//! - `a` and `r` (format 2, task-2643): an assistant reply or a tool result with the parts that
+//!   repeat other parts left out, listed in `o`. See `journal_codec`.
 //! - `truncate`: the history was cut back to `len` messages; later `msg` lines follow from there.
 //!   A compaction that rewrites earlier messages is a truncate followed by the rewritten messages.
 //! - `info`: the parts of the trajectory's `info` block that changed since the last `info` line.
@@ -22,11 +24,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
+use super::journal_codec::{compact, expand, Carry};
 use crate::models::message::Message;
 use crate::models::trajectory::{Trajectory, TrajectoryInfo};
 
-/// The value of the `format` field of the `start` line.
-pub const JOURNAL_FORMAT: &str = "umbra-journal-1";
+/// The value of the `format` field of the `start` line. Format 2 adds the compact `a` and `r`
+/// records; a reader that knows only format 1 refuses the file instead of loading it with
+/// messages missing.
+pub const JOURNAL_FORMAT: &str = "umbra-journal-2";
+/// The formats this reader loads.
+const READABLE_FORMATS: [&str; 2] = ["umbra-journal-1", JOURNAL_FORMAT];
 
 /// The journal that belongs to a trajectory file: `run.traj.json` has `run.traj.journal.jsonl`.
 /// @param trajectory - the trajectory path
@@ -55,6 +62,8 @@ pub struct JournalWriter {
     /// The last `info` parts written, as JSON text, by name.
     info: Vec<(String, String)>,
     started: bool,
+    /// The reply fields of the last assistant message written, which a compact record may share.
+    carry: Carry,
 }
 
 impl JournalWriter {
@@ -79,14 +88,19 @@ impl JournalWriter {
         if same < self.written.len() {
             lines.push(json!({ "t": "truncate", "len": same }).to_string());
         }
+        let mut carry = self.carry.clone();
         for message in &messages[same..] {
-            lines.push(json!({ "t": "msg", "m": message }).to_string());
+            let value = serde_json::to_value(message)?;
+            let line = compact(&value, &carry).unwrap_or_else(|| json!({ "t": "msg", "m": value }));
+            carry.update(&value);
+            lines.push(line.to_string());
         }
         if let Some(line) = self.changed_info(info) {
             lines.push(line);
         }
         self.append(&lines)?;
         self.written = hashes;
+        self.carry = carry;
         Ok(())
     }
 
@@ -143,7 +157,7 @@ fn info_parts(info: &TrajectoryInfo) -> [(&'static str, Value); 5] {
 /// the run never stopped, instead of writing the whole session again (task-2643, E18). A last line
 /// cut off by a crash is removed first, so a new line is never joined to half of an old one.
 /// Returns None, and the session is written whole as before, when the file is missing, is not an
-/// Umbra journal, or has a line other than the last that does not read.
+/// Umbra journal in the current format, or has a line other than the last that does not read.
 /// @param path - the journal file
 pub fn continue_journal(path: &Path) -> Option<JournalWriter> {
     let text = std::fs::read_to_string(path).ok()?;
@@ -159,10 +173,13 @@ pub fn continue_journal(path: &Path) -> Option<JournalWriter> {
     } else if !last.ends_with('\n') {
         std::fs::OpenOptions::new().append(true).open(path).and_then(|mut file| file.write_all(b"\n")).ok()?;
     }
-    let trajectory = load_journal(path).ok()?;
-    let written = trajectory.messages.iter().map(message_hash).collect();
-    let info = info_parts(&trajectory.info).into_iter().map(|(name, value)| (name.to_string(), value.to_string())).collect();
-    Some(JournalWriter { path: path.to_path_buf(), written, info, started: true })
+    let read = read_journal(path).ok()?;
+    if read.format != JOURNAL_FORMAT {
+        return None;
+    }
+    let written = read.trajectory.messages.iter().map(message_hash).collect();
+    let info = info_parts(&read.trajectory.info).into_iter().map(|(name, value)| (name.to_string(), value.to_string())).collect();
+    Some(JournalWriter { path: path.to_path_buf(), written, info, started: true, carry: read.carry })
 }
 
 /// A hash of one message, to tell which messages are already in the journal.
@@ -177,29 +194,59 @@ fn message_hash(message: &Message) -> u64 {
 /// middle of a write leaves it, is skipped.
 /// @param path - the journal file
 pub fn load_journal(path: &Path) -> Result<Trajectory> {
+    read_journal(path).map(|read| read.trajectory)
+}
+
+/// What reading a journal gives: the trajectory, the carry after its last line, and its format.
+struct ReadJournal {
+    trajectory: Trajectory,
+    carry: Carry,
+    format: String,
+}
+
+/// Reads a journal line by line, expanding compact records.
+/// @param path - the journal file
+fn read_journal(path: &Path) -> Result<ReadJournal> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let mut info = json!({});
     let mut messages: Vec<Message> = Vec::new();
-    let mut started = false;
+    let mut format = String::new();
+    let mut carry = Carry::default();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(record) = serde_json::from_str::<Value>(line) else { continue };
         match record["t"].as_str() {
             Some("start") => {
-                started = record["format"] == JOURNAL_FORMAT;
+                format = record["format"].as_str().unwrap_or("").to_string();
                 info["config"] = record["config"].clone();
                 info["umbra_version"] = record["umbra_version"].clone();
             }
-            Some("msg") => messages.push(serde_json::from_value(record["m"].clone()).with_context(|| format!("a message in {} does not read", path.display()))?),
+            Some("msg") => messages.push(read_message(record["m"].clone(), &mut carry, path)?),
+            Some("a") | Some("r") => {
+                let Some(value) = expand(&record, &carry) else { bail!("a compact record in {} does not expand", path.display()) };
+                messages.push(read_message(value, &mut carry, path)?);
+            }
             Some("truncate") => messages.truncate(record["len"].as_u64().unwrap_or(0) as usize),
             Some("info") => record.as_object().into_iter().flatten().filter(|(k, _)| *k != "t").for_each(|(k, v)| info[k] = v.clone()),
             _ => {}
         }
     }
-    if !started {
+    if format.is_empty() {
         bail!("{} is not an Umbra journal", path.display());
     }
+    if !READABLE_FORMATS.contains(&format.as_str()) {
+        bail!("{} is an Umbra journal in format {format}, which this version of Umbra cannot read; update Umbra", path.display());
+    }
     let info: TrajectoryInfo = serde_json::from_value(info).with_context(|| format!("the info in {} does not read", path.display()))?;
-    Ok(Trajectory { info, messages, trajectory_format: "mini-swe-agent-1.1".into() })
+    Ok(ReadJournal { trajectory: Trajectory { info, messages, trajectory_format: "mini-swe-agent-1.1".into() }, carry, format })
+}
+
+/// Reads one message from its JSON and moves the carry past it.
+/// @param value - the message JSON
+/// @param carry - the carry, updated when the message is an assistant reply
+/// @param path - the journal file, for the error
+fn read_message(value: Value, carry: &mut Carry, path: &Path) -> Result<Message> {
+    carry.update(&value);
+    serde_json::from_value(value).with_context(|| format!("a message in {} does not read", path.display()))
 }
 
 #[cfg(test)]
@@ -284,6 +331,25 @@ mod tests {
         assert_eq!(loaded.messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), ["s", "remember PINE-7", "carry on"]);
         std::fs::write(&path, "{\"t\":\"start\",\"format\":\"umbra-journal-1\"}\nnot json\n{\"t\":\"msg\"}\n").unwrap();
         assert!(continue_journal(&path).is_none(), "a bad line before the last is not appended to");
+    }
+
+    /// Rewrites a real journal (`UMBRA_JOURNAL_SAMPLE`) in the current format, checks that every
+    /// message reads back exactly, and prints the sizes. Run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn a_sample_journal_rewrites_without_loss() {
+        let Ok(sample) = std::env::var("UMBRA_JOURNAL_SAMPLE") else { return };
+        let original = load_journal(Path::new(&sample)).unwrap();
+        let path = scratch("sample");
+        let mut writer = JournalWriter::new(path.clone());
+        for end in 1..=original.messages.len() {
+            writer.write(&original.info, &original.messages[..end]).unwrap();
+        }
+        let loaded = load_journal(&path).unwrap();
+        assert_eq!(serde_json::to_value(&loaded.messages).unwrap(), serde_json::to_value(&original.messages).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        let compact = text.lines().filter(|l| l.starts_with("{\"m\"") && (l.contains("\"t\":\"a\"") || l.contains("\"t\":\"r\""))).count();
+        println!("messages {} compact lines {} bytes {} (was {})", original.messages.len(), compact, text.len(), std::fs::metadata(&sample).unwrap().len());
     }
 
     #[test]
