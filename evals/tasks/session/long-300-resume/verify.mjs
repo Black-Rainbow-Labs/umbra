@@ -1,7 +1,10 @@
-// Verifier for long-300-resume. The first phase builds a session of about 300 model requests,
-// one echo per request, while the runner measures the bytes the agent writes to its session
+// Verifier for long-300-resume. The first phase builds a session of about 300 steps, one echo per
+// tool call, while the runner measures the bytes the agent writes to its session
 // store. The second phase resumes it, and the runner measures the time from launch to the first
 // model request. The verifier checks the log, that the session really was long, and the answer.
+// "Long" counts tool calls as well as requests (task-2643): a model may send several of the
+// single echo tool calls in one reply, which follows the prompt and still builds a 300 step session,
+// and the old check of 250 requests failed those runs.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -25,15 +28,15 @@ export async function verify(workspaceDir, runInfo) {
   const lines = (readText(workspaceDir, "log.txt") || "").split(/\r?\n/).filter((line) => line.trim());
   const expected = Array.from({ length: 300 }, (_, i) => `step ${i + 1}`);
   const answer = (readText(workspaceDir, "answer.txt") || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const longEnough = runInfo.selftest || (build?.requests ?? 0) >= 250;
+  const longEnough = runInfo.selftest || Math.max(build?.requests ?? 0, build?.toolCalls ?? 0) >= 250;
   const checks = [
     ["log.txt has steps 1 to 300 in order", lines.length === 300 && lines.every((line, i) => line.trim() === expected[i])],
-    ["the first phase made at least 250 model requests", longEnough],
+    ["the first phase made at least 250 model requests or tool calls", longEnough],
     ["answer.txt line 1 is the audit key", answer[0] === "slate-otter-77"],
     ["answer.txt line 2 is 300", answer[1] === "300"],
     ["resume exited cleanly in the same session", runInfo.selftest || (resumed?.exitCode === 0 && resumed?.sessionRef === build?.sessionRef)],
   ];
   const bad = checks.filter(([, ok]) => !ok).map(([name]) => name);
   const correct = checks.length - bad.length;
-  return { pass: bad.length === 0, score: correct / checks.length, detail: `${correct}/${checks.length} checks; ${lines.length} log lines, ${build?.requests ?? "?"} requests in phase 0${bad.length ? `; failed: ${bad.join(", ")}` : ""}` };
+  return { pass: bad.length === 0, score: correct / checks.length, detail: `${correct}/${checks.length} checks; ${lines.length} log lines, ${build?.requests ?? "?"} requests and ${build?.toolCalls ?? "?"} tool calls in phase 0${bad.length ? `; failed: ${bad.join(", ")}` : ""}` };
 }

@@ -115,16 +115,18 @@ function reliabilityMetrics(cells) {
 /**
  * Computes the session cost measurements from phases that recorded them: the time from launch
  * to the first model request when resuming a long session, and the bytes the agent wrote to its
- * session store divided by the model requests of the phase.
+ * session store divided by the steps of the phase. A step is a model request or a tool call,
+ * whichever count is larger, so a reply with several tool calls counts each one (task-2643).
  * @param cells - all cells of one agent
  */
 function sessionCostMetrics(cells) {
   const phases = cells.flatMap((c) => c.result.phases || []);
   const startups = phases.filter((p) => p.measureResumeStartup && Number.isFinite(p.firstRequestAfterMs)).map((p) => p.firstRequestAfterMs);
-  const stores = phases.filter((p) => Number.isFinite(p.storeBytesWritten) && p.requests > 0);
+  const steps = (p) => Math.max(p.requests || 0, p.toolCalls || 0);
+  const stores = phases.filter((p) => Number.isFinite(p.storeBytesWritten) && steps(p) > 0);
   return {
     resumeStartupMs: mean(startups),
-    storeBytesPerStep: stores.length ? sum(stores.map((p) => p.storeBytesWritten)) / sum(stores.map((p) => p.requests)) : null,
+    storeBytesPerStep: stores.length ? sum(stores.map((p) => p.storeBytesWritten)) / sum(stores.map(steps)) : null,
   };
 }
 
