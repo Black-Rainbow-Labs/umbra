@@ -24,7 +24,6 @@ use super::edit_tool_service::{edit_spec, edit_tool, is_edit, run_edit};
 use super::environment::{submission_from, Environment};
 use super::finish_check_service::{FinishCheck, FINISH_CHECK_TEXT};
 use super::output_spill_service::{outputs_dir, spill_long_output};
-use super::stall_service::{StallWatch, STALL_TEXT};
 use super::image_service::images_in_text;
 use super::interaction_service::{show_assistant, show_event, show_observation, show_reply_text, show_turn_end, show_user_text, Comment, Decision, HumanInput, Interaction, Tone, TurnSummary};
 use super::session_service::ResumedSession;
@@ -172,8 +171,6 @@ pub struct Agent {
     finish_check: FinishCheck,
     /// Appends each step to the session journal next to the trajectory.
     journal: JournalWriter,
-    /// Notices the same command giving the same output three times in a row.
-    stall: StallWatch,
     /// True once the session's index entry has been written in this run.
     index_written: bool,
     /// A hash of the trajectory JSON last written in this run, so an unchanged one is not
@@ -215,7 +212,7 @@ impl Agent {
         let compaction = CompactionState { window: Some(window), ..Default::default() };
         let finish_check = FinishCheck::new(parts.config.finish_check && parts.config.finish == Finish::Reply && parts.config.environment.kind == "local");
         let journal = JournalWriter::new(journal_path(&parts.trajectory_path));
-        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, stall: StallWatch::default(), index_written: false, trajectory_written: Cell::new(None) };
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, index_written: false, trajectory_written: Cell::new(None) };
         agent.rebuild_tools();
         agent
     }
@@ -1181,11 +1178,6 @@ impl Agent {
         self.format_errors += 1;
         let text = render_format_error(&self.templates.format_error, error, &response.finish_reason, !response.tool_calls.is_empty())?;
         self.show_format_error(response, error);
-        if !response.content.trim().is_empty() {
-            // The model sees what it wrote beside the error, so it can fix that reply instead of
-            // starting over.
-            self.messages.push(Message::new(Role::Assistant, response.content.clone()).with_extra(json!({ "rejected": true, "response": response.raw })));
-        }
         self.messages.push(Message::user(text).with_extra(json!({ "interrupt_type": "FormatError", "model_response": response.content, "cost": response.cost })));
         let max = self.parts.config.max_consecutive_format_errors;
         if max > 0 && self.format_errors >= max {
@@ -1215,7 +1207,6 @@ impl Agent {
     fn execute_actions(&mut self, actions: &[Action]) -> Result<Step> {
         let mut outputs = Vec::new();
         let mut submitted = None;
-        let mut stalled = false;
         for (index, action) in actions.iter().enumerate() {
             self.parts.events.action_started(index, action);
             let is_bash = matches!(action, Action::Bash { .. });
@@ -1224,9 +1215,8 @@ impl Agent {
                 self.finish_check.before_command(&self.parts.cwd);
             }
             let observation = self.execute(action);
-            if let Action::Bash { command, .. } = action {
+            if is_bash {
                 submitted = submission_from(&observation);
-                stalled |= self.stall.record(command, &observation.output);
             }
             if changes_files {
                 self.finish_check.after_command(&self.parts.cwd);
@@ -1242,9 +1232,6 @@ impl Agent {
         }
         let interrupted = submitted.is_none() && interrupt::take();
         self.push_observations(actions, &outputs, interrupted.then_some(NOT_RUN_INTERRUPTED))?;
-        if stalled && submitted.is_none() && !interrupted {
-            self.messages.push(Message::user(STALL_TEXT).with_extra(json!({ "interrupt_type": "Stall" })));
-        }
         if interrupted {
             return self.interrupted();
         }

@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::super::stall_service::repair_json;
 use super::credentials::api_key;
 use super::pricing::{cost_of, price_for};
 use super::{apply_extra_body, is_overflow_text, retry_count, with_retries, Provider, ProviderError, ToolSpec};
@@ -331,13 +330,12 @@ pub fn parse_response(raw: &Value) -> ModelResponse {
     ModelResponse { content: message["content"].as_str().unwrap_or("").to_string(), tool_calls, finish_reason: choice["finish_reason"].as_str().unwrap_or("").to_string(), usage, cost: 0.0, raw: raw.clone(), timing: Value::Null }
 }
 
-/// Reads one tool call, giving it an id when the server sent none. Arguments that are not valid
-/// JSON are repaired when the fault is a raw line break or a trailing comma.
+/// Reads one tool call, giving it an id when the server sent none.
 /// @param index - the call's position, used for a missing id
 /// @param call - the tool call JSON
 fn parse_tool_call(index: usize, call: &Value) -> ToolCall {
     let text = call["function"]["arguments"].as_str().unwrap_or("{}");
-    let arguments = serde_json::from_str::<Value>(text).ok().or_else(|| repair_json(text)).unwrap_or_else(|| Value::String(text.to_string()));
+    let arguments = serde_json::from_str::<Value>(text).unwrap_or_else(|_| Value::String(text.to_string()));
     let id = call["id"].as_str().filter(|s| !s.is_empty()).map(String::from).unwrap_or_else(|| format!("call_{index}"));
     ToolCall { id, name: call["function"]["name"].as_str().unwrap_or("").to_string(), arguments }
 }
