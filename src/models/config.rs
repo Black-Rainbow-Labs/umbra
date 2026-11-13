@@ -65,6 +65,11 @@ pub struct UmbraConfig {
     /// Offer the `edit` tool beside `bash` in tool mode: an exact text replacement that keeps the
     /// file's line endings and encoding.
     pub edit_tool: bool,
+    /// Save a command output longer than 10,000 characters whole to a file next to the
+    /// trajectory, show the model where it is, and cut lines over 2,000 characters in what the
+    /// model sees. Off by default: in task-2643 (E6) the large-output pass rate stayed at 100% and
+    /// prompt tokens per passed task rose 32%, because the model read parts of the file back.
+    pub output_spill: bool,
     /// Ask for a follow up task when the agent submits, instead of exiting.
     pub confirm_exit: bool,
     /// An empty line at the task prompt or the follow up prompt asks again instead of ending the run.
@@ -122,6 +127,7 @@ impl Default for UmbraConfig {
             max_consecutive_format_errors: 3,
             finish_check: false,
             edit_tool: false,
+            output_spill: false,
             confirm_exit: true,
             keep_open: false,
             status_bar: true,

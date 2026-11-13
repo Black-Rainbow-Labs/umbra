@@ -131,6 +131,7 @@ const BEHAVIOR_AND_DISPLAY: &[SettingSpec] = &[
     s!("wall_time_limit_seconds", Behavior, "Time limit", "Stop after this many seconds. 0 means no limit.", Integer { min: 0, max: 31_536_000 }, Now),
     s!("max_consecutive_format_errors", Behavior, "Format error limit", "Stop after this many replies in a row that cannot be parsed.", Integer { min: 1, max: 1000 }, Now),
     s!("edit_tool", Behavior, "Edit tool", "Offer an edit tool beside bash: an exact text replacement that keeps line endings and encoding.", Toggle, Next),
+    s!("output_spill", Behavior, "Save long output", "Save a command output over 10,000 characters to a file and show the model where it is.", Toggle, Next),
     s!("finish_check", Behavior, "Finish check", "When the agent replies right after changing files, ask it once to run the check that proves the change.", Toggle, Next),
     s!("confirm_exit", Behavior, "Confirm exit", "Ask for a follow up task when the agent submits.", Toggle, Now),
     s!("keep_open", Behavior, "Keep open", "An empty line at a prompt asks again instead of ending the run.", Toggle, Now),

@@ -1288,7 +1288,8 @@ impl Agent {
         let vars = self.template_vars("");
         for (index, action) in actions.iter().enumerate() {
             let observation = match outputs.get(index) {
-                Some(observation) => spill_long_output(observation.clone(), &outputs_dir(&self.parts.trajectory_path), self.messages.len() as u32),
+                Some(observation) if self.parts.config.output_spill => spill_long_output(observation.clone(), &outputs_dir(&self.parts.trajectory_path), self.messages.len() as u32),
+                Some(observation) => observation.clone(),
                 None => {
                     let reason = reason.unwrap_or("action was not executed");
                     self.parts.events.action_not_run(index, action, reason);
