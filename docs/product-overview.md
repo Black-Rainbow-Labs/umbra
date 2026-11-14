@@ -34,13 +34,13 @@ flowchart LR
     F --> B
 ```
 
-Umbra is one program with no runtime to install. The Windows download for 0.7.2 is 3.8 MB.
+Umbra is one program with no runtime to install. The Windows x86_64 download for 0.8.0 is 4,068,811 bytes.
 
 | What | How Umbra does it |
 |---|---|
 | Models | Claude through the Anthropic API or your Claude Code login, and any server with the OpenAI chat API: OpenAI, OpenRouter, llama.cpp, Ollama, vLLM, LM Studio. One flag switches between them |
 | Your setup | Umbra reads the instruction files, skills, slash commands and MCP servers you already set up for Claude Code, Codex, Gemini CLI, opencode, Cursor, Copilot, Windsurf and Cline |
-| Safety | Confirm mode shows each command and runs it when you press Enter. Every command runs in a new shell process, starting in the folder and with the variables the previous command left. `--docker <image>` runs every command in a new container |
+| Safety | Confirm mode shows each command and runs it when you press Enter. Every command runs in a new shell process that starts in the folder and with the variables the previous command left. `--docker <image>` runs every command in a new container |
 | The screen | A fullscreen view with a transcript, an input line that is always there, and a status bar with the context use, the agent time, the cost and the model |
 | Sessions | Saved after every step. Any session can be resumed, continued or copied, from the terminal or from an editor |
 | Editors | `umbra acp` runs Umbra in the agent panel of Zed, the JetBrains IDEs, Unluminous and any other editor that speaks ACP |
@@ -53,15 +53,15 @@ Umbra is one program with no runtime to install. The Windows download for 0.7.2 
   (`--text`) works with a model that has no tool calling.
 - **People who want to see each step.** The model has one tool, `bash`. Every command is shown
   before it runs, and the record of every run is one JSON file that holds exactly what the model saw.
-- **People who build on agents.** The trajectory file uses mini-swe-agent's format, a
+- **People who build on agents.** `umbra export` writes a session as a trajectory file in mini-swe-agent's format, a
   mini-swe-agent YAML config runs unchanged, and `umbra session` lets a script or the agent itself
   change a running session.
 
 ## Where it comes from
 
 Umbra's loop is a port of [mini-swe-agent](https://github.com/swe-agent/mini-swe-agent), the agent
-from the team behind SWE-bench and SWE-agent: one shell tool, a new shell for every command, and one
-plain list of messages. Umbra adds what a coding agent needs on a real machine: other tools' setup,
+from the team behind SWE-bench and SWE-agent: one shell tool, and one plain list of messages. mini-swe-agent starts a new shell for every command, and Umbra keeps the folder and
+exported variables from one command to the next. Umbra adds what a coding agent needs on a real machine: other tools' setup,
 MCP, confirm mode, the fullscreen view, sessions, compaction, images and ACP.
 
 ## How it compares
@@ -72,13 +72,13 @@ MCP, confirm mode, the fullscreen view, sessions, compaction, images and ACP.
 | Reads every other tool's instruction files | yes | no | no | no | no |
 | MCP servers from other tools' config | yes | no | no | no | no |
 | Confirm before each command | yes | yes | yes | yes | yes |
-| A new shell for every command | yes | yes | no | no | no |
+| The shell keeps its folder and variables between commands | yes, by default | no | yes | yes | yes |
 | Fullscreen terminal view | yes | no | yes | yes | yes |
 | Resume a session | yes | no | yes | yes | yes |
 | Agent Client Protocol | yes | no | through an adapter | through an adapter | yes |
 | Subagents, hooks and plan mode | no | no | yes | yes | yes |
 
-The full table, with 38 rows and the source of each column, is in
+The full table, with 39 rows and the source of each column, is in
 [Feature comparison](feature-comparison.md). How Umbra measures against pi on 61 graded tasks is in
 [the eval status](../evals/STATUS.md).
 

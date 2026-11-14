@@ -293,7 +293,7 @@ The design, the research behind it and the measurements are in
 The local environment runs each command as `bash -c "exec 2>&1\n<command>"`, so stdout and stderr
 arrive in their original order as one stream, the way mini-swe-agent merges them. Stdin is closed,
 so a command that waits for input ends instead of hanging. Two threads read the pipes, so a large
-output never blocks the command. After `environment.timeout` seconds (30 by default), or when you
+output never blocks the command. After `environment.timeout` seconds (120 by default, or the `timeout` argument the model gave `bash`, up to `environment.max_timeout`, 600 by default), or when you
 press Ctrl+C, everything the command started is killed. On Linux and macOS that is the command's
 process group. On Windows each command runs in a job object, and the job is terminated, followed
 by `taskkill /F /T`. The job is needed because Git Bash starts a program such as `sleep.exe` from
@@ -376,7 +376,7 @@ record up to the last step. Its shape follows mini-swe-agent's `mini-swe-agent-1
   "info": {
     "model_stats": { "instance_cost": 0.0037, "api_calls": 2, "input_tokens": 51293, "output_tokens": 427, "cache_read_tokens": 48120, "reasoning_tokens": 0, "compactions": 0 },
     "config": { "agent": {}, "model": {}, "environment": {}, "mcp_servers": [], "skills": 42, "instruction_files": [] },
-    "umbra_version": "0.7.2",
+    "umbra_version": "0.8.0",
     "exit_status": "Submitted",
     "submission": "5050\n",
     "compactions": [],

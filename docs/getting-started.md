@@ -3,7 +3,7 @@
 This page installs Umbra, chooses a model, runs a first task, and shows how to check what Umbra
 found on your machine. It takes about five minutes.
 
-The output on this page was printed by Umbra 0.7.2 on Windows, in a small Python project called
+The output on this page was printed by Umbra 0.8.0 on Windows, in a small Python project called
 `shop` with a `CLAUDE.md`, a Cursor rule, an `AGENTS.md`, three skills from three tools and one MCP
 server.
 
@@ -28,7 +28,7 @@ administrator rights.
 
 | Script | Installs into | Variables it reads |
 |---|---|---|
-| `install.sh` | `~/.local/bin` | `UMBRA_VERSION=0.7.2` for one version, `UMBRA_INSTALL_DIR=<folder>` for another folder |
+| `install.sh` | `~/.local/bin` | `UMBRA_VERSION=0.8.0` for one version, `UMBRA_INSTALL_DIR=<folder>` for another folder |
 | `install.ps1` | `%LOCALAPPDATA%\Programs\umbra`, added to your user `PATH` | the same two |
 
 On Windows, Umbra runs commands with Git Bash, so install [Git for Windows](https://gitforwindows.org)
@@ -48,7 +48,7 @@ Check that it is on your `PATH`:
 
 ```text
 $ umbra --version
-umbra 0.7.2
+umbra 0.8.0
 ```
 
 **To have another coding agent install Umbra for you**, paste this to it:
@@ -102,7 +102,7 @@ umbra -m anthropic/claude-haiku-5-5 "create sum.py that prints the sum of 1 to 1
 Umbra opens its fullscreen view, sends the task to the model, and shows each command the model asks
 for on the input line with `Run? [Enter]`:
 
-- **Enter** runs the command in a new shell, and the model gets the output.
+- **Enter** runs the command in the session's shell, and the model gets the output.
 - **Type a reason and press Enter** to refuse it. The command does not run, and the model gets
   your reason.
 - **`/y`** switches to yolo mode, so later commands run without asking.

@@ -61,6 +61,7 @@ take `--json`.
 | `-r, --resume [session]` | Continue a saved session: its id, the start of its id, or a trajectory or journal file |
 | `--continue` | Continue the newest session in this folder |
 | `--fork` | With `--resume` or `--continue`: continue a copy of the session |
+| `--at <n>` | With `--resume` and `--fork`: branch from an earlier point, keeping only the first n messages of the saved history |
 
 `umbra -q -t "<question>" --exit-immediately` prints only the answer, the way `claude -p` does.
 
@@ -123,7 +124,7 @@ explains how a request reaches the session.
 
 ```text
 $ umbra update --check
-umbra 0.7.2 is the newest release
+umbra 0.8.0 is the newest release
 ```
 
 | Command | What it does |

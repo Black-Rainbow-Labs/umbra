@@ -108,7 +108,7 @@ other way round.
 
 ## What Umbra does not use
 
-Umbra runs every command itself in a fresh shell, and edits files with those commands. It does not
+Umbra runs every command itself in the session's shell, and edits files with those commands. It does not
 use the editor's file system methods (`fs/read_text_file`, `fs/write_text_file`) or its terminals
 (`terminal/create`). It sends no `plan` updates, because it keeps no todo list, and a model reply is
 sent whole, when it arrives.
