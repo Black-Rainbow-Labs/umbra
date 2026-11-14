@@ -1,0 +1,4 @@
+Where the time goes
+Model calls  █████████████████████ 62.0%
+Commands     ██████████            30.0%
+Waiting      ███                   8.0%

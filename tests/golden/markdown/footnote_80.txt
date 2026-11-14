@@ -1,0 +1,12 @@
+Footnote and horizontal rule
+
+Here is a sentence with a footnote.[1] And another.[2]
+
+────────────────────────────────────────────────────────────────────────────────
+
+After the rule.
+
+────────────────────
+[1] This is the footnote text.
+[2] The second note, which is long enough to wrap onto a second row at the
+    narrow width.

@@ -30,7 +30,25 @@ the `anthropic` provider. The older form, `models = ["local/qwen"]`, still works
 the `/model` picker in the fullscreen view, which lists the named models, then the listed ones,
 then the current model if it is in neither, and ends with `Other...` for a `provider/model` typed
 by hand. Choosing a model checks its credential and switches the model for the rest of the session
-without changing the config file. See [the fullscreen view](../README.md#the-fullscreen-view).
+without changing the config file. See [the terminal view](terminal.md#pickers).
+
+`umbra models` lists the default model, the named models, and the models Umbra knows a label and a
+price for:
+
+```text
+$ umbra models
+default  (none; run umbra setup)
+
+known models (use as provider/model, for example anthropic/claude-haiku-5-5)
+  Fable 5.2    anthropic  claude-fable-5-2
+  Opus 5.5     anthropic  claude-opus-5-5
+  Sonnet 5.5   anthropic  claude-sonnet-5-5
+  Haiku 5.5    anthropic  claude-haiku-5-5
+  GPT-5        openai     gpt-5
+  GPT-4.1      openai     gpt-4.1
+  GPT-4o       openai     gpt-4o
+  o3           openai     o3
+```
 
 | Provider | Kind | Base URL | Key read from |
 |---|---|---|---|
@@ -113,6 +131,25 @@ extra_body = { chat_template_kwargs = { enable_thinking = false } }
 
 `extra_body` fields are added to every request, which is how to pass server specific options.
 
+### Reasoning and the prompt cache
+
+A local model such as Qwen streams its reasoning before its answer, in a field named
+`reasoning_content` or `reasoning`. Umbra sends that text back with the assistant message, byte for
+byte and under the same field name, so the server renders the history exactly as it generated it
+and its prompt cache matches the whole conversation. For a server on this machine (`localhost`,
+`127.0.0.1`, `[::1]` or `0.0.0.0`), Umbra also sends `chat_template_kwargs.preserve_thinking: true`,
+which asks a Qwen style chat template to keep the reasoning of earlier turns.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `send_reasoning` | true | Send each assistant message's reasoning back to the server |
+| `preserve_thinking` | true for a server on this machine, false for any other | Send `chat_template_kwargs.preserve_thinking: true` |
+
+Each assistant message in the trajectory keeps a timing record in `extra.timing`: the total time,
+the time to the first token, and the server's own `timings` object when it sends one. The
+trajectory's `model_stats` adds up `cache_read_tokens` and `reasoning_tokens`, so a run's cache hit
+rate can be read from the file.
+
 ## Provider settings
 
 | Setting | Meaning |
@@ -130,6 +167,8 @@ extra_body = { chat_template_kwargs = { enable_thinking = false } }
 | `extra_body` | Fields added to every request body |
 | `max_retries` | Retries after the first attempt (default 9) |
 | `stream` | OpenAI compatible servers only: stream replies (default true). Set it to false for a server that rejects `stream` or `stream_options`. |
+| `send_reasoning` | OpenAI compatible servers only: send the streamed reasoning back with each assistant message (default true) |
+| `preserve_thinking` | OpenAI compatible servers only: send `chat_template_kwargs.preserve_thinking: true` (default true for a server on this machine) |
 | `replay_file` | Replay only: the script file |
 
 ## Testing a provider
@@ -188,6 +227,7 @@ tokens:
 | Model | Input | Output | Cache read | Cache write |
 |---|---|---|---|---|
 | `claude-fable-5-1` | 10.00 | 50.00 | 0.25 | 12.50 |
+| `claude-fable-5`, which covers `claude-fable-5-2` | 10.00 | 50.00 | 1.00 | 12.50 |
 | `claude-opus-5-5` | 4.00 | 20.00 | 0.20 | 5.00 |
 | `claude-sonnet-5-5` | 2.00 | 10.00 | 0.20 | 2.50 |
 | `claude-haiku-5-5` | 0.10 | 0.50 | 0.01 | 0.125 |

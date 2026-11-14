@@ -1,0 +1,14 @@
+Inline x² + y² = r² and α → ∞.
+
+            n       n(n + 1)
+            ∑  i = ──────────
+           i=1         2
+
+The quadratic formula:
+
+                     ────────
+               −b ± √b² − 4ac
+          x = ────────────────
+                     2a
+
+After.

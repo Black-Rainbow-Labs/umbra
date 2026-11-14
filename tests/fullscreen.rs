@@ -146,6 +146,28 @@ fn a_reply_is_rendered_from_markdown_and_no_done_or_resume_line_is_printed() {
     assert!(output.contains("\x1b[?1002l\x1b[?1000l"), "leaving turns mouse reporting off");
 }
 
+/// A burst of wheel reports in one read is drawn as one frame, not one frame per report. When a
+/// slow terminal falls behind, the reports that pile up are read together, so the view catches up
+/// at once instead of drawing every step it missed.
+#[test]
+fn a_burst_of_wheel_reports_is_drawn_as_one_frame() {
+    let setup = Setup::new("fs-wheel");
+    let long = (1..=80).map(|n| format!("Line {n} of a long reply.")).collect::<Vec<_>>().join("\n\n");
+    let model = setup.model("script.json", json!([long]));
+    let mut screen = setup.start(&["-m", &model, "-y", "--no-mcp"], &[("UMBRA_TICK_MS", "0")]);
+    screen.wait_for("❯");
+    screen.type_line("write a lot");
+    screen.wait_for("Line 80 of a long reply.");
+    std::thread::sleep(Duration::from_millis(300));
+    let before = screen.output().matches("\x1b[?2026h").count();
+    screen.send("\x1b[<64;10;5M".repeat(80).as_bytes());
+    let frame = screen.wait_for("umbra v");
+    std::thread::sleep(Duration::from_millis(300));
+    let drawn = screen.output().matches("\x1b[?2026h").count() - before;
+    assert!(drawn <= 2, "80 wheel reports drew {drawn} frames");
+    assert!(frame.row_of("Line 80 of a long reply.").is_none(), "the view scrolled to the top:\n{}", frame.text());
+}
+
 #[test]
 fn commands_in_a_row_are_one_group_that_expands_with_clicks_and_keys() {
     let setup = Setup::new("fs-group");
@@ -473,6 +495,35 @@ fn umbra_resume_lists_sessions_with_titles_and_rebuilds_the_chosen_one() {
     assert!(frame.row_of("answer three").is_none(), "{}", frame.text());
     screen.type_line("carry on");
     screen.wait_for("● after the resume");
+}
+
+/// With no model in the config and no `UMBRA_MODEL`, `umbra resume` opens the picker, and the
+/// chosen session continues on the model it recorded. `umbra resume <id>` and `--resume <id>` do
+/// the same.
+#[test]
+fn umbra_resume_with_no_model_configured_uses_the_saved_sessions_model() {
+    let setup = Setup::new("fs-resume-no-model");
+    setup.saved_session("one.json", "answer one", "task one");
+    setup.model("one.json", json!(["after the resume", "after the second resume", "after the third resume"]));
+    assert!(!setup.scratch.path("home/.umbra/config.toml").exists(), "the home has no config");
+    let work = setup.work();
+    let mut screen = setup.start_raw(&["resume", "--cwd", &work, "-y", "--no-mcp"], &[]);
+    screen.wait_for("Resume a session");
+    screen.press("Enter");
+    let frame = screen.wait_until("the resumed session", Duration::from_secs(15), |f| f.row_of("● answer one").is_some() && f.row_of("resuming session").is_some());
+    assert!(frame.row_of("model   replay/").is_some(), "the header names the session's model:\n{}", frame.text());
+    screen.type_line("carry on");
+    screen.wait_for("● after the resume");
+    let id = setup.index()[0]["id"].as_str().unwrap().to_string();
+    for args in [vec!["resume", id.as_str()], vec!["--resume", id.as_str()]] {
+        setup.model("one.json", json!(["after the id resume"]));
+        let mut all = args.clone();
+        all.extend(["--cwd", work.as_str(), "-y", "--no-mcp"]);
+        let mut screen = setup.start_raw(&all, &[]);
+        screen.wait_for("resuming session");
+        screen.type_line("again");
+        screen.wait_for("● after the id resume");
+    }
 }
 
 #[test]

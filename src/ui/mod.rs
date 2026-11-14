@@ -9,6 +9,8 @@ pub mod header;
 pub mod highlight;
 pub mod live;
 pub mod markdown;
+pub mod math;
+pub mod mermaid;
 pub mod overlay;
 pub mod rebuild;
 pub mod selection;

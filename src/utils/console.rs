@@ -414,8 +414,8 @@ fn split_lines(partial: &mut Vec<u8>, bytes: &[u8]) -> Vec<Option<String>> {
 /// @param bytes - the bytes just read
 fn keys_to_lines(keys: &mut KeyDecoder, bytes: &[u8]) -> Vec<Option<String>> {
     let mut lines = Vec::new();
-    for key in keys.feed(bytes) {
-        match screen::handle_key(key) {
+    for outcome in screen::handle_keys(keys.feed(bytes)) {
+        match outcome {
             KeyOutcome::Line(line) => lines.push(Some(line)),
             KeyOutcome::Eof => lines.push(None),
             KeyOutcome::None => {}

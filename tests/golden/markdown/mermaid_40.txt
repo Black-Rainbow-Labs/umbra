@@ -1,0 +1,7 @@
+┌──────┐    ┌──────┐    ┌───────┐
+│ Read ├───▶│ Plan ├───▶│ Write │
+└──────┘    └──────┘    └───────┘
+
+│ mermaid
+│ classDiagram
+│   Animal <|-- Duck
