@@ -130,7 +130,7 @@ The run by run numbers are in [LEDGER.md](LEDGER.md).
 | E9 | A 120 second default command timeout | Kept |
 | E10 | The shell state carries from one command to the next | Kept, on by default. Requests and completion tokens per passed task fell beyond pi's band |
 | E11 | Append only session journal and `--at` to branch | Kept. branch and cut-resume 3 of 3 |
-| E12 | A thinking setting for local models | Arms reported separately (the eval fixes thinking for the comparison) |
+| E12 | A thinking setting for local models | Not adopted, setting unset. Thinking off: hard tier 40.0% against 81.7%, 8 times the requests per passed task. Thinking on the first request only: 37.1% |
 | E13 | Ask a local server for 16,000 reply tokens | Kept. Hard tier 58.3% to 80.0%, error exits 3 to 0 |
 | E14 to E16 | Session index at turn ends, server timings kept once, no second trajectory write | Kept. 6,601 to 1,922 bytes per step |
 | E17 to E22 | The journal is the session store; compact journal records; stats as differences | Kept. 763 bytes per step in the final run |
