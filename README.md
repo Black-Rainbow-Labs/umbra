@@ -15,7 +15,7 @@ every session so it can be picked up later, in the terminal or in an editor that
 $ umbra -m anthropic/claude-haiku-5-5 "two tests fail. find out why and fix it"
 ```
 
-**Documentation:** [unluminous.com/umbra/docs](https://unluminous.com/umbra/docs) has every
+**Documentation:** [umbra.ing/docs](https://umbra.ing/docs) has every
 chapter with pictures and clips of the real program. The reference pages are in [docs/](docs/README.md).
 
 ## Install

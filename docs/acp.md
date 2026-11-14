@@ -14,7 +14,7 @@ The design, and the reasons for it, are in
 |---|---|
 | Zed | `settings.json`: `"agent_servers": { "Umbra": { "type": "custom", "command": "umbra", "args": ["acp"] } }` |
 | JetBrains IDEs | `~/.jetbrains/acp.json`: `{ "agent_servers": { "Umbra": { "command": "umbra", "args": ["acp"] } } }` |
-| Unluminous | `settings acp-add umbra` adds it from the ACP registry. Or add an endpoint with wire `acp`, command `umbra` and the argument `acp`. |
+| Unluminous | Add an endpoint in Settings, AI Configuration, with wire `acp`, command `umbra` and the argument `acp` (Unluminous 1.10 or newer). Umbra is not in the ACP registry yet, so `settings acp-add umbra` does not find it. |
 | Others | The command `umbra`, the argument `acp`. |
 
 Use the full path to `umbra` if the editor does not see the same `PATH` as your shell, which is
@@ -108,7 +108,7 @@ other way round.
 
 ## What Umbra does not use
 
-Umbra runs every command itself in a fresh shell, and edits files with those commands. It does not
+Umbra runs every command itself in the session's shell, and edits files with those commands. It does not
 use the editor's file system methods (`fs/read_text_file`, `fs/write_text_file`) or its terminals
 (`terminal/create`). It sends no `plan` updates, because it keeps no todo list, and a model reply is
 sent whole, when it arrives.

@@ -22,7 +22,7 @@ The command waits on the input line. What you type decides what happens:
 
 | You type | What happens |
 |---|---|
-| Enter | The command runs in a new shell, and the model gets its output |
+| Enter | The command runs in the session's shell, and the model gets its output |
 | A reason, then Enter | The command does not run. The model is told it was refused, with your reason, and tries again |
 | `/y` | Switches to yolo mode and runs this command |
 | `/u` | Switches to human mode, so you type the commands |
@@ -115,6 +115,6 @@ Every run has limits, and each one ends the turn when it is reached. 0 means no 
 | `step_limit` | `--step-limit <n>` | 0 |
 | `cost_limit` | `-l <dollars>` | 0 |
 | `wall_time_limit_seconds` | none | 0 |
-| `environment.timeout` | none | 30 seconds for one command |
+| `environment.timeout` | none | 120 seconds for one command. The model can ask for more, up to `environment.max_timeout`, 600 seconds |
 
 In a terminal, Umbra asks whether to raise the cost limit when a run reaches it.

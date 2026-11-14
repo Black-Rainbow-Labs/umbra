@@ -1,7 +1,7 @@
 # How to write Umbra documentation
 
 This page is the style guide for every page in this repository and for the Umbra documentation at
-[unluminous.com/umbra/docs](https://unluminous.com/umbra/docs). Read it before you write or change
+[umbra.ing/docs](https://umbra.ing/docs). Read it before you write or change
 a page.
 
 Most readers are programmers who have used a coding agent such as Claude Code or Codex. They know
@@ -82,7 +82,7 @@ That means three places:
 |---|---|
 | `docs/` in this repository | The reference pages, indexed in [docs/README.md](README.md) |
 | `README.md` in this repository | The front page on GitHub: what Umbra is, install, a first task, and links to the docs |
-| `sites/unluminous/src/data/umbraDocumentation.ts` in the Black-Rainbow-Labs/black-rainbow-labs-sites repository | The chapters at [unluminous.com/umbra/docs](https://unluminous.com/umbra/docs). The site is deployed with `npm run deploy -- unluminous` from that repository |
+| `sites/umbra/src/data/umbraDocumentation.ts` in the Black-Rainbow-Labs/black-rainbow-labs-sites repository | The chapters at [umbra.ing/docs](https://umbra.ing/docs). The site is deployed with `npm run deploy -- umbra` from that repository |
 
 `cargo test --test documentation` fails on a page missing from the index, a relative link that does
 not resolve, and a phrase this guide bans. It cannot tell whether a sentence is still true. That is

@@ -39,7 +39,9 @@ output = ""                            # write the trajectory JSON here at each 
 [environment]
 kind = "local"                         # local or docker
 cwd = ""                               # empty means the folder Umbra was started in
-timeout = 30                           # seconds before a command is killed
+timeout = 120                          # seconds before a command is killed, unless the model asks for another timeout
+max_timeout = 600                      # the most seconds the model may ask for one command
+persistent_shell = true                # each command starts in the folder and with the variables the last one ended with
 shell = []                             # empty means bash, found automatically
 image = ""                             # docker only
 run_args = ["--rm"]                    # docker only
@@ -169,7 +171,9 @@ detect_paths = true                    # attach image files named in a task or a
 | `banner` | true | Draw the umbra banner when a run starts in a terminal: the logo with "by Black Rainbow Labs" under it, the version, the model, the folder, the mode, how many skills were found, and the state of the MCP servers. In the fullscreen view the header is the first block of the transcript and its rows are drawn from live state. The logo's stripes appear one at a time over about 1.4 seconds; `UMBRA_BANNER_ANIMATION=0` shows the finished logo at once. The logo goes beside the text when both fit, above the text when only the logo fits, and is left out in a terminal narrower than about 64 columns. It uses 24 bit color when `COLORTERM` is `truecolor` or `24bit`, and the nearest of the 256 colors otherwise. Never drawn into a pipe or with `--quiet`. `UMBRA_BANNER=0` turns it off and `UMBRA_BANNER=1` draws it into a pipe. |
 | `verbose` | false | Print every detail of a run: the step number and cost before each reply, command output up to 2000 characters instead of the first 10 lines, the whole text of a format error, and the context warning every time compaction cannot help instead of once. `--verbose` turns it on for a run. |
 | `whitelist_actions` | empty | Regexes matched at the start of a command. A match runs without asking in confirm mode. |
-| `environment.timeout` | 30 | Seconds before a command and everything it started is killed. |
+| `environment.timeout` | 120 | Seconds before a command and everything it started is killed. The model can give one command another timeout with the `timeout` argument of `bash`. |
+| `environment.max_timeout` | 600 | The most seconds the model may give one command with the `timeout` argument. |
+| `environment.persistent_shell` | true | Local bash only: each command starts in the folder and with the exported variables the previous command ended with. `false` starts every command fresh. |
 | `environment.shell` | bash | The program and flags that run a command string, such as `["zsh", "-c"]`. |
 | `providers.<name>.*` | see [models](providers.md) | Endpoints, keys, token limits and prices. |
 | `sources.<name>` | true | Read that tool's files. `--no-source <name>` turns one off for a run. |

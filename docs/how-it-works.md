@@ -26,7 +26,7 @@ flowchart TD
     C -- yes --> Y{"You press Enter?"}
     Y -- "no, you type a reason" --> X["Tell the model the command was refused"] --> Q
     Y -- yes --> RUN
-    C -- no --> RUN["Run each command in a new shell,<br/>or call the MCP tool"]
+    C -- no --> RUN["Run each command in the session's shell,<br/>or call the MCP tool"]
     RUN --> O["Add the output to the messages"] --> Q
     R -- "a reply with no command" --> F["The turn ends. The reply is the answer,<br/>and your next message continues the conversation"]
 ```
@@ -41,7 +41,7 @@ flowchart TD
    A reply it cannot use is a format error: Umbra sends it back with what was wrong, and three in a
    row end the run.
 4. **It runs each action.** In confirm mode, the default, it shows each command and waits for
-   Enter. Each command runs in a new shell. An MCP tool call goes to its server.
+   Enter. Each command runs in the session's shell. An MCP tool call goes to its server.
 5. **It shows the model what happened.** Each output and return code is added to the list of
    messages as an observation, and the loop goes back to step 2.
 6. **A reply with no action ends the turn.** The reply is the answer. Your next message is added to
@@ -57,7 +57,7 @@ flowchart TD
   every command starts fresh and the model writes `cd src && make` in one command).
 - **The history is one list.** The session journal, and the trajectory file written from it, hold exactly what the model saw.
 - **Stdin is closed.** A command that waits for input ends instead of waiting forever. After
-  `environment.timeout` seconds, 30 by default, the command and everything it started are stopped.
+  `environment.timeout` seconds, 120 by default, the command and everything it started are stopped. The model can pass a `timeout` argument to `bash` for one slow command, up to `environment.max_timeout`, 600 by default.
 - **Long runs are compacted.** Near 80% of the context window, old command outputs are replaced by
   a short placeholder, and if that is not enough the model summarizes the middle of the session.
   See [Compaction](architecture.md#compaction).

@@ -88,6 +88,7 @@ umbra resume 17941855                # resume one directly, by its id or the sta
 umbra --continue "now add a test"    # the newest session in this folder, with a new task
 umbra --resume 1794185509287 "and update the docs"
 umbra --resume 17941855 --fork "try it a different way"   # continue a copy, leave the original alone
+umbra --resume 17941855 --at 6 --fork "try it a different way"   # branch from the first 6 messages
 ```
 
 | Command | What it does |
@@ -99,6 +100,7 @@ umbra --resume 17941855 --fork "try it a different way"   # continue a copy, lea
 | `-r`, `--resume [session]` | Resumes a session by its id, the start of its id, or a trajectory or journal file. With no value, opens the picker |
 | `--continue` | Resumes the newest session in this folder |
 | `--fork` | With `--resume` or `--continue`: copies the history into a new session and leaves the old one as it was |
+| `--at <n>` | With `--resume` and `--fork`: branches from an earlier point, keeping only the first n messages of the saved history |
 | `/resume` | Opens the session picker inside the fullscreen view |
 | `/clear` | Saves this session and starts a new one with an empty history |
 
@@ -112,7 +114,7 @@ title of at most six words and a one sentence summary. `sessions.auto_title = fa
 request off. A compaction summary replaces the session summary.
 
 **What a resume keeps.** A resumed session continues in its own folder, with its own model unless
-`-m` says otherwise, and in the same trajectory file. This holds when no model is set in
+`-m` says otherwise, and in the same journal. This holds when no model is set in
 `~/.umbra/config.toml` or `UMBRA_MODEL`, for `umbra resume`, `umbra resume <id>`, `--resume <id>`
 and `--continue`. A session that recorded no model stops with the error for no model set. The model sees the whole history, the images
 included, and the next task arrives the way a follow up task does. The MCP servers turned off in the
