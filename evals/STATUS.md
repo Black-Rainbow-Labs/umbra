@@ -45,57 +45,73 @@ with a hidden verifier the agent never sees.
 
 ## Where Umbra stands
 
-These numbers are from the full 3 rep run of all 61 tasks on 2026-11-13 and 2026-11-14 (run
-`head-6d0f328`, task-2643). That build has every change kept up to then: E1, E2, E4, E8, E9, E10
-(the persistent shell, now on by default), E11, E13, E14, E15 and E16. E3, E5, E6 and E7 are off.
-The later session store changes (E17 to E22) and the output limit (E23) are measured separately
-below. pi is the reference run `pi-1.3.0-ref`.
+These numbers are from the final 3 rep run of all 61 tasks on 2026-11-14 (run `final-8df86c3`,
+task-2643). That build has every kept change: E1, E2, E4, E8, E9, E10 (the persistent shell, on by
+default), E11, E13 to E23, E25 and E26. E3, E5, E6, E7, E24 and E27 are off or reverted. The eval
+counts every file Umbra writes (Umbra runs with its default storage, without `-o`). pi is the
+reference run `pi-1.3.0-ref`.
 
 ### Head to head
 
 | Metric | Umbra | pi | pi noise band | Better |
 |---|---|---|---|---|
-| Pass rate | 91.8% | 80.3% | 6.6 points | Umbra |
+| Pass rate | 91.3% | 80.3% | 6.6 points | Umbra |
 | Mean score | 98.7% | 90.7% | 5.4 points | Umbra |
 | Hard tier pass rate | 78.3% | 66.7% | 10.0 points | Umbra |
-| Hard tier mean score | 96.4% | 82.0% | 10.0 points | Umbra |
+| Hard tier mean score | 98.1% | 82.0% | 10.0 points | Umbra |
 | Compaction pass rate | 92.6% | 44.4% | 22.2 points | Umbra |
-| Prompt tokens per passed task | 299,982 | 447,300 | 22,849 | Umbra, 33% fewer |
-| Uncached prompt tokens per passed task | 13,456 | 78,944 | 7,646 | Umbra, 83% fewer |
-| Completion tokens per passed task | 10,025 | 17,343 | 1,780 | Umbra, 42% fewer |
-| Requests per passed task | 22 | 33 | 3 | Umbra, 33% fewer |
-| First request size (fixed overhead) | 1,744 tokens | 2,154 tokens | 0 | Umbra, 19% smaller |
-| Prompt cache hit rate | 95.4% | 82.4% | 1.1 points | Umbra |
-| Wall time per task | 67.4 s | 117.5 s | 22.1 s | Umbra, 74% faster |
+| Compaction mean score | 99.3% | 77.7% | 16.9 points | Umbra |
+| Prompt tokens, total | 19.6 million | 21.9 million | 0.7 million | Umbra, 10% fewer |
+| Uncached prompt tokens, total | 815,800 | 3,863,170 | 133,361 | Umbra, 79% fewer |
+| Completion tokens, total | 606,332 | 848,601 | 17,840 | Umbra, 29% fewer |
+| Requests, total | 1,327 | 1,631 | 41 | Umbra, 19% fewer |
+| Prompt tokens per passed task | 353,094 | 447,300 | 22,849 | Umbra, 21% fewer |
+| Uncached prompt tokens per passed task | 14,694 | 78,944 | 7,646 | Umbra, 81% fewer |
+| Completion tokens per passed task | 10,897 | 17,343 | 1,780 | Umbra, 37% fewer |
+| Requests per passed task | 24 | 33 | 3 | Umbra, 27% fewer |
+| First request size (fixed overhead) | 1,835 tokens | 2,154 tokens | 0 | Umbra, 15% smaller |
+| Prompt cache hit rate | 95.8% | 82.4% | 1.1 points | Umbra |
+| Wall time per task | 69.4 s | 117.5 s | 22.1 s | Umbra, 69% faster |
 | Time to the first reply text | 382 ms | 1,095 ms | 27 ms | Umbra, 187% faster |
-| Total model seconds | 3,589 | 6,092 | 130 | Umbra, 70% faster |
+| Total model seconds | 3,841 | 6,092 | 130 | Umbra, 59% faster |
 | Cache hit rate just after a compaction | 74.2% | 32.4% | 1.7 points | Umbra |
-| Startup when resuming a long session | 60 ms | 498 ms | 248 ms | Umbra |
-| Reasoning tokens, total | 307,198 | 315,434 | 25,289 | tie inside the band |
-| Session store bytes per step | 1,085 | 1,094 | 29 | tie inside the band |
+| Peak prompt tokens on window tasks | 45,705 | 48,212 | 1,294 | Umbra |
+| Startup when resuming a long session | 36 ms | 498 ms | 248 ms | Umbra |
+| Session store bytes per step | 763 | 1,094 | 29 | Umbra, 30% fewer |
+| Reasoning tokens, total | 338,858 | 315,434 | 25,289 | tie inside the band |
 | Runs that hit the step or time limit | 0 | 1 | 1 | Umbra at 0, inside the band |
 | Runs with a nonzero exit | 0 | 1 | 1 | Umbra at 0, inside the band |
 | Session: resume after a crash | 3 of 3 | 2 of 3 | 100 points | Umbra at 100%, inside the band |
-| Runs that reached the eval's own task files | 1 of 183 | 0 | 0 | pi |
+| Runs that reached the eval's own task files | 1 of 183 | 0 of 183 | 0 | pi |
 
-A paired sign test over the 61 tasks finds Umbra better on 14, pi better on 3 and 44 tied
-(p = 0.013).
+A paired sign test over the 61 tasks finds Umbra better on 15, pi better on 5 and 41 tied
+(p = 0.041). Every other row (no tool call, HTTP errors, malformed tool calls, requests over the
+window, the other six session scenarios) is 0 or 100% for both.
 
-### What is still open
+### Pass rate by category (Umbra / pi)
 
-- **Reasoning tokens.** Umbra uses 2.6% fewer, inside pi's band. E25 (a line asking for short
-  thinking on routine steps) was being measured when the PC crashed.
-- **Session store bytes per step.** The run above predates E17 to E22. With them, and with the eval
-  counting every file Umbra writes (Umbra is no longer given `-o`), a live run measures 984 bytes
-  per step against pi's 1,094.
-- **The eval's own task files.** One hard tier run of json-cleanup-30 overwrote its only copy of the
-  data with a buggy cleaning script, then searched the home folder, other projects and the main
-  checkout's evals folder for the originals. E24 (stay inside the working directory) did not stop
-  it and was reverted. E26 (keep a copy of the originals before a script edits many files in place)
-  is built and not yet measured.
-- **Rows where Umbra is at the best possible value** (0 limit hits, 0 error exits, 100% on resume
-  after a crash) cannot be beaten by any margin, because pi's noise band is as wide as the gap. The
-  scorecard lists them as not strictly better.
+| Category | Umbra | pi |
+|---|---|---|
+| hard | 78.3% | 66.7% |
+| compaction | 92.6% | 44.4% |
+| session | 100% | 95.2% |
+| edit-precision | 93.3% | 100% |
+| bugfix, create, instructions, large-output, navigate | 100% | 100% |
+
+### What is not strictly better, and why
+
+- **Reasoning tokens.** Inside pi's band. Two prompt changes aimed at it (E25, E27) did not move it
+  beyond the band. The eval sets thinking on for both agents, so the thinking setting (E12) cannot
+  be used in this comparison; its arms are reported separately.
+- **Runs that reached the eval's own task files.** One hard tier run of json-cleanup-30 found the
+  reference solution under `evals/tasks` in the checkout and ran it to check its own output. The
+  eval fails that cell. The same task earlier sent runs across the disk looking for the original
+  data after a buggy script overwrote it; E26 stopped that, and this run went looking for a way to
+  verify instead. The eval's task files are readable from the workspace because the runner and the
+  agent share one disk.
+- **Three rows where Umbra is at the best possible value** (0 limit hits, 0 error exits, 100% on
+  resume after a crash) are listed because pi's noise band is as wide as the whole gap, so no
+  change to Umbra can make them strictly better.
 
 ## Experiments
 
@@ -112,31 +128,23 @@ The run by run numbers are in [LEDGER.md](LEDGER.md).
 | E7 | Stall message, tool call repair, rejected reply kept | Reverted. The error exits it targeted were replies cut off at the output limit, which E13 fixed |
 | E8 | Compaction settings for a smaller working window | Kept, with no cap by default |
 | E9 | A 120 second default command timeout | Kept |
-| E10 | One shell kept for the session | Kept, now on by default. Requests and completion tokens per passed task fell beyond pi's band |
+| E10 | The shell state carries from one command to the next | Kept, on by default. Requests and completion tokens per passed task fell beyond pi's band |
 | E11 | Append only session journal and `--at` to branch | Kept. branch and cut-resume 3 of 3 |
-| E12 | A thinking setting for local models | Not yet measured |
+| E12 | A thinking setting for local models | Arms reported separately (the eval fixes thinking for the comparison) |
 | E13 | Ask a local server for 16,000 reply tokens | Kept. Hard tier 58.3% to 80.0%, error exits 3 to 0 |
 | E14 to E16 | Session index at turn ends, server timings kept once, no second trajectory write | Kept. 6,601 to 1,922 bytes per step |
-| E17 to E22 | The journal is the session store; compact journal records; stats as differences | Kept. 984 bytes per step live |
+| E17 to E22 | The journal is the session store; compact journal records; stats as differences | Kept. 763 bytes per step in the final run |
 | E23 | Keep at most 1 MB from each end of a command's output | Kept. One run had kept 420 MB |
 | E24 | Stay inside the working directory | Reverted |
-| E25 | Short thinking on routine steps | Measurement stopped by the crash |
-| E26 | Copy the originals before a script edits many files in place | Built, not measured |
+| E25 | Short thinking on routine steps | Kept |
+| E26 | Copy the originals before a script edits many files in place | Kept |
+| E27 | A firmer short thinking paragraph | Reverted |
 
-The eval itself changed in task-2643: the store bytes counter now reads the final write count
-after the process exits (the old poll missed pi's last 259 KB write and reported pi at 190 bytes
-per step), Umbra runs without `-o` so every file it writes counts, and long-300-resume counts tool
-calls as steps.
+The eval itself changed in task-2643: the store bytes counter reads the final write count after the
+process exits (the old poll missed pi's last 259 KB write and reported pi at 190 bytes per step),
+Umbra runs without `-o` so every file it writes counts, and long-300-resume counts tool calls as
+steps.
 
-## What is left
-
-1. Measure E25 and E26 on the hard tier, and the E12 thinking arms.
-2. One full 3 rep run of all 61 tasks with every kept change, the scorecard from it, and a release.
-
-### Why the work stopped on 2026-11-14
-
-The PC crashed at 04:13Z with bugcheck 0x20001 (HYPERVISOR_ERROR), while the eval was running E25
-on the hard tier. The PCIe root port above GPU 1, the card the model server uses, logged corrected
-PCIe errors all through the run: 388 in the 75 minutes before the crash, and about 1,400 in the
-three hours before it. The same bugcheck was one of the crashes on 2026-11-11 and 2026-11-12. The
-dump is `C:\Windows\Minidump\111326-27250-01.dmp`. The eval resumes once that link is fixed.
+The PC crashed once during the work (2026-11-14 04:13Z, bugcheck 0x20001, with corrected PCIe errors
+on the root port above GPU 1 throughout). The eval was restarted after the reboot; finished cells
+were kept.
