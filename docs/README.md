@@ -3,7 +3,7 @@
 This folder holds the reference pages for Umbra. Each page can be read on its own.
 
 To learn Umbra step by step, with pictures and clips of the real program, read the documentation at
-[unluminous.com/umbra/docs](https://unluminous.com/umbra/docs). The pages here are for looking
+[umbra.ing/docs](https://umbra.ing/docs). The pages here are for looking
 things up, and they describe the same release.
 
 The tables below list the pages in reading order for someone who has used a coding agent such as
@@ -51,7 +51,7 @@ bans.
 | 16 | [Architecture](architecture.md) | The layers, one run from start to finish, the fullscreen view, compaction, commands, Ctrl+C, sessions and the trajectory file |
 | 17 | [Repository and building](repository.md) | What is where, building, and what each set of tests checks |
 | 18 | [Releasing](releasing.md) | How a tag becomes a GitHub release, a Homebrew formula and an ACP registry entry |
-| 19 | [Writing style](writing-style.md) | How to write and check a page in this folder or a chapter on unluminous.com |
+| 19 | [Writing style](writing-style.md) | How to write and check a page in this folder or a chapter on umbra.ing |
 | | [`AGENTS.md`](../AGENTS.md) | The starting page for an AI agent that changes this repository |
 
 ## Design documents

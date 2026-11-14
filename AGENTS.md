@@ -36,9 +36,9 @@ the screen or a default, updates every place that describes it **in the same com
 |---|---|
 | `docs/` | The reference page that describes the feature. A new page is added to [docs/README.md](docs/README.md) |
 | `README.md` | Only when the change alters the install, the first task, or the short tour |
-| unluminous.com/umbra/docs | The chapter in `sites/unluminous/src/data/umbraDocumentation.ts` in the `Black-Rainbow-Labs/black-rainbow-labs-sites` repository (`C:\jason\dev\black-rainbow-labs-sites` on the build machine). Deploy it with `npm run deploy -- unluminous` from the main checkout of that repository |
+| umbra.ing/docs | The chapter in `sites/umbra/src/data/umbraDocumentation.ts` in the `Black-Rainbow-Labs/black-rainbow-labs-sites` repository (`C:\jason\dev\black-rainbow-labs-sites` on the build machine). Deploy it with `npm run deploy -- umbra` from the main checkout of that repository |
 
-A release also updates `sites/unluminous/src/data/umbra-release.json` in that repository, so the
+A release also updates `sites/umbra/src/data/umbra-release.json` in that repository, so the
 site offers the new version.
 
 The rules for writing a page are in [Writing style](docs/writing-style.md). The short version:
