@@ -43,23 +43,23 @@ function cutSessionFile(adapter, input, bytes) {
 
 /**
  * Reads the measurements a phase asked for: the time from launch to its first model request,
- * and the bytes the agent wrote apart from its own stdout and stderr and the output files the
- * runner asked for (Umbra's -o trajectory), which is what it wrote to its session store. pi's
- * JSON event stream is its stdout, so both agents have their requested output left out.
+ * and the bytes the agent wrote apart from its own stdout and stderr, which is what it wrote to
+ * its session store. Both agents run with their default storage, so every file either one writes
+ * counts (task-2643: an exclusion for Umbra's -o trajectory, added in 848aad6, was removed because
+ * that file is part of Umbra's own store).
  * @param phase - the TaskPhase
  * @param outcome - what runProcess returned
  * @param proxy - the running proxy
  * @param phaseDir - the phase folder holding stdout.log and stderr.log
- * @param outputFiles - files the runner asked the agent to write, from the adapter's launch
  */
-function phaseMeasurements(phase, outcome, proxy, phaseDir, outputFiles = []) {
+function phaseMeasurements(phase, outcome, proxy, phaseDir) {
   const out = {};
   if (phase.measureResumeStartup) {
     out.measureResumeStartup = true;
     out.firstRequestAfterMs = proxy.state.phaseFirstChatAt ? proxy.state.phaseFirstChatAt - outcome.startedAtMs : null;
   }
   if (phase.measureStoreWrites && Number.isFinite(outcome.bytesWritten)) {
-    const files = [path.join(phaseDir, "stdout.log"), path.join(phaseDir, "stderr.log"), ...outputFiles];
+    const files = [path.join(phaseDir, "stdout.log"), path.join(phaseDir, "stderr.log")];
     const excluded = files.reduce((total, file) => total + (fs.existsSync(file) ? fs.statSync(file).size : 0), 0);
     out.storeBytesWritten = Math.max(0, outcome.bytesWritten - excluded);
   }
@@ -97,7 +97,7 @@ export async function runPhase(ctx) {
   await waitForProxyIdle(proxy);
   const artifacts = safeReadArtifacts(adapter, launch);
   const workspaceFiles = Array.isArray(task.phases) ? listFiles(ctx.workspaceDir) : undefined;
-  const measured = phaseMeasurements(phase, outcome, proxy, phaseDir, launch.artifacts?.outputFiles || []);
+  const measured = phaseMeasurements(phase, outcome, proxy, phaseDir);
   return { index, label: phase.label || `phase-${index}`, mode: resume?.mode || "new", resumedFrom: resume?.sessionRef || null, contextWindow, ...outcome, ...cut, ...measured, stdoutPath: path.join(phaseDir, "stdout.log"), ...artifacts, requests: proxy.state.phaseChatCount, workspaceFiles };
 }
 

@@ -1,6 +1,7 @@
 // Adapter for Umbra: writes the isolated home, builds the command line, and reads the trajectory.
 
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { readJson } from "../src/utils/files.mjs";
 
@@ -46,14 +47,17 @@ function writeHomeConfig(input) {
  */
 export function buildLaunch(input) {
   writeHomeConfig(input);
+  // Umbra runs with its default storage, as a person runs it: no -o, so the session is saved where
+  // Umbra saves it and every byte it writes counts toward the session store (task-2643, advice
+  // from task-2682). After the phase the adapter writes a copy with `umbra export`.
   const trajectoryPath = path.join(input.phaseDir, "trajectory.json");
-  const args = ["-m", `${PROVIDER}/${input.model}`, "--yolo", "--quiet", "--no-fullscreen", "--no-status-bar", "--exit-immediately", "--no-mcp", "--no-skills", "--no-instructions", "--step-limit", String(input.stepLimit), "--cwd", input.workspaceDir, "-o", trajectoryPath];
+  const args = ["-m", `${PROVIDER}/${input.model}`, "--yolo", "--quiet", "--no-fullscreen", "--no-status-bar", "--exit-immediately", "--no-mcp", "--no-skills", "--no-instructions", "--step-limit", String(input.stepLimit), "--cwd", input.workspaceDir];
   if (input.resume) args.push("--resume", input.resume.sessionRef);
   if (input.resume?.mode === "branch") args.push("--at", String(branchIndex(input.resume)), "--fork");
   if (input.resume?.mode === "fork") args.push("--fork");
   args.push("-t", input.prompt);
   const env = { ...process.env, UMBRA_HOME_OVERRIDE: input.homeDir, UMBRA_BANNER: "0", UMBRA_STATUS_BAR: "0", UMBRA_FULLSCREEN: "0" };
-  return { command: UMBRA_BIN, args, env, cwd: input.workspaceDir, artifacts: { trajectoryPath, outputFiles: [trajectoryPath] } };
+  return { command: UMBRA_BIN, args, env, cwd: input.workspaceDir, artifacts: { trajectoryPath, homeDir: input.homeDir, startedAt: Date.now() } };
 }
 
 /**
@@ -101,6 +105,35 @@ function branchIndex(resume) {
 }
 
 /**
+ * Returns the session index entry the phase wrote: the entry under `<home>/.umbra/sessions`
+ * updated last, at or after the phase started. A new session and a resumed one both update their
+ * entry at the start and at the end of a turn.
+ * @param homeDir - the isolated home
+ * @param startedAt - when the phase was launched, in ms
+ */
+function phaseSession(homeDir, startedAt) {
+  const dir = path.join(homeDir, ".umbra", "sessions");
+  if (!fs.existsSync(dir)) return null;
+  const entries = fs.readdirSync(dir).filter((name) => name.endsWith(".json")).map((name) => readJson(path.join(dir, name), null)).filter(Boolean);
+  const touched = entries.filter((entry) => (entry.updated_at || 0) * 1000 >= startedAt - 1000);
+  touched.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+  return touched[0] || null;
+}
+
+/**
+ * Writes the phase's session as trajectory JSON with `umbra export`, in a process of its own so
+ * its writes are not counted as the agent's. A binary from before `umbra export` (task-2643, E17)
+ * writes the trajectory JSON itself, and the copy is taken from that file.
+ * @param session - the session index entry
+ * @param out - where to write the JSON
+ */
+function exportSession(session, out) {
+  const exported = spawnSync(UMBRA_BIN, ["export", session.journal || session.trajectory, "-o", out], { encoding: "utf8", windowsHide: true, env: { ...process.env, UMBRA_BANNER: "0" } });
+  if (exported.status === 0 && fs.existsSync(out)) return;
+  if (session.trajectory && fs.existsSync(session.trajectory)) fs.copyFileSync(session.trajectory, out);
+}
+
+/**
  * Returns the file Umbra resumes a session from: the journal when the session index names one,
  * otherwise the trajectory.
  * @param homeDir - the isolated home
@@ -119,7 +152,9 @@ export function sessionStoreFile(homeDir, sessionRef) {
  */
 export function readArtifacts(launch) {
   const file = launch.artifacts.trajectoryPath;
-  const journal = file.replace(/\.json$/, ".journal.jsonl");
+  const session = phaseSession(launch.artifacts.homeDir, launch.artifacts.startedAt);
+  const journal = session?.journal || file.replace(/\.json$/, ".journal.jsonl");
+  if (session) exportSession(session, file);
   if (!fs.existsSync(file) && !fs.existsSync(journal)) return { sessionRef: null, sessionValid: false, sessionDetail: "no trajectory written", malformedToolCalls: 0, agentExitStatus: null, toolCalls: 0, compactions: 0 };
   let trajectory;
   try { trajectory = newestRecord(file, journal); } catch (error) {
