@@ -8,6 +8,7 @@ import path from "node:path";
 import { scorecardCells } from "./scorecardCells.mjs";
 
 const THRESHOLDS = [1000, 2000, 3000, 4000];
+const LIMITS = [2000, 3000, 4000, 6000, 8000];
 const POSITIONS = [["1", 1, 1], ["2 to 5", 2, 5], ["6 to 20", 6, 20], ["21 and later", 21, Infinity]];
 
 /**
@@ -80,11 +81,13 @@ export function agentProfile(cells) {
   const sorted = [...all].sort((a, b) => a - b);
   const above = THRESHOLDS.map((t) => { const big = all.filter((v) => v > t); return { threshold: t, requests: big.length, share: total ? big.reduce((a, b) => a + b, 0) / total : 0 }; });
   const byPosition = POSITIONS.map(([label, from, to]) => ({ label, reasoning: cells.reduce((sum, c) => sum + chats(c).filter((_, i) => i + 1 >= from && i + 1 <= to).reduce((a, b) => a + b, 0), 0) / reps }));
+  const usage = cells.flatMap((c) => c.requests.filter((r) => r.kind === "chat" && r.usage).map((r) => r.usage));
+  const replyLimits = LIMITS.map((limit) => ({ limit, savedPerRep: usage.reduce((s, u) => s + Math.max(0, (u.reasoning_tokens || 0) - limit), 0) / reps, cutWhileThinking: usage.filter((u) => (u.reasoning_tokens || 0) > limit).length, cutAfterThinking: usage.filter((u) => (u.reasoning_tokens || 0) <= limit && (u.completion_tokens || 0) > limit).length, replies: usage.length }));
   const replies = cells.flatMap((c) => toolCallsPerReply(c.dir));
   const toolReplies = replies.filter((n) => n > 0);
   return {
     reps, cells: cells.length, requests: all.length, reasoningPerRep: total / reps,
-    percentiles: Object.fromEntries([50, 90, 95, 99, 100].map((p) => [p, percentile(sorted, p)])), above, byPosition,
+    percentiles: Object.fromEntries([50, 90, 95, 99, 100].map((p) => [p, percentile(sorted, p)])), above, byPosition, replyLimits,
     byCategory: perRepByKey(cells, (c) => c.result.category, reps), byTask: perRepByKey(cells, (c) => c.result.taskId, reps),
     toolCalls: { replies: replies.length, withTools: toolReplies.length, multi: toolReplies.filter((n) => n > 1).length, mean: toolReplies.length ? toolReplies.reduce((a, b) => a + b, 0) / toolReplies.length : 0 },
   };
@@ -108,6 +111,7 @@ function renderAgent(agent, p, topTasks) {
   const lines = [`## ${agent}`, "", `${p.cells} cells, ${p.reps} reps, ${n0(p.requests)} requests, ${n0(p.reasoningPerRep)} reasoning tokens per rep.`, ""];
   lines.push(`Reasoning tokens per request: median ${n0(p.percentiles[50])}, 90th ${n0(p.percentiles[90])}, 95th ${n0(p.percentiles[95])}, 99th ${n0(p.percentiles[99])}, largest ${n0(p.percentiles[100])}.`, "");
   lines.push("| Requests above | Requests | Share of reasoning tokens |", "|---|---|---|", ...p.above.map((a) => `| ${n0(a.threshold)} | ${a.requests} | ${(a.share * 100).toFixed(1)}% |`), "");
+  lines.push("| Reply limit | Reasoning above the limit, per rep | Replies still thinking at the limit | Replies cut after thinking ended |", "|---|---|---|---|", ...p.replyLimits.map((r) => `| ${n0(r.limit)} | ${n0(r.savedPerRep)} | ${r.cutWhileThinking} | ${r.cutAfterThinking} (${((r.cutAfterThinking / Math.max(1, r.replies)) * 100).toFixed(1)}%) |`), "");
   lines.push("| Request position in the cell | Reasoning tokens per rep |", "|---|---|", ...p.byPosition.map((b) => `| ${b.label} | ${n0(b.reasoning)} |`), "");
   lines.push("| Category | Reasoning per rep | Requests per passed cell | Passed |", "|---|---|---|---|");
   for (const [name, c] of Object.entries(p.byCategory).sort((a, b) => b[1].reasoning - a[1].reasoning)) lines.push(`| ${name} | ${n0(c.reasoning)} | ${c.passed ? (c.requests / c.passed).toFixed(1) : "n/a"} | ${c.passed} of ${c.cells} |`);
