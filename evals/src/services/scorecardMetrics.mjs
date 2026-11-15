@@ -79,6 +79,7 @@ function costMetrics(cells) {
   return {
     promptTokens: prompt, uncachedPromptTokens: prompt - cached, completionTokens: sum(usage.map((u) => u.completion_tokens)),
     reasoningTokens: sum(usage.map((u) => u.reasoning_tokens)), requests: chats.length,
+    thinkingOffRequests: chats.filter((r) => r.agentSampling?.enable_thinking === false).length,
     firstRequestPromptTokens: mean(firstPrompts), cacheHitRate: ratio(cached, prompt),
   };
 }

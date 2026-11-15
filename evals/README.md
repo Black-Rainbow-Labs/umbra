@@ -114,7 +114,10 @@ scorecard.md, scorecard.json
 through chunk by chunk.
 
 - On `POST /v1/chat/completions` it sets `temperature` 0.6, `top_p` 0.95, `top_k` 20 and
-  `chat_template_kwargs.enable_thinking` true (`src/utils/config.mjs`), and sets
+  `chat_template_kwargs.enable_thinking` true (`src/utils/config.mjs`), except on a request where the
+  agent itself sent `enable_thinking: false` (Umbra does that only for the resend after a reply cut
+  at its `reply_limit`; pi always sends true; the scorecard reports how many such requests there
+  were), and sets
   `stream_options.include_usage` when the request streams. Messages, tools and `max_tokens`
   are not changed. What the agent itself asked for is kept in each record's `agentSampling`,
   including a reasoning budget for one reply under any of the names servers use

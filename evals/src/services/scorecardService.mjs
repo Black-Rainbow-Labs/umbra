@@ -28,6 +28,7 @@ export const HEAD_TO_HEAD = [
   ["compaction.compactionMeanScore", "Compaction mean score", true], ["compaction.windowExceededRequests", "Requests over the context window", false],
   ["compaction.cacheHitRateAfterCompaction", "Cache hit rate, 5 requests after a compaction", true], ["compaction.peakPromptTokensWithWindow", "Peak prompt tokens on window tasks", false],
   ["overall.isolationBreaches", "Runs that reached evals/tasks", false], ["overall.outsidePathRuns", "Runs that named a path outside the workspace (reported)", false, true],
+  ["overall.thinkingOffRequests", "Requests the agent sent with thinking off (reported)", false, true],
   ["hard.passRate", "Hard tier pass rate", true], ["hard.meanScore", "Hard tier mean score", true],
 ];
 

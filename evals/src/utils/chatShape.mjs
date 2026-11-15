@@ -14,6 +14,8 @@ export function messageHashes(messages) {
 
 /**
  * Applies the run's sampling settings to a chat request body. Messages and tools are left alone.
+ * Thinking is turned on unless the agent itself asked for it off on this request (task-2712: Umbra's
+ * resend after a reply cut at its reply limit). pi never sends false.
  * @param body - the parsed request JSON, changed in place
  * @param sampling - the SamplingConfig to apply
  */
@@ -21,7 +23,8 @@ export function applySampling(body, sampling) {
   body.temperature = sampling.temperature;
   body.top_p = sampling.top_p;
   body.top_k = sampling.top_k;
-  if (sampling.enableThinking !== null && sampling.enableThinking !== undefined) body.chat_template_kwargs = { ...(body.chat_template_kwargs || {}), enable_thinking: sampling.enableThinking };
+  const agentOff = body.chat_template_kwargs?.enable_thinking === false;
+  if (sampling.enableThinking !== null && sampling.enableThinking !== undefined && !agentOff) body.chat_template_kwargs = { ...(body.chat_template_kwargs || {}), enable_thinking: sampling.enableThinking };
   if (body.stream === true) body.stream_options = { ...(body.stream_options || {}), include_usage: true };
   return body;
 }
