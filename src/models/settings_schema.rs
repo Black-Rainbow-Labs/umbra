@@ -164,6 +164,7 @@ const ENVIRONMENT_AND_DISCOVERY: &[SettingSpec] = &[
     s!("environment.max_timeout", Environment, "Maximum timeout", "The most seconds the model may give one command with the bash timeout argument.", Integer { min: 1, max: 86_400 }, Next),
     s!("environment.persistent_shell", Environment, "Persistent shell", "Local bash: the working directory and exported variables carry over from one command to the next.", Toggle, Next),
     s!("environment.workspace_guard", Environment, "Workspace guard", "A command naming a path outside the working directory: block does not run it, ask asks in confirm mode, off runs it.", Choice(GUARD_MODES), Next),
+    s!("environment.output_limit_chars", Environment, "Output limit", "The most characters of a command's output the model sees, half from each end.", Integer { min: 1_000, max: 1_000_000 }, Next),
     s!("environment.allowed_paths", Environment, "Allowed paths", "Folders the workspace guard allows besides the working directory.", List, Next),
     s!("sources.*", Discovery, "Source", "Read the files of this other harness.", Toggle, Next),
     s!("instructions.enabled", Discovery, "Instructions", "Read CLAUDE.md, AGENTS.md and similar files.", Toggle, Next),

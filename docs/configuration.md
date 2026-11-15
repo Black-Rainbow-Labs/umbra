@@ -44,6 +44,7 @@ max_timeout = 600                      # the most seconds the model may ask for 
 persistent_shell = true                # each command starts in the folder and with the variables the last one ended with
 workspace_guard = "block"              # block, ask or off: a command that names a path outside the working directory
 allowed_paths = []                     # more folders the workspace guard allows
+output_limit_chars = 10000             # the most characters of a command's output the model sees, half from each end
 shell = []                             # empty means bash, found automatically
 image = ""                             # docker only
 run_args = ["--rm"]                    # docker only
@@ -177,6 +178,7 @@ detect_paths = true                    # attach image files named in a task or a
 | `environment.max_timeout` | 600 | The most seconds the model may give one command with the `timeout` argument. |
 | `environment.persistent_shell` | true | Local bash only: each command starts in the folder and with the exported variables the previous command ended with. `false` starts every command fresh. |
 | `environment.workspace_guard` | `block` | Local only. Before a command runs, Umbra looks at the paths its text names. A path outside the working directory is refused with `block`: the command does not run, and the model is told which path it named and to work inside the working directory. `ask` asks you first in confirm mode and refuses in yolo mode or without a terminal. `off` runs every command. After each command, a shell that ended in an outside folder is moved back to the working directory and the model is told. The working directory, the temp folder, `~/.umbra`, the program folders (`C:/Program Files`, `C:/Windows` and the Git folder on Windows; `/usr`, `/bin`, `/etc` and the like elsewhere), the folders on PATH, `environment.allowed_paths`, and any path you typed in a message are allowed. The check reads the command's text, so a command that builds a path while it runs is not stopped. It keeps the model from searching your disk; it is not a sandbox. |
+| `environment.output_limit_chars` | 10000 | The most characters of a command's output the model is shown: half from the start and half from the end, with the number of characters left out between them. At 20000 or more the system prompt asks the model to read a file of under about 500 lines whole with `cat`, and a longer one in parts of a few hundred lines. Umbra itself keeps at most 1 MB from each end of every output. |
 | `environment.allowed_paths` | empty | More folders the workspace guard allows, such as `["~/shared/data"]`. |
 | `environment.shell` | bash | The program and flags that run a command string, such as `["zsh", "-c"]`. |
 | `providers.<name>.*` | see [models](providers.md) | Endpoints, keys, token limits and prices. |

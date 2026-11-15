@@ -185,6 +185,9 @@ pub struct EnvironmentConfig {
     /// Folders the workspace guard allows besides the working directory, the temp folder,
     /// Umbra's own folder, the program folders and the folders on PATH.
     pub allowed_paths: Vec<String>,
+    /// The most characters of a command's output the model is shown, half from the start and half
+    /// from the end (task-2712, E30). At 20,000 or more the system prompt asks for whole file reads.
+    pub output_limit_chars: usize,
     pub image: String,
     pub docker_executable: String,
     pub run_args: Vec<String>,
@@ -208,6 +211,7 @@ impl Default for EnvironmentConfig {
             persistent_shell: true,
             workspace_guard: "block".into(),
             allowed_paths: Vec::new(),
+            output_limit_chars: 10_000,
             env,
             image: String::new(),
             docker_executable: "docker".into(),

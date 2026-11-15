@@ -2,7 +2,9 @@
 <exception>{{output.exception_info}}</exception>
 {% endif -%}
 <returncode>{{output.returncode}}</returncode>
-{% if output.output | length < 10000 -%}
+{%- set limit = output_limit if output_limit is defined else 10000 -%}
+{%- set half = limit // 2 -%}
+{% if output.output | length < limit -%}
 <output>
 {{ output.output -}}
 </output>
@@ -14,15 +16,15 @@ If you're looking at a file you can try use head, tail or sed to view a smaller 
 If you're using grep or find and it produced too much output, you can use a more selective search pattern.
 If you really need to see something from the full command's output, you can redirect output to a file and then search in that file.
 </warning>
-{%- set elided_chars = output.output | length - 10000 -%}
+{%- set elided_chars = output.output | length - 2 * half -%}
 <output_head>
-{{ output.output[:5000] }}
+{{ output.output[:half] }}
 </output_head>
 <elided_chars>
 {{ elided_chars }} characters elided
 </elided_chars>
 <output_tail>
-{{ output.output[-5000:] }}
+{{ output.output[-half:] }}
 </output_tail>
 {%- endif -%}
 {%- if output.output_file is defined and output.output_file %}

@@ -71,7 +71,7 @@ impl Environment for DockerEnvironment {
 
     /// Values the prompt templates can use.
     fn template_vars(&self) -> Value {
-        json!({ "cwd": if self.config.cwd.is_empty() { "/" } else { &self.config.cwd }, "timeout": self.config.timeout, "image": self.config.image, "environment_kind": "docker" })
+        json!({ "cwd": if self.config.cwd.is_empty() { "/" } else { &self.config.cwd }, "timeout": self.config.timeout, "image": self.config.image, "environment_kind": "docker", "output_limit": self.config.output_limit_chars })
     }
 
     /// The settings recorded in the trajectory.

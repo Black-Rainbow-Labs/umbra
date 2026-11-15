@@ -116,6 +116,24 @@ mod tests {
     }
 
     #[test]
+    fn the_output_limit_setting_sets_how_much_output_the_model_sees() {
+        let long = Observation { output: "y".repeat(100_000), returncode: 0, ..Default::default() };
+        let tools = render_observation(OBSERVATION_TOOLS, &json!({ "output_limit": 24_000 }), &long).unwrap();
+        let parsed: Value = serde_json::from_str(&tools).unwrap();
+        assert_eq!(parsed["output_head"].as_str().unwrap().len() + parsed["output_tail"].as_str().unwrap().len(), 24_000);
+        assert_eq!(parsed["elided_chars"], 76_000);
+        let text = render_observation(OBSERVATION_TEXT, &json!({ "output_limit": 24_000 }), &long).unwrap();
+        assert!(text.contains("76000 characters elided"));
+        let short = Observation { output: "z".repeat(20_000), returncode: 0, ..Default::default() };
+        let whole: Value = serde_json::from_str(&render_observation(OBSERVATION_TOOLS, &json!({ "output_limit": 24_000 }), &short).unwrap()).unwrap();
+        assert_eq!(whole["output"].as_str().unwrap().len(), 20_000);
+        let vars = |limit: u64| json!({ "task": "x", "finish": "reply", "action_format": "tools", "system": "Linux", "release": "", "version": "", "machine": "x", "cwd": "/w", "shell": "bash", "mcp_tools": [], "instructions": [], "skills": [], "mcp_instructions": [], "output_limit": limit });
+        let reply = Templates::resolve(&TemplatesConfig::default(), ActionFormat::Tools, Finish::Reply);
+        assert!(render(&reply.system, &vars(24_000)).unwrap().contains("Read a file whole with `cat`"));
+        assert!(render(&reply.system, &vars(10_000)).unwrap().contains("sed -n '1,120p' file"));
+    }
+
+    #[test]
     fn renders_the_length_branch_of_the_format_error() {
         let message = render_format_error(FORMAT_ERROR_TOOLS, "No tool calls", "length", false).unwrap();
         assert!(message.contains("output token limit"));

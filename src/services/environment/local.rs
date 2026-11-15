@@ -86,7 +86,7 @@ impl Environment for LocalEnvironment {
     /// path of the running Umbra binary, which the agent can run to change Umbra itself.
     fn template_vars(&self) -> Value {
         let umbra_bin = std::env::current_exe().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-        json!({ "cwd": self.cwd.to_string_lossy(), "timeout": self.config.timeout, "shell": self.shell.join(" "), "environment_kind": "local", "umbra_bin": umbra_bin, "persistent_shell": self.state_file.is_some() })
+        json!({ "cwd": self.cwd.to_string_lossy(), "timeout": self.config.timeout, "shell": self.shell.join(" "), "environment_kind": "local", "umbra_bin": umbra_bin, "persistent_shell": self.state_file.is_some(), "output_limit": self.config.output_limit_chars })
     }
 
     /// Removes the shell state file.

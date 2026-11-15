@@ -1,4 +1,6 @@
-{%- if output.output | length < 10000 -%}
+{%- set limit = output_limit if output_limit is defined else 10000 -%}
+{%- set half = limit // 2 -%}
+{%- if output.output | length < limit -%}
 {
   "returncode": {{ output.returncode }},
   "output": {{ output.output | tojson }}
@@ -8,9 +10,9 @@
 {%- else -%}
 {
   "returncode": {{ output.returncode }},
-  "output_head": {{ output.output[:5000] | tojson }},
-  "output_tail": {{ output.output[-5000:] | tojson }},
-  "elided_chars": {{ output.output | length - 10000 }},
+  "output_head": {{ output.output[:half] | tojson }},
+  "output_tail": {{ output.output[-half:] | tojson }},
+  "elided_chars": {{ output.output | length - 2 * half }},
   "warning": "Output too long."
   {%- if output.exception_info %}, "exception_info": {{ output.exception_info | tojson }}{% endif %}
   {%- if output.output_file is defined and output.output_file %}, "full_output_file": {{ output.output_file | tojson }}, "note": "The whole output is in full_output_file: search it with grep -n or read a part with sed -n instead of running the command again."{% endif %}
