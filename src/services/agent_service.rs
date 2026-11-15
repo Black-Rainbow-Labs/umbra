@@ -32,7 +32,7 @@ use super::tool_search_service::{describe_found, is_tool_search, max_results, se
 use super::mcp::McpManager;
 use super::prompt_service::{render, render_format_error, render_observation, Templates};
 use super::providers::anthropic::RAW_CONTENT_KEY;
-use super::providers::{Provider, ProviderError, ToolSpec};
+use super::providers::{Provider, ProviderError, ReplyKind, ToolSpec};
 use crate::models::action::{Action, Observation};
 use crate::models::compaction::{CompactionKind, CompactionReason, CompactionRecord};
 use crate::models::config::{ActionFormat, Finish, Mode, UmbraConfig};
@@ -135,6 +135,9 @@ pub struct TurnEnd {
     pub submission: String,
 }
 
+/// The line the model gets after a reply cut at the reply limit (task-2712, E29).
+pub const REPLY_LIMIT_TEXT: &str = "Your thinking reached the limit for one reply. Act now: send the next command, or the final answer if you are finished.";
+
 /// A run in progress.
 pub struct Agent {
     parts: AgentParts,
@@ -179,6 +182,9 @@ pub struct Agent {
     trajectory_written: Cell<Option<u64>>,
     /// The workspace guard, unless it is off or commands do not run on this machine (task-2712).
     guard: Option<GuardState>,
+    /// Set when a reply was cut at the provider's reply limit: the next request is the resend
+    /// (task-2712, E29).
+    cut_resend: bool,
 }
 
 /// What the agent tracks for compaction.
@@ -216,7 +222,7 @@ impl Agent {
         let finish_check = FinishCheck::new(parts.config.finish_check && parts.config.finish == Finish::Reply && parts.config.environment.kind == "local");
         let journal = JournalWriter::new(journal_path(&parts.trajectory_path));
         let guard = GuardState::from_config(&parts.config.environment, &parts.cwd, parts.environment.is_local(), &crate::utils::paths::umbra_home());
-        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, index_written: false, trajectory_written: Cell::new(None), guard };
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, index_written: false, trajectory_written: Cell::new(None), guard, cut_resend: false };
         agent.rebuild_tools();
         agent
     }
@@ -799,6 +805,9 @@ impl Agent {
         };
         self.record_usage(&response);
         self.report_usage();
+        if response.finish_reason == "length" && self.parts.provider.reply_limited() {
+            return Ok(self.resend_after_cut(&response));
+        }
         let actions = match self.parse_actions(&response) {
             Ok(Parsed::Actions(actions)) => actions,
             Ok(Parsed::Reply) => return Ok(self.reply_ends_turn(&response)),
@@ -939,6 +948,8 @@ impl Agent {
     /// Calls the model once and keeps the request size it reports, for the next estimate.
     fn call_model_once(&mut self) -> Result<ModelResponse, ProviderError> {
         let sent = self.messages.len();
+        let kind = if std::mem::take(&mut self.cut_resend) { ReplyKind::ResendAfterCut } else { ReplyKind::Normal };
+        self.parts.provider.set_reply_kind(kind);
         let response = self.parts.provider.complete(&self.messages, &self.tools)?;
         let usage = &response.usage;
         let tokens = usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
@@ -1061,6 +1072,7 @@ impl Agent {
         }
         self.show_status(Phase::Compacting);
         let vars = self.template_vars("");
+        self.parts.provider.set_reply_kind(ReplyKind::Summary);
         let inputs = SummaryInputs { provider: self.parts.provider.as_mut(), tools: &self.tools, vars: &vars, summary_template: &self.templates.compact_summary, resume_template: &self.templates.compact_resume, focus };
         let outcome = match summarize(&self.messages, keep_recent, inputs) {
             Ok(outcome) => outcome,
@@ -1178,6 +1190,21 @@ impl Agent {
             return Step::Continue;
         }
         Step::Exit(REPLIED_STATUS.into(), response.content.trim().to_string())
+    }
+
+    /// A reply cut at the provider's reply limit (task-2712, E29): it is kept in the history with
+    /// its reasoning and without its text or tool calls, one line asks the model to act, and the
+    /// next request goes out with the normal limit. A cut resend is an ordinary format error.
+    /// @param response - the cut reply
+    fn resend_after_cut(&mut self, response: &ModelResponse) -> Step {
+        let mut cut = response.clone();
+        cut.content.clear();
+        cut.tool_calls.clear();
+        self.messages.push(assistant_message(&cut, &[]));
+        self.messages.push(Message::user(REPLY_LIMIT_TEXT).with_extra(json!({ "interrupt_type": "ReplyLimit" })));
+        self.cut_resend = true;
+        show_event(Tone::Info, "↺", "the reply reached the reply limit; asked the model to act now");
+        Step::Continue
     }
 
     /// Tells the model its reply could not be used. As in mini-swe-agent, the bad reply itself is

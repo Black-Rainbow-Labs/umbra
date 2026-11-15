@@ -265,6 +265,13 @@ pub struct ProviderConfig {
     /// `chat_template_kwargs.enable_thinking`, and `first` thinks only on the first request of a
     /// turn (the one that answers a person's message). Unset leaves it to the server.
     pub thinking: Option<String>,
+    /// OpenAI compatible servers: the `max_tokens` of an ordinary reply, smaller than `max_tokens`
+    /// (task-2712, E29). A reply cut at this limit is kept with its reasoning and asked again once
+    /// with the normal limit. Compaction summaries use the normal limit. Unset means no reply limit.
+    pub reply_limit: Option<u32>,
+    /// How the reply after a cut is asked for: `thinking_off` (the default) sends
+    /// `chat_template_kwargs.enable_thinking: false`, `thinking_on` leaves thinking on.
+    pub reply_limit_resend: Option<String>,
 }
 
 /// Which other harnesses' files Umbra reads. All are on by default.

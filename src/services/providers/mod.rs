@@ -86,6 +86,19 @@ pub fn is_overflow_text(body: &str) -> bool {
     OVERFLOW_PHRASES.iter().any(|phrase| lower.contains(phrase))
 }
 
+/// What the next request is, for a provider with a reply limit (task-2712, E29).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReplyKind {
+    /// An ordinary step: the reply limit applies.
+    #[default]
+    Normal,
+    /// The step after a reply was cut at the reply limit: the normal limit, and with
+    /// `reply_limit_resend = "thinking_off"` no thinking.
+    ResendAfterCut,
+    /// A compaction summary, which needs room for a long reply: the normal limit.
+    Summary,
+}
+
 /// One model behind one API.
 pub trait Provider: Send {
     /// Sends the conversation and returns the model's reply.
@@ -102,6 +115,19 @@ pub trait Provider: Send {
     /// The model's context window in tokens, when the provider can find it out.
     fn context_window(&mut self) -> Option<u64> {
         None
+    }
+
+    /// Says what the next requests are, until it is called again. Only a provider with a
+    /// `reply_limit` acts on it.
+    /// @param kind - normal, a resend after a cut reply, or a compaction summary
+    fn set_reply_kind(&mut self, kind: ReplyKind) {
+        let _ = kind;
+    }
+
+    /// True when the last request was sent with the reply limit, so a reply that ended at
+    /// `finish_reason: length` was cut by that limit.
+    fn reply_limited(&self) -> bool {
+        false
     }
 }
 

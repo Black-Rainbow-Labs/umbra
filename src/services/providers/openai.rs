@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use super::credentials::api_key;
 use super::pricing::{cost_of, price_for};
-use super::{apply_extra_body, is_overflow_text, retry_count, with_retries, Provider, ProviderError, ToolSpec};
+use super::{apply_extra_body, is_overflow_text, retry_count, with_retries, Provider, ProviderError, ReplyKind, ToolSpec};
 use crate::models::config::ProviderConfig;
 use crate::models::message::{Message, Role, ToolCall};
 use crate::models::model_response::{ModelResponse, Usage};
@@ -20,6 +20,10 @@ pub struct OpenAiProvider {
     config: ProviderConfig,
     model: String,
     agent: ureq::Agent,
+    /// What the next requests are, for the reply limit.
+    kind: ReplyKind,
+    /// True when the last request was sent with the reply limit.
+    limited: bool,
 }
 
 impl OpenAiProvider {
@@ -27,7 +31,7 @@ impl OpenAiProvider {
     /// @param config - the provider settings, including `base_url`
     /// @param model - the model id the server expects
     pub fn new(config: ProviderConfig, model: &str) -> Self {
-        OpenAiProvider { config, model: model.to_string(), agent: http_agent(1800) }
+        OpenAiProvider { config, model: model.to_string(), agent: http_agent(1800), kind: ReplyKind::Normal, limited: false }
     }
 
     /// Builds the request body.
@@ -42,7 +46,7 @@ impl OpenAiProvider {
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.iter().map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.input_schema } })).collect());
         }
-        if let Some(max_tokens) = self.config.max_tokens.or_else(|| is_local_url(&self.config.base_url).then_some(LOCAL_MAX_TOKENS)) {
+        if let Some(max_tokens) = self.reply_max_tokens() {
             body["max_tokens"] = json!(max_tokens);
         }
         if let Some(temperature) = self.config.temperature {
@@ -51,7 +55,7 @@ impl OpenAiProvider {
         if self.config.preserve_thinking.unwrap_or_else(|| is_local_url(&self.config.base_url)) {
             body["chat_template_kwargs"] = json!({ "preserve_thinking": true });
         }
-        if let Some(enable) = thinking_for(self.config.thinking.as_deref(), messages) {
+        if let Some(enable) = thinking_for(self.config.thinking.as_deref(), messages).or_else(|| self.resend_without_thinking().then_some(false)) {
             if !body["chat_template_kwargs"].is_object() {
                 body["chat_template_kwargs"] = json!({});
             }
@@ -59,6 +63,21 @@ impl OpenAiProvider {
         }
         apply_extra_body(&mut body, &self.config);
         body
+    }
+
+    /// The `max_tokens` to send: the reply limit for an ordinary step when one is set, otherwise
+    /// `max_tokens`, or 16,000 for a server on this machine.
+    fn reply_max_tokens(&self) -> Option<u32> {
+        let normal = self.config.max_tokens.or_else(|| is_local_url(&self.config.base_url).then_some(LOCAL_MAX_TOKENS));
+        match (self.kind, self.config.reply_limit) {
+            (ReplyKind::Normal, Some(limit)) => Some(normal.map_or(limit, |n| n.min(limit))),
+            _ => normal,
+        }
+    }
+
+    /// True for the step after a cut reply when `reply_limit_resend` is not `thinking_on`.
+    fn resend_without_thinking(&self) -> bool {
+        self.kind == ReplyKind::ResendAfterCut && self.config.reply_limit.is_some() && self.config.reply_limit_resend.as_deref() != Some("thinking_on")
     }
 
     /// Returns true when replies are streamed, which is the default.
@@ -153,12 +172,24 @@ impl Provider for OpenAiProvider {
     /// @param tools - the tools offered to the model
     fn complete(&mut self, messages: &[Message], tools: &[ToolSpec]) -> Result<ModelResponse, ProviderError> {
         let body = self.request_body(messages, tools);
+        self.limited = self.kind == ReplyKind::Normal && self.config.reply_limit.is_some();
         with_retries(retry_count(&self.config), || self.send(&body))
     }
 
     /// The model id.
     fn model_name(&self) -> &str {
         &self.model
+    }
+
+    /// Remembers what the next requests are, for the reply limit.
+    /// @param kind - normal, a resend after a cut reply, or a compaction summary
+    fn set_reply_kind(&mut self, kind: ReplyKind) {
+        self.kind = kind;
+    }
+
+    /// True when the last request was sent with the reply limit.
+    fn reply_limited(&self) -> bool {
+        self.limited
     }
 
     /// The settings recorded in the trajectory.
@@ -609,6 +640,30 @@ mod tests {
         assert_eq!(body["max_tokens"], 4096);
         let body = OpenAiProvider::new(config("https://api.openai.com/v1", None), "m").request_body(&[], &[]);
         assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn the_reply_limit_applies_to_ordinary_steps_only() {
+        let config = |resend: Option<&str>| ProviderConfig { kind: "openai".into(), base_url: "http://127.0.0.1:8080/v1".into(), reply_limit: Some(4000), reply_limit_resend: resend.map(String::from), ..Default::default() };
+        let mut provider = OpenAiProvider::new(config(None), "m");
+        let body = provider.request_body(&[], &[]);
+        assert_eq!(body["max_tokens"], 4000);
+        assert!(body["chat_template_kwargs"].get("enable_thinking").is_none());
+        provider.set_reply_kind(ReplyKind::ResendAfterCut);
+        let body = provider.request_body(&[], &[]);
+        assert_eq!(body["max_tokens"], 16000);
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        provider.set_reply_kind(ReplyKind::Summary);
+        assert_eq!(provider.request_body(&[], &[])["max_tokens"], 16000);
+        let mut thinking_on = OpenAiProvider::new(config(Some("thinking_on")), "m");
+        thinking_on.set_reply_kind(ReplyKind::ResendAfterCut);
+        assert!(thinking_on.request_body(&[], &[])["chat_template_kwargs"].get("enable_thinking").is_none());
+        let unset = ProviderConfig { kind: "openai".into(), base_url: "http://127.0.0.1:8080/v1".into(), ..Default::default() };
+        let mut plain = OpenAiProvider::new(unset, "m");
+        plain.set_reply_kind(ReplyKind::ResendAfterCut);
+        let body = plain.request_body(&[], &[]);
+        assert_eq!(body["max_tokens"], 16000);
+        assert!(body["chat_template_kwargs"].get("enable_thinking").is_none(), "no reply limit, no change");
     }
 
     #[test]

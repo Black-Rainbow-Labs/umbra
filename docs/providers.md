@@ -169,6 +169,8 @@ rate can be read from the file.
 | `stream` | OpenAI compatible servers only: stream replies (default true). Set it to false for a server that rejects `stream` or `stream_options`. |
 | `send_reasoning` | OpenAI compatible servers only: send the streamed reasoning back with each assistant message (default true) |
 | `preserve_thinking` | OpenAI compatible servers only: send `chat_template_kwargs.preserve_thinking: true` (default true for a server on this machine) |
+| `reply_limit` | OpenAI compatible servers only: the `max_tokens` of an ordinary reply, below `max_tokens`. A reply cut at this limit while the model was still thinking is kept in the history with its reasoning and without its text or tool calls, the model is told "Your thinking reached the limit for one reply. Act now: send the next command, or the final answer if you are finished.", and the next request has the normal `max_tokens`. Compaction summaries always have the normal `max_tokens`. Unset means no reply limit. |
+| `reply_limit_resend` | `thinking_off` (the default) asks the reply after a cut with `chat_template_kwargs.enable_thinking: false`, so it acts on the thinking it already did. `thinking_on` leaves thinking on. |
 | `replay_file` | Replay only: the script file |
 
 ## Testing a provider

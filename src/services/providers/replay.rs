@@ -5,7 +5,8 @@
 //! `{"content": "...", "tool_calls": [{"name": "bash", "arguments": {"command": "ls"}}]}`, or
 //! `{"error": {"status": 400, "body": "prompt is too long"}}` to make that call fail the way a
 //! server would. An object may also have `"sleep_ms"`: the call waits that long first, the way a
-//! slow model does, and Ctrl+C ends the wait.
+//! slow model does, and Ctrl+C ends the wait. `"finish_reason"` sets the reason the reply ended,
+//! such as `length` for a reply cut at the reply limit.
 //!
 //! When `UMBRA_REPLAY_RECORD` names a file, every request is appended to it as one JSON line
 //! holding the messages and tool names, so a test can read exactly what the model was sent.
@@ -27,6 +28,10 @@ pub struct ReplayProvider {
     next: usize,
     model: String,
     file: String,
+    /// The `reply_limit` setting, so a script can test a reply cut at it.
+    reply_limit: Option<u32>,
+    kind: super::ReplyKind,
+    limited: bool,
 }
 
 impl ReplayProvider {
@@ -39,7 +44,7 @@ impl ReplayProvider {
         let text = std::fs::read_to_string(&file).with_context(|| format!("reading replay file {file}"))?;
         let replies: Value = serde_json::from_str(&text).with_context(|| format!("parsing replay file {file}"))?;
         let Value::Array(replies) = replies else { bail!("replay file {file} must hold a JSON array") };
-        Ok(ReplayProvider { replies, next: 0, model: model.to_string(), file })
+        Ok(ReplayProvider { replies, next: 0, model: model.to_string(), file, reply_limit: config.reply_limit, kind: super::ReplyKind::Normal, limited: false })
     }
 }
 
@@ -52,6 +57,7 @@ impl Provider for ReplayProvider {
             return self.title_reply();
         }
         record_request(messages, tools);
+        self.limited = self.kind == super::ReplyKind::Normal && self.reply_limit.is_some();
         while self.replies.get(self.next).is_some_and(|e| e.get("title_reply").is_some()) {
             self.next += 1;
         }
@@ -73,6 +79,17 @@ impl Provider for ReplayProvider {
     /// The model name.
     fn model_name(&self) -> &str {
         &self.model
+    }
+
+    /// Remembers what the next requests are, as the OpenAI provider does.
+    /// @param kind - the reply kind
+    fn set_reply_kind(&mut self, kind: super::ReplyKind) {
+        self.kind = kind;
+    }
+
+    /// True when `reply_limit` is set and the last request was an ordinary step.
+    fn reply_limited(&self) -> bool {
+        self.limited
     }
 
     /// The settings recorded in the trajectory.
@@ -127,6 +144,7 @@ fn scripted_response(entry: &Value, number: usize) -> ModelResponse {
         .enumerate()
         .map(|(i, c)| ToolCall { id: format!("replay_{number}_{i}"), name: c["name"].as_str().unwrap_or("bash").to_string(), arguments: c["arguments"].clone() })
         .collect();
-    let finish_reason = if tool_calls.is_empty() { "stop" } else { "tool_calls" };
+    let default_reason = if tool_calls.is_empty() { "stop" } else { "tool_calls" };
+    let finish_reason = entry["finish_reason"].as_str().unwrap_or(default_reason);
     ModelResponse { content: entry["content"].as_str().unwrap_or("").to_string(), tool_calls, finish_reason: finish_reason.into(), raw: entry.clone(), ..Default::default() }
 }

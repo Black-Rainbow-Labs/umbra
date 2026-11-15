@@ -101,6 +101,8 @@ const MODELS_AND_PROVIDERS: &[SettingSpec] = &[
     s!("providers.*.stream", Providers, "Stream", "OpenAI compatible servers: stream the reply so Ctrl+C stops generation.", Toggle, Call),
     s!("providers.*.send_reasoning", Providers, "Send reasoning back", "OpenAI compatible servers: send each reply's reasoning text back, so the server's prompt cache covers the whole history.", Toggle, Call),
     s!("providers.*.thinking", Providers, "Thinking", "Qwen style templates: on, off, or first (think only on the first request of a turn). Empty leaves it to the server.", Text, Call),
+    s!("providers.*.reply_limit", Providers, "Reply limit", "OpenAI compatible servers: max_tokens for an ordinary reply. A reply cut at it is asked again once with the normal limit. Empty means no reply limit.", Integer { min: 256, max: 1_000_000 }, Call),
+    s!("providers.*.reply_limit_resend", Providers, "Reply limit resend", "thinking_off (the default) or thinking_on: how the reply after a cut is asked for.", Text, Call),
     s!("providers.*.preserve_thinking", Providers, "Preserve thinking", "OpenAI compatible servers: ask the chat template to keep earlier turns' reasoning. On by default for a server on this machine.", Toggle, Call),
 ];
 

@@ -352,3 +352,26 @@ fn the_shell_is_moved_back_when_it_ends_outside_the_working_directory() {
     let pwd = tools[1]["extra"]["raw_output"].as_str().unwrap().trim().replace('\\', "/").to_lowercase();
     assert!(pwd.ends_with("/work"), "{pwd}");
 }
+
+#[test]
+fn a_reply_cut_at_the_reply_limit_is_kept_and_asked_again_once() {
+    let scratch = Scratch::new("reply-limit");
+    let work = scratch.path("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(scratch.path("home/.umbra")).unwrap();
+    let model = script(&scratch, json!([
+        { "content": "", "finish_reason": "length", "choices": [{ "message": { "reasoning_content": "thinking for a long time" } }] },
+        { "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo acted" } }] },
+        "Done."
+    ]));
+    std::fs::write(scratch.path("home/.umbra/config.toml"), format!("model = \"cut/{}\"\n[providers.cut]\nkind = \"replay\"\nreply_limit = 4000\n", model.trim_start_matches("replay/"))).unwrap();
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-y", "--no-mcp", "--exit-immediately", "--cwd", &slash(&work), "-o", &slash(&traj), "task"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let messages = read_trajectory(&traj)["messages"].as_array().unwrap().clone();
+    let limit = messages.iter().position(|m| m["extra"]["interrupt_type"] == "ReplyLimit").expect("the reply limit line");
+    assert_eq!(messages[limit - 1]["role"], "assistant", "the cut reply is kept");
+    assert!(messages[limit]["content"].as_str().unwrap().starts_with("Your thinking reached the limit"));
+    assert!(messages.iter().all(|m| m["extra"]["interrupt_type"] != "FormatError"), "not a format error");
+    assert_eq!(read_trajectory(&traj)["info"]["exit_status"], "Replied");
+}
