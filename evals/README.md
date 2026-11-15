@@ -116,7 +116,11 @@ through chunk by chunk.
 - On `POST /v1/chat/completions` it sets `temperature` 0.6, `top_p` 0.95, `top_k` 20 and
   `chat_template_kwargs.enable_thinking` true (`src/utils/config.mjs`), and sets
   `stream_options.include_usage` when the request streams. Messages, tools and `max_tokens`
-  are not changed. What the agent itself asked for is kept in each record's `agentSampling`.
+  are not changed. What the agent itself asked for is kept in each record's `agentSampling`,
+  including a reasoning budget for one reply under any of the names servers use
+  (`reasoning_budget_tokens`, `thinking_budget`, `thinking_token_budget`), which the proxy forwards
+  unchanged. `EVAL_DUMP_BODIES=<n>` writes the first n chat bodies of each cell, as the agent sent
+  them, next to `requests.jsonl` as `body-<k>.json`.
   All four fields were checked with direct requests on 2026-11-10: the server rejects a
   non numeric `temperature` or `top_k` with HTTP 400, so it parses them; temperature 1.8 gave
   varied answers where temperature 0, `top_k` 1 or `top_p` 0.01 gave the same answer every

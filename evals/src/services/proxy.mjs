@@ -55,8 +55,10 @@ async function handleRequest(ctx) {
   const isChat = req.method === "POST" && /\/chat\/completions$/.test(req.url.split("?")[0]);
   const record = baseRecord(req, state, started, isChat);
   if (isChat) {
+    const raw = body;
     body = prepareChatBody(body, ctx.options.sampling, record);
     state.chatCount += 1;
+    dumpBody(ctx.options, state, raw);
     state.phaseChatCount += 1;
     if (state.phaseChatCount === 1) state.phaseFirstChatAt = started;
     ctx.options.onChatRequest?.(state.phaseChatCount);
@@ -91,8 +93,31 @@ function prepareChatBody(raw, sampling, record) {
   let parsed;
   try { parsed = JSON.parse(raw.toString("utf8")); } catch { return raw; }
   Object.assign(record, describeRequest(parsed));
-  record.agentSampling = { temperature: parsed.temperature ?? null, top_p: parsed.top_p ?? null, top_k: parsed.top_k ?? null, max_tokens: parsed.max_tokens ?? parsed.max_completion_tokens ?? null, enable_thinking: parsed.chat_template_kwargs?.enable_thinking ?? null };
+  record.agentSampling = { temperature: parsed.temperature ?? null, top_p: parsed.top_p ?? null, top_k: parsed.top_k ?? null, max_tokens: parsed.max_tokens ?? parsed.max_completion_tokens ?? null, enable_thinking: parsed.chat_template_kwargs?.enable_thinking ?? null, reasoning_budget: reasoningBudgetOf(parsed) };
   return Buffer.from(JSON.stringify(applySampling(parsed, sampling)), "utf8");
+}
+
+/**
+ * Returns the reasoning budget an agent asked for in a chat body, under any of the field names
+ * servers use, or null (task-2712). The proxy forwards the field unchanged.
+ * @param parsed - the chat body
+ */
+function reasoningBudgetOf(parsed) {
+  const kwargs = parsed.chat_template_kwargs || {};
+  return parsed.reasoning_budget_tokens ?? parsed.thinking_budget ?? parsed.thinking_token_budget ?? kwargs.thinking_budget ?? kwargs.reasoning_budget ?? null;
+}
+
+/**
+ * With `EVAL_DUMP_BODIES=<n>`, writes the first n chat bodies of a cell, as the agent sent them,
+ * next to requests.jsonl as body-<k>.json. Used to compare what the two agents send.
+ * @param options - the proxy options, with requestsPath
+ * @param state - proxy state with chatCount
+ * @param raw - the raw request body
+ */
+function dumpBody(options, state, raw) {
+  const limit = Number(process.env.EVAL_DUMP_BODIES || 0);
+  if (!limit || state.chatCount > limit) return;
+  fs.writeFileSync(options.requestsPath.replace(/requests\.jsonl$/, `body-${state.chatCount}.json`), raw);
 }
 
 /**
