@@ -65,6 +65,7 @@ const FORMATS: &[&str] = &["tools", "text"];
 const FINISHES: &[&str] = &["reply", "submit"];
 const DEFER: &[&str] = &["auto", "always", "never"];
 const ENV_KINDS: &[&str] = &["local", "docker"];
+const GUARD_MODES: &[&str] = &["block", "ask", "off"];
 const KINDS: &[&str] = &["anthropic", "openai", "replay"];
 const AUTHS: &[&str] = &["auto", "api_key", "claude_code"];
 const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -162,6 +163,8 @@ const ENVIRONMENT_AND_DISCOVERY: &[SettingSpec] = &[
     s!("environment.forward_env", Environment, "Forwarded variables", "Host variables copied into the container when set.", List, Next),
     s!("environment.max_timeout", Environment, "Maximum timeout", "The most seconds the model may give one command with the bash timeout argument.", Integer { min: 1, max: 86_400 }, Next),
     s!("environment.persistent_shell", Environment, "Persistent shell", "Local bash: the working directory and exported variables carry over from one command to the next.", Toggle, Next),
+    s!("environment.workspace_guard", Environment, "Workspace guard", "A command naming a path outside the working directory: block does not run it, ask asks in confirm mode, off runs it.", Choice(GUARD_MODES), Next),
+    s!("environment.allowed_paths", Environment, "Allowed paths", "Folders the workspace guard allows besides the working directory.", List, Next),
     s!("sources.*", Discovery, "Source", "Read the files of this other harness.", Toggle, Next),
     s!("instructions.enabled", Discovery, "Instructions", "Read CLAUDE.md, AGENTS.md and similar files.", Toggle, Next),
     s!("instructions.max_bytes", Discovery, "Instructions budget", "Stop adding instruction files after this many bytes.", Integer { min: 0, max: 1_000_000_000 }, Next),

@@ -27,6 +27,7 @@ use super::output_spill_service::{outputs_dir, spill_long_output};
 use super::image_service::images_in_text;
 use super::interaction_service::{show_assistant, show_event, show_observation, show_reply_text, show_turn_end, show_user_text, Comment, Decision, HumanInput, Interaction, Tone, TurnSummary};
 use super::session_service::ResumedSession;
+use super::workspace_guard_service::{GuardMode, GuardState};
 use super::tool_search_service::{describe_found, is_tool_search, max_results, search_tools, should_defer, tool_search_spec, tool_search_tool};
 use super::mcp::McpManager;
 use super::prompt_service::{render, render_format_error, render_observation, Templates};
@@ -176,6 +177,8 @@ pub struct Agent {
     /// A hash of the trajectory JSON last written in this run, so an unchanged one is not
     /// written again.
     trajectory_written: Cell<Option<u64>>,
+    /// The workspace guard, unless it is off or commands do not run on this machine (task-2712).
+    guard: Option<GuardState>,
 }
 
 /// What the agent tracks for compaction.
@@ -212,7 +215,8 @@ impl Agent {
         let compaction = CompactionState { window: Some(window), ..Default::default() };
         let finish_check = FinishCheck::new(parts.config.finish_check && parts.config.finish == Finish::Reply && parts.config.environment.kind == "local");
         let journal = JournalWriter::new(journal_path(&parts.trajectory_path));
-        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, index_written: false, trajectory_written: Cell::new(None) };
+        let guard = GuardState::from_config(&parts.config.environment, &parts.cwd, parts.environment.is_local(), &crate::utils::paths::umbra_home());
+        let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, index_written: false, trajectory_written: Cell::new(None), guard };
         agent.rebuild_tools();
         agent
     }
@@ -1259,7 +1263,7 @@ impl Agent {
     /// @param action - the action
     fn execute_untimed(&mut self, action: &Action) -> Observation {
         match action {
-            Action::Bash { command, timeout, .. } => self.parts.environment.execute_timed(command, *timeout),
+            Action::Bash { command, timeout, .. } => self.run_guarded(command, *timeout),
             Action::Mcp { server, tool, arguments, .. } if is_tool_search(server, tool) => self.run_tool_search(arguments),
             Action::Mcp { server, tool, arguments, .. } if is_edit(server, tool) => run_edit(&self.parts.cwd, arguments),
             Action::Mcp { server, tool, arguments, .. } => {
@@ -1270,6 +1274,30 @@ impl Agent {
                 observation
             }
         }
+    }
+
+    /// Runs a bash command unless it names a path outside the working directory and the workspace
+    /// guard refuses it. After the command, a shell that ended outside the working directory is
+    /// moved back, and the model is told.
+    /// @param command - the command text
+    /// @param timeout - the timeout the model asked for, if any
+    fn run_guarded(&mut self, command: &str, timeout: Option<u64>) -> Observation {
+        let Some(guard) = self.guard.as_mut() else { return self.parts.environment.execute_timed(command, timeout) };
+        guard.learn_user_paths(&self.messages);
+        if let Some(path) = guard.first_hit(command, self.parts.environment.shell_dir().as_deref()) {
+            let root = guard.guard.root_display.clone();
+            let asked = guard.mode == GuardMode::Ask && self.parts.interaction.allow_outside_path(&path, &root);
+            if !asked {
+                return self.guard.as_ref().map(|g| g.refusal(&path)).unwrap_or_default();
+            }
+        }
+        let mut observation = self.parts.environment.execute_timed(command, timeout);
+        let moved = self.guard.as_ref().and_then(|g| g.moved_out(self.parts.environment.shell_dir().as_deref()));
+        if let Some((note, root)) = moved {
+            self.parts.environment.set_shell_dir(&root);
+            observation.output.push_str(&note);
+        }
+        observation
     }
 
     /// Appends one observation message per action. Actions without an output get a "not
@@ -1297,6 +1325,9 @@ impl Agent {
             let mut extra = json!({ "raw_output": observation.output, "returncode": observation.returncode, "exception_info": observation.exception_info, "timestamp": now_seconds(), "started_at": observation.started_at, "duration_ms": observation.duration_ms });
             if let Some(file) = &observation.output_file {
                 extra["output_file"] = json!(file);
+            }
+            if let Some(path) = &observation.blocked_path {
+                extra["blocked_path"] = json!(path);
             }
             self.messages.push(message.with_images(observation.images.clone()).with_extra(extra));
         }

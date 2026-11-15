@@ -11,6 +11,18 @@ and how to run every command in a Docker container.
 
 `mode = "yolo"` in `~/.umbra/config.toml` sets the mode every session starts in.
 
+In every mode, a command whose text names a path outside the working directory is not run on this
+machine, and the model gets this message instead of the output:
+
+```
+Not run. `~` is outside the working directory `C:/Users/jason/AppData/Local/Temp/app`. Work only inside the working directory. If something you need is not there, say so in your reply and stop looking for it elsewhere.
+```
+
+A path you typed in a message is allowed. `environment.workspace_guard = "ask"` asks you first in
+confirm mode, and `"off"` turns the check off. See
+[Configuration](configuration.md#settings). The check reads the command's text, so it is not a
+sandbox.
+
 ## Confirm mode
 
 ```text

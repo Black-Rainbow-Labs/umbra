@@ -112,6 +112,18 @@ impl Interaction {
         }
     }
 
+    /// With `workspace_guard = "ask"`: asks whether to run a command that names a path outside
+    /// the working directory. Only confirm mode with a terminal asks; everything else refuses.
+    /// @param path - the outside path the command names
+    /// @param root - the working directory
+    pub fn allow_outside_path(&mut self, path: &str, root: &str) -> bool {
+        if self.mode != Mode::Confirm || !self.interactive {
+            return false;
+        }
+        let question = format!("The command names `{path}`, outside the working directory `{root}`. Run it? [y/N]: ");
+        matches!(prompt_line(&question), Input::Line(line) if matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
+    }
+
     /// Reads a command typed by the person in human mode.
     pub fn read_human_command(&mut self) -> HumanInput {
         loop {

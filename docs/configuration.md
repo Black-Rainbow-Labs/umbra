@@ -42,6 +42,8 @@ cwd = ""                               # empty means the folder Umbra was starte
 timeout = 120                          # seconds before a command is killed, unless the model asks for another timeout
 max_timeout = 600                      # the most seconds the model may ask for one command
 persistent_shell = true                # each command starts in the folder and with the variables the last one ended with
+workspace_guard = "block"              # block, ask or off: a command that names a path outside the working directory
+allowed_paths = []                     # more folders the workspace guard allows
 shell = []                             # empty means bash, found automatically
 image = ""                             # docker only
 run_args = ["--rm"]                    # docker only
@@ -174,6 +176,8 @@ detect_paths = true                    # attach image files named in a task or a
 | `environment.timeout` | 120 | Seconds before a command and everything it started is killed. The model can give one command another timeout with the `timeout` argument of `bash`. |
 | `environment.max_timeout` | 600 | The most seconds the model may give one command with the `timeout` argument. |
 | `environment.persistent_shell` | true | Local bash only: each command starts in the folder and with the exported variables the previous command ended with. `false` starts every command fresh. |
+| `environment.workspace_guard` | `block` | Local only. Before a command runs, Umbra looks at the paths its text names. A path outside the working directory is refused with `block`: the command does not run, and the model is told which path it named and to work inside the working directory. `ask` asks you first in confirm mode and refuses in yolo mode or without a terminal. `off` runs every command. After each command, a shell that ended in an outside folder is moved back to the working directory and the model is told. The working directory, the temp folder, `~/.umbra`, the program folders (`C:/Program Files`, `C:/Windows` and the Git folder on Windows; `/usr`, `/bin`, `/etc` and the like elsewhere), the folders on PATH, `environment.allowed_paths`, and any path you typed in a message are allowed. The check reads the command's text, so a command that builds a path while it runs is not stopped. It keeps the model from searching your disk; it is not a sandbox. |
+| `environment.allowed_paths` | empty | More folders the workspace guard allows, such as `["~/shared/data"]`. |
 | `environment.shell` | bash | The program and flags that run a command string, such as `["zsh", "-c"]`. |
 | `providers.<name>.*` | see [models](providers.md) | Endpoints, keys, token limits and prices. |
 | `sources.<name>` | true | Read that tool's files. `--no-source <name>` turns one off for a run. |

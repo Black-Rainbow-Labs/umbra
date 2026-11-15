@@ -35,6 +35,23 @@ pub trait Environment {
 
     /// Releases anything the environment holds, such as a container.
     fn close(&mut self) {}
+
+    /// The shell's working directory after the last command, as the shell wrote it, when the
+    /// environment keeps one shell state for the session. None otherwise.
+    fn shell_dir(&self) -> Option<String> {
+        None
+    }
+
+    /// Moves the kept shell state to another working directory before the next command.
+    /// @param dir - the directory, in a form the shell's `cd` accepts
+    fn set_shell_dir(&mut self, dir: &str) {
+        let _ = dir;
+    }
+
+    /// True when commands run on this machine, so the workspace guard applies.
+    fn is_local(&self) -> bool {
+        false
+    }
 }
 
 /// Builds the environment named by `config.kind`.

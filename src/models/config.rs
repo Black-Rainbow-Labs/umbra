@@ -178,6 +178,13 @@ pub struct EnvironmentConfig {
     /// default since task-2643 (E10): on the hard tier it cut requests per passed task from 26 to
     /// 22 and completion tokens per passed task 21%, with no session scenario failing.
     pub persistent_shell: bool,
+    /// Local only: what happens to a command that names a path outside the working directory.
+    /// `block` (the default) does not run it and tells the model why, `ask` asks the person in
+    /// confirm mode and refuses otherwise, `off` runs it (task-2712, E28).
+    pub workspace_guard: String,
+    /// Folders the workspace guard allows besides the working directory, the temp folder,
+    /// Umbra's own folder, the program folders and the folders on PATH.
+    pub allowed_paths: Vec<String>,
     pub image: String,
     pub docker_executable: String,
     pub run_args: Vec<String>,
@@ -199,6 +206,8 @@ impl Default for EnvironmentConfig {
             max_timeout: 600,
             shell: Vec::new(),
             persistent_shell: true,
+            workspace_guard: "block".into(),
+            allowed_paths: Vec::new(),
             env,
             image: String::new(),
             docker_executable: "docker".into(),

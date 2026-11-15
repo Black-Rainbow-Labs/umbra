@@ -100,6 +100,45 @@ impl Environment for LocalEnvironment {
     fn describe(&self) -> Value {
         json!({ "environment": self.config, "environment_type": "umbra.local", "shell": self.shell })
     }
+
+    /// The working directory the last command ended in, read from the shell state file.
+    fn shell_dir(&self) -> Option<String> {
+        let text = std::fs::read_to_string(self.state_file.as_ref()?).ok()?;
+        text.lines().rev().find_map(|line| line.strip_prefix("cd ")).map(unquote_shell_word)
+    }
+
+    /// Rewrites the shell state file so the next command starts in `dir`.
+    /// @param dir - the directory
+    fn set_shell_dir(&mut self, dir: &str) {
+        let Some(state) = &self.state_file else { return };
+        let Ok(text) = std::fs::read_to_string(state) else { return };
+        let quoted = format!("cd '{}'", dir.replace('\'', "'\\''"));
+        let kept: Vec<String> = text.lines().filter(|line| !line.starts_with("cd ")).map(String::from).chain(std::iter::once(quoted)).collect();
+        let _ = std::fs::write(state, kept.join("\n") + "\n");
+    }
+
+    /// Commands run on this machine.
+    fn is_local(&self) -> bool {
+        true
+    }
+}
+
+/// Reads back a word bash's `printf %q` wrote: backslash escapes and `$'...'` quoting.
+/// @param word - the quoted word
+fn unquote_shell_word(word: &str) -> String {
+    let inner = word.strip_prefix("$'").and_then(|w| w.strip_suffix('\'')).or_else(|| word.strip_prefix('\'').and_then(|w| w.strip_suffix('\''))).unwrap_or(word);
+    let mut out = String::new();
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// Returns true for bash and the shells like it, which `exec 2>&1` and the state file work in.

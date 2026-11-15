@@ -291,3 +291,64 @@ fn with_persistent_shell_cd_and_export_carry_over_and_the_exit_code_is_kept() {
     assert!(printed.trim_end().ends_with("kept") && printed.contains("/sub"), "the second command started in sub with UMBRA_X set: {printed}");
     assert_eq!(second["returncode"], 1, "the command's own exit code is kept");
 }
+
+/// Runs four commands that leave the working directory and one that stays, with the given
+/// workspace guard setting, and returns the tool messages of the trajectory.
+/// @param name - the test's name
+/// @param guard - the `environment.workspace_guard` value
+fn run_outside_commands(name: &str, guard: &str) -> Vec<serde_json::Value> {
+    let scratch = Scratch::new(name);
+    let work = scratch.path("work");
+    std::fs::create_dir_all(&work).unwrap();
+    scratch.write("guard.toml", &format!("[environment]\nworkspace_guard = \"{guard}\"\n"));
+    let commands = ["ls ~", "cat /c/Users/x/y", "ls ../../..", "find / -maxdepth 0 -name a", "echo inside > in.txt && cat in.txt"];
+    let mut replies: Vec<serde_json::Value> = commands.iter().map(|c| json!({ "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": c } }] })).collect();
+    replies.push(json!("Done."));
+    let model = script(&scratch, json!(replies));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "-c", &slash(&scratch.path("guard.toml")), "--cwd", &slash(&work), "-o", &slash(&traj), "task"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    assert_eq!(std::fs::read_to_string(work.join("in.txt")).unwrap().trim(), "inside");
+    read_trajectory(&traj)["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").cloned().collect()
+}
+
+#[test]
+fn the_workspace_guard_refuses_commands_that_name_an_outside_path() {
+    let tools = run_outside_commands("guard-block", "block");
+    let named = ["~", "/c/Users/x/y", "../../..", "/"];
+    for (tool, path) in tools.iter().zip(named) {
+        let error = tool["extra"]["exception_info"].as_str().unwrap();
+        if path == "/c/Users/x/y" && !cfg!(windows) {
+            continue;
+        }
+        assert!(error.starts_with("Not run.") && error.contains(&format!("`{path}`")), "{error}");
+        assert_eq!(tool["extra"]["blocked_path"], path);
+    }
+    assert_eq!(tools[4]["extra"]["raw_output"].as_str().unwrap().trim(), "inside");
+}
+
+#[test]
+fn the_workspace_guard_off_runs_every_command() {
+    let tools = run_outside_commands("guard-off", "off");
+    assert!(tools.iter().all(|t| t["extra"]["blocked_path"].is_null()), "{tools:?}");
+    assert!(!tools[0]["extra"]["raw_output"].as_str().unwrap().is_empty(), "ls ~ ran");
+}
+
+#[test]
+fn the_shell_is_moved_back_when_it_ends_outside_the_working_directory() {
+    let scratch = Scratch::new("guard-cd");
+    let work = scratch.path("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let model = script(&scratch, json!([
+        { "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "cd \"$(echo Li4vLi4vLi4= | base64 -d)\"" } }] },
+        { "content": "", "tool_calls": [{ "name": "bash", "arguments": { "command": "pwd -W 2>/dev/null || pwd" } }] },
+        "Done."
+    ]));
+    let traj = scratch.path("run.traj.json");
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "--cwd", &slash(&work), "-o", &slash(&traj), "task"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let tools: Vec<_> = read_trajectory(&traj)["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").cloned().collect();
+    assert!(tools[0]["extra"]["raw_output"].as_str().unwrap().contains("was moved back"), "{:?}", tools[0]);
+    let pwd = tools[1]["extra"]["raw_output"].as_str().unwrap().trim().replace('\\', "/").to_lowercase();
+    assert!(pwd.ends_with("/work"), "{pwd}");
+}

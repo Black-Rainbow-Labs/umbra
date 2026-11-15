@@ -55,6 +55,10 @@ flowchart TD
   in the folder and with the exported variables the previous command ended with, as if one shell
   were kept for the session (`environment.persistent_shell`, on by default since task-2643; off,
   every command starts fresh and the model writes `cd src && make` in one command).
+- **Commands stay in the working directory.** A command whose text names a path outside it, such
+  as `find ~ -name x` or `cat ../../other/file`, is not run, and the model is told to work inside
+  the working directory (`environment.workspace_guard`, `block` by default). A path you typed in a
+  message is allowed. See [Configuration](configuration.md#settings).
 - **The history is one list.** The session journal, and the trajectory file written from it, hold exactly what the model saw.
 - **Stdin is closed.** A command that waits for input ends instead of waiting forever. After
   `environment.timeout` seconds, 120 by default, the command and everything it started are stopped. The model can pass a `timeout` argument to `bash` for one slow command, up to `environment.max_timeout`, 600 by default.

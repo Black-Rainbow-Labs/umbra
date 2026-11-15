@@ -30,3 +30,4 @@ pub mod tool_search_service;
 pub mod update_service;
 pub mod usage_service;
 pub mod work_clock;
+pub mod workspace_guard_service;

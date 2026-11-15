@@ -57,6 +57,9 @@ pub struct Observation {
     /// The file holding the whole output, when it was too long to show the model whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_file: Option<String>,
+    /// The outside path that made the workspace guard refuse the command, which then did not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_path: Option<String>,
 }
 
 impl Observation {
