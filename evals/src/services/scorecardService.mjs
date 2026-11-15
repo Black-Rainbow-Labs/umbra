@@ -8,12 +8,15 @@ import { agentScorecard } from "./scorecardMetrics.mjs";
 import { signTest, mean } from "../utils/stats.mjs";
 import { scorecardCells } from "./scorecardCells.mjs";
 import { renderMarkdown } from "./scorecardMarkdown.mjs";
+import { verdictOf, BEHIND_VERDICTS, perTaskDifferences, pairedBootstrap } from "./scorecardVerdict.mjs";
 
-// Each head to head metric: where it lives, its label, and whether higher is better.
+// Each head to head metric: where it lives, its label, whether higher is better, and, for a row
+// that is only reported, `true` in the fourth place: a reported row never goes on the list.
 export const HEAD_TO_HEAD = [
   ["overall.passRate", "Pass rate", true], ["overall.meanScore", "Mean score", true],
   ["overall.promptTokens", "Prompt tokens, total", false], ["overall.uncachedPromptTokens", "Uncached prompt tokens, total", false],
   ["overall.completionTokens", "Completion tokens, total", false], ["overall.reasoningTokens", "Reasoning tokens, total", false],
+  ["overall.reasoningTokensPerPass", "Reasoning tokens per passed task", false],
   ["overall.requests", "Requests, total", false], ["overall.promptTokensPerPass", "Prompt tokens per passed task", false],
   ["overall.uncachedPromptTokensPerPass", "Uncached prompt tokens per passed task", false], ["overall.completionTokensPerPass", "Completion tokens per passed task", false],
   ["overall.requestsPerPass", "Requests per passed task", false], ["overall.firstRequestPromptTokens", "First request prompt tokens (fixed overhead)", false],
@@ -24,7 +27,8 @@ export const HEAD_TO_HEAD = [
   ["overall.nonzeroExits", "Runs with a nonzero exit", false], ["compaction.compactionPassRate", "Compaction pass rate", true],
   ["compaction.compactionMeanScore", "Compaction mean score", true], ["compaction.windowExceededRequests", "Requests over the context window", false],
   ["compaction.cacheHitRateAfterCompaction", "Cache hit rate, 5 requests after a compaction", true], ["compaction.peakPromptTokensWithWindow", "Peak prompt tokens on window tasks", false],
-  ["overall.isolationBreaches", "Runs that reached evals/tasks", false], ["hard.passRate", "Hard tier pass rate", true], ["hard.meanScore", "Hard tier mean score", true],
+  ["overall.isolationBreaches", "Runs that reached evals/tasks", false], ["overall.outsidePathRuns", "Runs that named a path outside the workspace (reported)", false, true],
+  ["hard.passRate", "Hard tier pass rate", true], ["hard.meanScore", "Hard tier mean score", true],
 ];
 
 /**
@@ -48,28 +52,47 @@ function perRepValues(repCards, key) {
 /**
  * Builds one head to head row. Each agent's value is the mean of its per rep values, so a run of
  * 1 rep and a run of 3 reps are on the same scale. The noise band is the spread (largest minus
- * smallest) of pi's per rep values; a difference inside it is a tie. A tie at the best possible
- * value (0 errors, a 100% rate) is marked, because neither agent can do better.
+ * smallest) of pi's per rep values. The verdict is one of the five from `verdictOf`, and a row whose
+ * verdict is `pi` or `tie, pi ahead` is marked `behind`.
  * @param repCards - { umbra: scorecard per rep, pi: scorecard per rep }
  * @param metric - [path, label, higherIsBetter]
  */
 function headToHeadRow(repCards, metric) {
-  const [key, label, higherIsBetter] = metric;
+  const [key, label, higherIsBetter, reported = false] = metric;
   const piValues = perRepValues(repCards.pi, key);
   const umbra = mean(perRepValues(repCards.umbra, key));
   const pi = mean(piValues);
   const noise = piValues.length > 1 ? Math.max(...piValues) - Math.min(...piValues) : null;
-  let better = "n/a";
-  if (Number.isFinite(umbra) && Number.isFinite(pi)) {
-    const difference = umbra - pi;
-    if (difference === 0) better = "tie";
-    else if (noise !== null && Math.abs(difference) <= noise) better = "tie (noise)";
-    else better = (difference > 0) === higherIsBetter ? "umbra" : "pi";
-  }
+  const better = verdictOf({ key, umbra, pi, noise, higherIsBetter });
   const relative = Number.isFinite(umbra) && Number.isFinite(pi) && pi !== 0 ? (umbra - pi) / Math.abs(pi) : null;
-  const bestPossible = higherIsBetter ? /Rate|Score/i.test(key) && umbra === 1 : umbra === 0;
-  const tiedAtBest = better === "tie" && bestPossible;
-  return { key, label, higherIsBetter, umbra: umbra ?? null, pi: pi ?? null, noise, better, relative, tiedAtBest };
+  return { key, label, higherIsBetter, umbra: umbra ?? null, pi: pi ?? null, noise, better, relative, reported, behind: !reported && BEHIND_VERDICTS.has(better) };
+}
+
+/**
+ * Adds one pass rate row per task category, so a category where pi passes more shows on the
+ * list even when it is not one of the categories with rows of their own (task-2712).
+ * @param cards - { umbra, pi } scorecards over all reps
+ * @param repCards - { umbra, pi } scorecards per rep
+ */
+function categoryRows(cards, repCards) {
+  const names = Object.keys(cards.umbra?.perCategory || {}).filter((name) => cards.pi?.perCategory?.[name]).sort();
+  return names.map((name) => headToHeadRow(repCards, [`perCategory.${name}.passRate`, `Category pass rate: ${name}`, true]));
+}
+
+/**
+ * Paired bootstrap intervals over tasks for pass rate, mean score and reasoning tokens per rep.
+ * Reported beside the band; they do not decide a verdict.
+ * @param cells - every cell of the scorecard
+ */
+function bootstrapIntervals(cells) {
+  const reasoning = (cell) => cell.requests.filter((r) => r.kind === "chat").reduce((total, r) => total + (r.usage?.reasoning_tokens || 0), 0);
+  const tasks = (valueOf) => perTaskDifferences(cells, valueOf);
+  const passCount = tasks((c) => (c.result.pass ? 1 : 0)).length;
+  return {
+    passRate: pairedBootstrap(tasks((c) => (c.result.pass ? 1 : 0))),
+    meanScore: pairedBootstrap(tasks((c) => c.result.score)),
+    reasoningTokens: passCount ? pairedBootstrap(tasks(reasoning), { total: true }) : null,
+  };
 }
 
 /**
@@ -132,32 +155,37 @@ function failedCells(cells) {
 
 /**
  * Computes the scorecard object of a run. A run that measured Umbra only is compared with pi's
- * cells from the reference run.
- * @param runId - the run id
+ * cells from the reference run. A list of run ids pools their Umbra cells as one run.
+ * @param runId - the run id, or a list of run ids to pool
  * @param referenceRunId - the pi reference run id, or null for the default
  */
 export function buildScorecard(runId, referenceRunId = null) {
-  const { cells, referenceRunId: reference } = scorecardCells(runId, referenceRunId);
-  const meta = readJson(path.join(runDir(runId), "run.json"), {});
+  const pooled = Array.isArray(runId);
+  const { cells, referenceRunId: reference } = scorecardCells(pooled && runId.length === 1 ? runId[0] : runId, referenceRunId);
+  const meta = readJson(path.join(runDir(pooled ? runId[0] : runId), "run.json"), {});
   const referenceMeta = reference ? readJson(path.join(runDir(reference), "run.json"), {}) : null;
   const agents = [...new Set(cells.map((c) => c.result.agent))].sort();
   const cards = Object.fromEntries(agents.map((agent) => [agent, agentScorecard(cells.filter((c) => c.result.agent === agent))]));
   const repCards = scorecardsPerRep(cells, agents);
-  const rows = cards.umbra && cards.pi ? [...HEAD_TO_HEAD.map((metric) => headToHeadRow(repCards, metric)), ...sessionRows(cards, repCards)] : [];
+  const both = cards.umbra && cards.pi;
+  const rows = both ? [...HEAD_TO_HEAD.map((metric) => headToHeadRow(repCards, metric)), ...categoryRows(cards, repCards), ...sessionRows(cards, repCards)] : [];
   const reps = Object.fromEntries(agents.map((agent) => [agent, new Set(cells.filter((c) => c.result.agent === agent).map((c) => c.result.rep)).size]));
   const multiRep = Math.max(0, ...Object.values(reps)) > 1;
   const hardCells = cells.filter((c) => c.result.category === "hard");
   return {
-    runId, meta, referenceRunId: reference, referenceMeta, cellCount: cells.length, agents, reps, cards, headToHead: rows,
+    runId: pooled ? `pool of ${runId.join(", ")}` : runId, pooledRuns: pooled ? runId : null, meta, referenceRunId: reference, referenceMeta, cellCount: cells.length, agents, reps, cards, headToHead: rows,
     signTest: multiRep ? pairedSignTest(cells) : null, hardSignTest: multiRep && hardCells.length ? pairedSignTest(hardCells) : null,
-    umbraNotBetter: rows.filter((row) => row.better !== "umbra" && row.better !== "n/a" && !row.tiedAtBest).map((row) => row.label), failed: failedCells(cells),
+    bootstrap: both && multiRep ? bootstrapIntervals(cells) : null,
+    umbraBehind: rows.filter((row) => row.behind).map((row) => row.label), failed: failedCells(cells),
   };
 }
 
 /**
  * Builds the scorecard, writes scorecard.json and scorecard.md into the run folder, and returns
- * the markdown. With a comparison run, its head to head values are shown beside this run's.
- * @param runId - the run id
+ * the markdown. With a comparison run, its head to head values are shown beside this run's. With
+ * a pool of runs, their Umbra cells are scored as one run and the files go into the folder
+ * `pool-<run id>+<run id>`.
+ * @param runId - the run id, or a list of run ids to pool
  * @param compareRunId - another run id, or null
  * @param referenceRunId - the pi reference run id, or null for the default
  */
@@ -165,7 +193,9 @@ export function writeReport(runId, compareRunId, referenceRunId = null) {
   const scorecard = buildScorecard(runId, referenceRunId);
   const comparison = compareRunId ? buildScorecard(compareRunId, referenceRunId) : null;
   const markdown = renderMarkdown(scorecard, comparison);
-  writeJson(path.join(runDir(runId), "scorecard.json"), comparison ? { ...scorecard, comparedWith: comparison } : scorecard);
-  fs.writeFileSync(path.join(runDir(runId), "scorecard.md"), markdown);
+  const folder = runDir(Array.isArray(runId) ? `pool-${runId.join("+")}` : runId);
+  fs.mkdirSync(folder, { recursive: true });
+  writeJson(path.join(folder, "scorecard.json"), comparison ? { ...scorecard, comparedWith: comparison } : scorecard);
+  fs.writeFileSync(path.join(folder, "scorecard.md"), markdown);
   return markdown;
 }

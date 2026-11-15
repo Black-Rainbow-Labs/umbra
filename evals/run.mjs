@@ -6,11 +6,15 @@ import { runEval } from "./src/services/runnerService.mjs";
 import { runSelftest } from "./src/services/selftestService.mjs";
 import { writeReport } from "./src/services/scorecardService.mjs";
 import { runProxyCheck } from "./src/services/proxyCheckService.mjs";
+import { writeProfile } from "./src/services/profileService.mjs";
+import { runDir } from "./src/repositories/runRepository.mjs";
 
 const USAGE = `usage:
   node evals/run.mjs run --agents umbra,pi --reps 1 [--tasks id,id] [--category x] [--run-id name]
   node evals/run.mjs selftest [--tasks id,id] [--category x]
   node evals/run.mjs report <run id> [--compare <other run id>] [--ref <pi reference run id>]
+  node evals/run.mjs report --pool <run id>,<run id> [--ref <pi reference run id>]
+  node evals/run.mjs profile <run id> [--ref <pi reference run id>]
   node evals/run.mjs proxycheck [--run <run id>]`;
 
 /**
@@ -32,9 +36,13 @@ async function main(argv) {
     return 0;
   }
   if (command === "selftest") return (await runSelftest({ taskIds: listFlag(flags.tasks), category: flags.category || null })) ? 0 : 1;
+  if (command === "profile" && positional[0]) {
+    console.log(writeProfile(positional[0], flags.ref || null, runDir(positional[0])));
+    return 0;
+  }
   if (command === "proxycheck") return (await runProxyCheck(flags.run || null)) ? 0 : 1;
-  if (command === "report" && positional[0]) {
-    console.log(writeReport(positional[0], flags.compare || null, flags.ref || null));
+  if (command === "report" && (positional[0] || listFlag(flags.pool))) {
+    console.log(writeReport(listFlag(flags.pool) || positional[0], flags.compare || null, flags.ref || null));
     return 0;
   }
   console.error(USAGE);

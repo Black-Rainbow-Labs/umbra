@@ -109,6 +109,8 @@ function reliabilityMetrics(cells) {
     malformedToolCalls: sum(cells.map((c) => c.result.malformedToolCalls || 0)),
     nonzeroExits: cells.filter((c) => c.result.nonzeroExit).length,
     isolationBreaches: cells.filter((c) => c.result.isolationBreach).length,
+    outsidePathRuns: cells.filter((c) => c.result.outsidePaths?.length).length,
+    blockedCommands: sum(cells.map((c) => c.result.blockedCommands || 0)),
   };
 }
 
@@ -171,6 +173,7 @@ export function metricsFor(cells) {
     ...cost,
     promptTokensPerPass: ratio(cost.promptTokens, passed.length), uncachedPromptTokensPerPass: ratio(cost.uncachedPromptTokens, passed.length),
     completionTokensPerPass: ratio(cost.completionTokens, passed.length), requestsPerPass: ratio(cost.requests, passed.length),
+    reasoningTokensPerPass: ratio(cost.reasoningTokens, passed.length),
     passedOnlyPromptTokensPerTask: ratio(passedCost.promptTokens, passed.length),
     ...speedMetrics(cells), ...reliabilityMetrics(cells),
   };
@@ -200,5 +203,6 @@ export function agentScorecard(cells) {
   const categories = [...new Set(cells.map((c) => c.result.category))];
   const perCategory = Object.fromEntries(categories.map((category) => [category, metricsFor(cells.filter((c) => c.result.category === category))]));
   const hardCells = cells.filter((c) => c.result.category === "hard");
-  return { overall: metricsFor(cells), perCategory, compaction: compactionMetrics(cells), sessions: sessionMetrics(cells), sessionCost: sessionCostMetrics(cells), hard: hardCells.length ? metricsFor(hardCells) : {} };
+  const outsideCells = cells.filter((c) => c.result.outsidePaths?.length).map((c) => ({ taskId: c.result.taskId, agent: c.result.agent, rep: c.result.rep, paths: c.result.outsidePaths }));
+  return { overall: metricsFor(cells), perCategory, compaction: compactionMetrics(cells), sessions: sessionMetrics(cells), sessionCost: sessionCostMetrics(cells), hard: hardCells.length ? metricsFor(hardCells) : {}, outsideCells };
 }

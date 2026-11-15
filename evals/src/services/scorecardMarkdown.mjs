@@ -82,6 +82,33 @@ function failedTable(scorecard) {
 }
 
 /**
+ * Renders the paired bootstrap intervals over tasks, Umbra minus pi, as lines of text.
+ * @param bootstrap - { passRate, meanScore, reasoningTokens } or null
+ */
+function bootstrapLines(bootstrap) {
+  if (!bootstrap) return "";
+  const points = (b) => `${(b.observed * 100).toFixed(1)} points (95% interval ${(b.low * 100).toFixed(1)} to ${(b.high * 100).toFixed(1)})`;
+  const tokens = (b) => `${Math.round(b.observed).toLocaleString("en-US")} (95% interval ${Math.round(b.low).toLocaleString("en-US")} to ${Math.round(b.high).toLocaleString("en-US")})`;
+  const lines = [`Paired bootstrap over ${bootstrap.passRate.tasks} tasks (${bootstrap.passRate.resamples.toLocaleString("en-US")} resamples, Umbra minus pi, reported only):`];
+  lines.push(`- Pass rate: ${points(bootstrap.passRate)}`, `- Mean score: ${points(bootstrap.meanScore)}`);
+  if (bootstrap.reasoningTokens) lines.push(`- Reasoning tokens per rep: ${tokens(bootstrap.reasoningTokens)}`);
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Renders the cells whose commands named a path outside their workspace, with the paths, and
+ * the number of commands Umbra's workspace guard refused.
+ * @param scorecard - the scorecard
+ */
+function outsidePathTable(scorecard) {
+  const rows = scorecard.agents.flatMap((agent) => scorecard.cards[agent].outsideCells || []);
+  const blocked = scorecard.agents.map((agent) => `${agent} ${scorecard.cards[agent].overall.blockedCommands || 0}`).join(", ");
+  const escape = (text) => text.replace(/\|/g, "\\|");
+  const table = rows.length ? ["| Task | Agent | Rep | Paths |", "|---|---|---|---|", ...rows.map((r) => `| ${r.taskId} | ${r.agent} | ${r.rep} | ${escape(r.paths.slice(0, 6).join(", ")).slice(0, 300)} |`)].join("\n") : "No cell named a path outside its workspace.";
+  return `${table}\n\nCommands the workspace guard refused (not run, not counted above): ${blocked}.`;
+}
+
+/**
  * Renders the whole scorecard as markdown.
  * @param scorecard - the scorecard
  * @param comparison - another run's scorecard, or null
@@ -101,7 +128,10 @@ export function renderMarkdown(scorecard, comparison) {
     "All token numbers come from the measuring proxy (requests.jsonl). Each value is the mean of the agent's per rep values, so totals are totals per rep. The pi noise band is the largest minus the smallest of pi's per rep values; a difference inside it is a tie (noise). \"Umbra vs pi\" is (Umbra - pi) / pi.", "",
     "## Head to head", "", scorecard.headToHead.length ? headToHeadTable(scorecard, comparison) : "Both agents are needed for the head to head table.", "",
     signLine("Paired sign test over tasks (pass rate across reps)", sign), signLine("Paired sign test over hard tier tasks", hardSign),
-    "## Metrics where Umbra is not strictly better than pi", "", scorecard.umbraNotBetter.length ? scorecard.umbraNotBetter.map((label) => `- ${label}`).join("\n") : "None.", "",
+    bootstrapLines(scorecard.bootstrap),
+    "## Rows where Umbra is behind pi", "", "A row is listed when its verdict is `pi` (worse beyond pi's band) or `tie, pi ahead` (inside the band with pi's mean better). Rows marked (reported) are never listed.", "",
+    scorecard.umbraBehind.length ? scorecard.umbraBehind.map((label) => `- ${label}`).join("\n") : "None.", "",
+    "## Runs that named a path outside the workspace", "", outsidePathTable(scorecard), "",
     "## Per category", "", categoryTable(scorecard), "",
     "## Compaction and sessions", "", compactionAndSessions(scorecard), "",
     "## Failed cells", "", failedTable(scorecard), "",

@@ -16,6 +16,8 @@ server on `http://127.0.0.1:8080`.
 node evals/run.mjs run --agents umbra,pi --reps 1 [--tasks id,id] [--category x] [--run-id name]
 node evals/run.mjs selftest [--tasks id,id] [--category x]
 node evals/run.mjs report <run id> [--compare <other run id>] [--ref <pi reference run id>]
+node evals/run.mjs report --pool <run id>,<run id> [--ref <pi reference run id>]
+node evals/run.mjs profile <run id> [--ref <pi reference run id>]
 node evals/run.mjs proxycheck [--run <run id>]
 ```
 
@@ -42,6 +44,16 @@ node evals/run.mjs proxycheck [--run <run id>]
   whether its Rust sources had uncommitted changes. The scorecard header prints it. Build the
   binary under test with `cargo build --release --manifest-path <worktree>/Cargo.toml` and pass
   it as `UMBRA_BIN`.
+- `report --pool a,b` scores the Umbra cells of two runs as one run: the reps of `b` are numbered
+  after those of `a`, so two 3 rep runs are 6 Umbra reps against the pi reference. The files go
+  into the folder `pool-a+b`.
+- `profile` writes `profile.md` and `profile.json` into the run folder and prints, per agent,
+  where the reasoning tokens go: by category and by task, per request percentiles, the share held
+  by requests above 1,000, 2,000, 3,000 and 4,000 reasoning tokens, the totals by request position
+  in the cell (1, 2 to 5, 6 to 20, 21 and later), requests per passed cell by category, and how
+  many replies have two or more tool calls.
+- `node --test evals/tests/scorecard.test.mjs` checks the verdict rules, the category rows,
+  `--pool`, the bootstrap seed and the outside path rules on a fixture run folder.
 - `proxycheck` sends one streaming request through a proxy and checks that chunks arrive over
   time (no buffering), that usage and timings are recorded, and with `--run` that every chat
   request in that run has usage, per agent.
@@ -157,17 +169,31 @@ through chunk by chunk.
 | Resume startup ms, long session | Time from launching the agent to its first model request when it resumes the 300 step session of `long-300-resume` |
 | Session store bytes written per step | Bytes the agent process wrote while it built the 300 step session (Windows `WriteTransferCount`, read from the process handle after the process exits so the last writes are counted), minus its own stdout and stderr, divided by the steps of that phase (a step is a model request or a tool call, whichever count is larger, so a reply with several tool calls counts each). Before task-2643 the count was a poll of the running process, which missed pi's final `agent_end` event (about 259 KB) and so reported pi at about 190 bytes per step instead of about 1,050. Both agents run with their default storage: Umbra is not given `-o`, so its trajectory JSON, when it writes one, counts as part of its store, and the adapter takes a copy afterwards with `umbra export` |
 | Runs that reached evals/tasks | Cells whose transcript (pi's event stream, Umbra's trajectory) names a path under `evals/tasks`. Such a cell fails, whatever the verifier said |
+| Runs that named a path outside the workspace | Cells whose commands named a path outside their workspace, by the rules of Umbra's workspace guard (`environment.workspace_guard`): a word that starts with `/`, `~`, `$HOME`, `%USERPROFILE%` or a drive letter, or a relative word with `..`, that names a place outside the workspace, the temp folder, the agent's home, the program folders and the folders on PATH. Heredoc bodies are not read, and inside a quoted script only absolute paths count. A command Umbra's guard refused did not run and is not counted; the scorecard prints how many were refused. Reported for both agents; it never puts a row on the list |
+| Reasoning tokens per passed task | Reasoning tokens divided by passed cells, beside the total |
+| Category pass rate | The pass rate of each task category, one row per category |
 | Hard tier pass rate, mean score | The same two numbers on the `hard` category only |
 
 The head to head table lists each metric with the Umbra value, the pi value, pi's noise band,
-which is better and (Umbra - pi) / pi. Each value is the mean of that agent's per rep values, so
+the verdict and (Umbra - pi) / pi. Each value is the mean of that agent's per rep values, so
 "total" rows are totals per rep and a 1 rep run and a 3 rep run are on the same scale. The noise
-band is the largest minus the smallest of pi's per rep values. A difference no larger than the
-band is a tie (`tie (noise)`). With more than one rep, a paired sign test over tasks compares the
-pass rates, once over all tasks and once over the hard tier. The scorecard ends with the metrics
-where Umbra is not strictly better than pi. A tie at the best possible value (0 errors, a 100%
-rate) is not listed, because neither agent can improve on it. The hill climb is finished when
-that list is empty for 3 reps.
+band is the largest minus the smallest of pi's per rep values. Each row gets one of five verdicts:
+
+| Verdict | Meaning |
+|---|---|
+| `Umbra` | Umbra is better by more than pi's band |
+| `equal` | The same value, or Umbra at the best possible value (0 errors, a 100% rate) with pi inside the band |
+| `tie, Umbra ahead` | Inside the band, Umbra's mean is better |
+| `tie, pi ahead` | Inside the band, pi's mean is better |
+| `pi` | pi is better by more than pi's band |
+
+With more than one rep, a paired sign test over tasks compares the pass rates, once over all tasks
+and once over the hard tier, and a paired bootstrap over tasks (10,000 resamples of the per task
+differences, seed 2712) prints a 95% interval for pass rate, mean score and reasoning tokens per
+rep. The bootstrap is reported only and does not decide a verdict. The scorecard ends with the list
+"Rows where Umbra is behind pi": every row with the verdict `pi` or `tie, pi ahead`, other than
+the rows marked (reported). The hill climb is finished when that list is empty in a full 3 rep run
+and in the pool of two such runs.
 
 ## Known differences left as shipped
 
