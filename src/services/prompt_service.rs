@@ -134,6 +134,15 @@ mod tests {
     }
 
     #[test]
+    fn the_batch_commands_setting_adds_one_prompt_line() {
+        let vars = |batch: bool| json!({ "task": "x", "finish": "reply", "action_format": "tools", "system": "Linux", "release": "", "version": "", "machine": "x", "cwd": "/w", "shell": "bash", "mcp_tools": [], "instructions": [], "skills": [], "mcp_instructions": [], "batch_commands": batch });
+        let reply = Templates::resolve(&TemplatesConfig::default(), ActionFormat::Tools, Finish::Reply);
+        let line = "send the commands as several tool calls in one reply";
+        assert!(render(&reply.system, &vars(true)).unwrap().contains(line));
+        assert!(!render(&reply.system, &vars(false)).unwrap().contains(line));
+    }
+
+    #[test]
     fn renders_the_length_branch_of_the_format_error() {
         let message = render_format_error(FORMAT_ERROR_TOOLS, "No tool calls", "length", false).unwrap();
         assert!(message.contains("output token limit"));

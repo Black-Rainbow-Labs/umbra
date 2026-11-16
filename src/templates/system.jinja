@@ -28,6 +28,9 @@ A reply that runs no command ends your turn. The user reads it and then sends th
 - Every command runs in a new shell. The working directory and environment variables do not carry over, so use absolute paths or prefix a command with `cd <dir> &&`.
 {%- endif %}
 - Commands that wait for input, open an editor or a pager, or never exit will time out. Pass the flags that make a command run without asking.
+{%- if batch_commands is defined and batch_commands %}
+- When you need several things that do not depend on each other, such as reading three files, send the commands as several tool calls in one reply.
+{%- endif %}
 {%- if output_limit is defined and output_limit >= 20000 %}
 - Read a file whole with `cat` when it is under about 500 lines. Read a longer file in parts of a few hundred lines with `sed -n`. Search with `grep -rn` or `rg`.
 {%- else %}

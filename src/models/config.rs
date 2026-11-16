@@ -65,6 +65,9 @@ pub struct UmbraConfig {
     /// Offer the `edit` tool beside `bash` in tool mode: an exact text replacement that keeps the
     /// file's line endings and encoding.
     pub edit_tool: bool,
+    /// Add a line to the system prompt in tool mode asking the model to send commands that do not
+    /// depend on each other, such as reading three files, as several tool calls in one reply.
+    pub batch_commands: bool,
     /// Save a command output longer than 10,000 characters whole to a file next to the
     /// trajectory, show the model where it is, and cut lines over 2,000 characters in what the
     /// model sees. Off by default: in task-2643 (E6) the large-output pass rate stayed at 100% and
@@ -127,6 +130,7 @@ impl Default for UmbraConfig {
             max_consecutive_format_errors: 3,
             finish_check: false,
             edit_tool: false,
+            batch_commands: false,
             output_spill: false,
             confirm_exit: true,
             keep_open: false,

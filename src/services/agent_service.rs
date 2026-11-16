@@ -1396,6 +1396,7 @@ impl Agent {
         vars["action_format"] = json!(self.parts.config.action_format);
         vars["finish"] = json!(self.parts.config.finish);
         vars["edit_tool"] = json!(self.edit_tool_on());
+        vars["batch_commands"] = json!(self.parts.config.batch_commands && self.parts.config.action_format == ActionFormat::Tools);
         // With deferral the prompt lists the tools by name only; their definitions come from
         // tool_search when the model needs them.
         let described: Vec<&McpTool> = if self.deferred { Vec::new() } else { self.mcp_tools.iter().collect() };
