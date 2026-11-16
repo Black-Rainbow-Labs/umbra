@@ -5,7 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { runCell } from "./cellService.mjs";
-import { waitForIdleServer } from "./serverCheck.mjs";
+import { waitForFreeMemory, waitForIdleServer } from "./serverCheck.mjs";
 import { loadAllTasks, selectTasks } from "../repositories/taskRepository.mjs";
 import { cellDir, cellFinished, writeRunMeta, runDir } from "../repositories/runRepository.mjs";
 import { readJson } from "../utils/files.mjs";
@@ -71,6 +71,7 @@ async function runOrSkipCell(ctx) {
   if (cellFinished(dir)) { console.log(`skip ${label} (finished)`); return null; }
   const now = agentVersions()[ctx.adapter.name];
   if (now !== ctx.versions[ctx.adapter.name]) throw new Error(`${ctx.adapter.name} changed from "${ctx.versions[ctx.adapter.name]}" to "${now}" during the run; stopping so the run does not mix builds`);
+  await waitForFreeMemory();
   await waitForIdleServer(ctx.model);
   console.log(`run  ${label} [${new Date().toISOString()}]`);
   try {

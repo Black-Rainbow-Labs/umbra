@@ -1,7 +1,23 @@
 // The model server has one slot. Before a batch and before every cell the runner sends one tiny
 // request and waits until it answers quickly, so two agent runs never share the slot.
 
+import os from "node:os";
 import { UPSTREAM } from "../utils/config.mjs";
+
+/**
+ * Waits while the machine has less free memory than `EVAL_MIN_FREE_MB` (6000 by default), so a
+ * cell never starts while new processes would fail to start. Logs each wait and checks again
+ * every 60 seconds.
+ */
+export async function waitForFreeMemory() {
+  const minMb = Number(process.env.EVAL_MIN_FREE_MB || 6000);
+  for (let attempt = 1; ; attempt += 1) {
+    const freeMb = Math.round(os.freemem() / 1048576);
+    if (freeMb >= minMb) return freeMb;
+    console.log(`  low memory (attempt ${attempt}: ${freeMb} MB free, need ${minMb}); waiting 60 s`);
+    await new Promise((resolve) => setTimeout(resolve, 60000));
+  }
+}
 
 /**
  * Sends one tiny chat request straight to the server and returns how long it took.

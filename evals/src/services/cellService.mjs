@@ -84,12 +84,30 @@ export async function runCell(ctx) {
   } finally {
     await proxy.close();
   }
+  refuseFailedStart(phases, scratch);
   const requests = readJsonl(requestsPath);
   const verdict = await runVerifier(task, scratch.workspaceDir, { task, agent: adapter.name, phases, requests, taskDir: task.dir });
   const result = buildCellResult({ task, adapter, rep: ctx.rep, phases, requests, verdict, startedAt, isolationBreach: reachedTaskDefinitions(cellDir) });
   saveWorkspace(task, scratch, cellDir);
   writeCellResult(cellDir, result);
   return result;
+}
+
+// Windows exit codes for a process that never started: 0xC0000142 (a DLL failed to initialize,
+// seen when the machine is out of memory) and 0xC0000017 (no memory).
+const START_FAILURE_CODES = [3221225794, 3221225495];
+
+/**
+ * Throws when an agent process failed to start, so the runner records a runner error, writes no
+ * result.json, and a resumed run tries the cell again. Removes the scratch copy first.
+ * @param phases - the phase results
+ * @param scratch - { root, workspaceDir }
+ */
+function refuseFailedStart(phases, scratch) {
+  const failed = phases.find((p) => START_FAILURE_CODES.includes(p.exitCode));
+  if (!failed) return;
+  removeCreatedTree(scratch.root);
+  throw new Error(`the agent process did not start (exit ${failed.exitCode}); no result is written, so a resumed run tries this cell again`);
 }
 
 /**
