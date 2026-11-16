@@ -66,6 +66,7 @@ const FINISHES: &[&str] = &["reply", "submit"];
 const DEFER: &[&str] = &["auto", "always", "never"];
 const ENV_KINDS: &[&str] = &["local", "docker"];
 const GUARD_MODES: &[&str] = &["block", "ask", "off"];
+const REQUIREMENT_CHECKS: &[&str] = &["off", "prompt", "message"];
 const KINDS: &[&str] = &["anthropic", "openai", "replay"];
 const AUTHS: &[&str] = &["auto", "api_key", "claude_code"];
 const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -137,6 +138,7 @@ const BEHAVIOR_AND_DISPLAY: &[SettingSpec] = &[
     s!("batch_commands", Behavior, "Several commands per reply", "Ask the model to send commands that do not depend on each other in one reply.", Toggle, Next),
     s!("output_spill", Behavior, "Save long output", "Save a command output over 10,000 characters to a file and show the model where it is.", Toggle, Next),
     s!("finish_check", Behavior, "Finish check", "When the agent replies right after changing files, ask it once to run the check that proves the change.", Toggle, Next),
+    s!("requirement_check", Behavior, "Requirement check", "off, prompt (one line in the system prompt) or message (one short message before the final reply to a request with a list of five or more requirements).", Choice(REQUIREMENT_CHECKS), Next),
     s!("confirm_exit", Behavior, "Confirm exit", "Ask for a follow up task when the agent submits.", Toggle, Now),
     s!("keep_open", Behavior, "Keep open", "An empty line at a prompt asks again instead of ending the run.", Toggle, Now),
     s!("whitelist_actions", Behavior, "Whitelist", "Regexes. A command that starts with a match runs without asking.", List, Now),

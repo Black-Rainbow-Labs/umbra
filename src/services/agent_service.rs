@@ -22,7 +22,7 @@ use super::{usage_service, work_clock};
 use super::compaction_service::{apply_mask, budget_for, estimate_history_tokens, estimate_request_tokens, estimate_tools_tokens, find_cut, mask_record, plan_mask, resolve_window, summarizable_tokens, summarize, summary_record, ReportedSize, SummaryInputs};
 use super::edit_tool_service::{edit_spec, edit_tool, is_edit, run_edit};
 use super::environment::{submission_from, Environment};
-use super::finish_check_service::{FinishCheck, FINISH_CHECK_TEXT};
+use super::finish_check_service::FinishCheck;
 use super::output_spill_service::{outputs_dir, spill_long_output};
 use super::image_service::images_in_text;
 use super::interaction_service::{show_assistant, show_event, show_observation, show_reply_text, show_turn_end, show_user_text, Comment, Decision, HumanInput, Interaction, Tone, TurnSummary};
@@ -219,7 +219,8 @@ impl Agent {
         let mcp = &parts.config.mcp;
         let deferred = !mcp_tools.is_empty() && should_defer(mcp.defer_tools, mcp_tokens, window, mcp.defer_ratio);
         let compaction = CompactionState { window: Some(window), ..Default::default() };
-        let finish_check = FinishCheck::new(parts.config.finish_check && parts.config.finish == Finish::Reply && parts.config.environment.kind == "local");
+        let requirements = parts.config.requirement_check == "message";
+        let finish_check = FinishCheck::new((parts.config.finish_check || requirements) && parts.config.finish == Finish::Reply && parts.config.environment.kind == "local", requirements);
         let journal = JournalWriter::new(journal_path(&parts.trajectory_path));
         let guard = GuardState::from_config(&parts.config.environment, &parts.cwd, parts.environment.is_local(), &crate::utils::paths::umbra_home());
         let mut agent = Agent { parts, templates, tools: Vec::new(), mcp_tools, deferred, loaded: BTreeSet::new(), messages: Vec::new(), stats: ModelStats::default(), format_errors: 0, started: Instant::now(), exit: (String::new(), String::new()), compaction, baseline: (0, 0.0), mcp_version, next: None, quit_requested: false, update_after_turn: false, announced_failures: BTreeSet::new(), title_job: None, titled: false, finish_check, journal, index_written: false, trajectory_written: Cell::new(None), guard, cut_resend: false };
@@ -599,7 +600,7 @@ impl Agent {
             self.parts.session.title = initial_title(typed);
         }
         self.messages.push(new_task_message(task, typed, self.parts.config.finish).with_images(images));
-        self.finish_check.start_turn();
+        self.finish_check.start_turn(task);
     }
 
     /// Makes the step, cost and time limits count from now, for a front end that runs one turn
@@ -1186,7 +1187,7 @@ impl Agent {
         show_assistant(self.stats.api_calls, self.stats.instance_cost, &response.content, &[]);
         self.parts.events.reply(&response.content, &[]);
         if self.finish_check.should_ask() {
-            self.messages.push(Message::user(FINISH_CHECK_TEXT).with_extra(json!({ "interrupt_type": "FinishCheck" })));
+            self.messages.push(Message::user(self.finish_check.message()).with_extra(json!({ "interrupt_type": "FinishCheck" })));
             return Step::Continue;
         }
         Step::Exit(REPLIED_STATUS.into(), response.content.trim().to_string())
@@ -1396,6 +1397,7 @@ impl Agent {
         vars["action_format"] = json!(self.parts.config.action_format);
         vars["finish"] = json!(self.parts.config.finish);
         vars["edit_tool"] = json!(self.edit_tool_on());
+        vars["requirement_check"] = json!(self.parts.config.requirement_check);
         vars["batch_commands"] = json!(self.parts.config.batch_commands && self.parts.config.action_format == ActionFormat::Tools);
         // With deferral the prompt lists the tools by name only; their definitions come from
         // tool_search when the model needs them.

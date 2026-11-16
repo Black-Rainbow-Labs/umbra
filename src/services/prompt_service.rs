@@ -143,6 +143,16 @@ mod tests {
     }
 
     #[test]
+    fn the_requirement_check_prompt_form_adds_one_line() {
+        let vars = |mode: &str| json!({ "task": "x", "finish": "reply", "action_format": "tools", "system": "Linux", "release": "", "version": "", "machine": "x", "cwd": "/w", "shell": "bash", "mcp_tools": [], "instructions": [], "skills": [], "mcp_instructions": [], "requirement_check": mode });
+        let reply = Templates::resolve(&TemplatesConfig::default(), ActionFormat::Tools, Finish::Reply);
+        let line = "Before your final reply, read the request again.";
+        assert!(render(&reply.system, &vars("prompt")).unwrap().contains(line));
+        assert!(!render(&reply.system, &vars("off")).unwrap().contains(line));
+        assert!(!render(&reply.system, &vars("message")).unwrap().contains(line));
+    }
+
+    #[test]
     fn renders_the_length_branch_of_the_format_error() {
         let message = render_format_error(FORMAT_ERROR_TOOLS, "No tool calls", "length", false).unwrap();
         assert!(message.contains("output token limit"));

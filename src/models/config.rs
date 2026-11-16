@@ -62,6 +62,11 @@ pub struct UmbraConfig {
     /// and compare the result with the request. Once per turn. Off by default: in task-2617 (E3) it
     /// did not raise the hard tier pass rate by more than the noise band and cost 30% more tokens.
     pub finish_check: bool,
+    /// How the model is asked to check each stated requirement before its final reply. `off`
+    /// (default); `prompt`, one line in the system prompt; `message`, one short message, once per
+    /// turn, when the model ends a turn in which it changed files and the request has a list of
+    /// five or more items.
+    pub requirement_check: String,
     /// Offer the `edit` tool beside `bash` in tool mode: an exact text replacement that keeps the
     /// file's line endings and encoding.
     pub edit_tool: bool,
@@ -129,6 +134,7 @@ impl Default for UmbraConfig {
             wall_time_limit_seconds: 0,
             max_consecutive_format_errors: 3,
             finish_check: false,
+            requirement_check: "off".into(),
             edit_tool: false,
             batch_commands: false,
             output_spill: false,
