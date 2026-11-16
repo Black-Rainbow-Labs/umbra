@@ -290,7 +290,7 @@ impl WorkspaceGuard {
 /// @param text - the word
 fn home_rest(text: &str) -> Option<&str> {
     for prefix in ["${HOME}", "$HOME", "%USERPROFILE%", "~"] {
-        if text.len() >= prefix.len() && text[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        if text.as_bytes().get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(prefix.as_bytes())) {
             let rest = &text[prefix.len()..];
             if prefix == "$HOME" && rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
                 return None;
@@ -506,6 +506,8 @@ mod tests {
         assert!(g.outside_paths("node -e \"console.log(1 / 2) // half\"", &root).is_empty());
         assert!(g.outside_paths("python -c 'print(1)'", &root).is_empty());
         assert!(g.outside_paths(&format!("cat \"{root}/a b/c.txt\""), &root).is_empty());
+        assert!(g.outside_paths("grep -l 'é\\|ñ\\|ü\\|ç' data/*.json", &root).is_empty());
+        assert_eq!(home_rest("é\\|ü\\|Ł"), None);
     }
 
     #[test]
