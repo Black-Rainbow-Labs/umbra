@@ -54,10 +54,12 @@ export function reachedTaskDefinitions(dir) {
 /**
  * Marks a cell failed when its agent reached evals/tasks, keeping the verifier's verdict, and
  * records the outside paths its commands named and the commands the guard refused.
- * @param cell - { dir, runId, result, requests }
+ * The workspace folder is named from the rep within the cell's own run, so a pooled cell uses
+ * `runRep`, its rep before pooling renumbered it.
+ * @param cell - { dir, runId, result, requests, runRep? }
  */
 function applyIsolationCheck(cell) {
-  const outside = outsidePathsForCell(cell.dir, cell.runId, cell.result);
+  const outside = outsidePathsForCell(cell.dir, cell.runId, cell.runRep ? { ...cell.result, rep: cell.runRep } : cell.result);
   const result = { ...cell.result, outsidePaths: outside.paths, blockedCommands: outside.blocked };
   const breached = reachedTaskDefinitions(cell.dir);
   // A cell the runner failed for a path that only a refused command named passes on its verdict.
@@ -85,7 +87,7 @@ function pooledUmbraCells(runIds) {
   for (const runId of runIds) {
     const own = cellsOf(runId).filter((c) => c.result.agent === "umbra");
     const reps = Math.max(0, ...own.map((c) => c.result.rep));
-    cells.push(...own.map((c) => ({ ...c, result: { ...c.result, rep: c.result.rep + offset } })));
+    cells.push(...own.map((c) => ({ ...c, runRep: c.result.rep, result: { ...c.result, rep: c.result.rep + offset } })));
     offset += reps;
   }
   return cells;
