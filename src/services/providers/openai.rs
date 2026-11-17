@@ -78,18 +78,13 @@ impl OpenAiProvider {
         }
     }
 
-    /// The reply limit in use: `reply_limit` when it is set (0 turns it off), otherwise 4,000 for
-    /// a server on this machine unless `thinking` is `off`. None after a cut reply with no
-    /// reasoning in it.
+    /// The reply limit in use: `reply_limit` when it is set to more than 0, unless `thinking` is
+    /// `off`. None after a cut reply with no reasoning in it.
     fn reply_limit(&self) -> Option<u32> {
-        if self.limit_dropped {
+        if self.limit_dropped || self.config.thinking.as_deref() == Some("off") {
             return None;
         }
-        match self.config.reply_limit {
-            Some(0) => None,
-            Some(limit) => Some(limit),
-            None => (is_local_url(&self.config.base_url) && self.config.thinking.as_deref() != Some("off")).then_some(LOCAL_REPLY_LIMIT),
-        }
+        self.config.reply_limit.filter(|limit| *limit > 0)
     }
 
     /// Drops the reply limit for the rest of the session when a reply cut at it had no reasoning.
@@ -102,7 +97,7 @@ impl OpenAiProvider {
 
     /// True for the step after a cut reply when `reply_limit_resend` is not `thinking_on`.
     fn resend_without_thinking(&self) -> bool {
-        self.kind == ReplyKind::ResendAfterCut && self.config.reply_limit != Some(0) && self.config.reply_limit_resend.as_deref() != Some("thinking_on")
+        self.kind == ReplyKind::ResendAfterCut && self.config.reply_limit.is_some_and(|limit| limit > 0) && self.config.reply_limit_resend.as_deref() != Some("thinking_on")
     }
 
     /// Returns true when replies are streamed, which is the default.
@@ -265,11 +260,6 @@ fn thinking_for(setting: Option<&str>, messages: &[Message]) -> Option<bool> {
 /// it the server's own default applies (8192 on llama.cpp), and a thinking model can spend all of
 /// it on reasoning, so the reply is cut off with no text or tool call in it.
 const LOCAL_MAX_TOKENS: u32 = 16000;
-
-/// The reply limit for a server on this machine when `reply_limit` is not set. A reply cut at it
-/// while the model is still thinking is asked again without thinking, which lowers the reasoning
-/// a local thinking model spends on one step.
-const LOCAL_REPLY_LIMIT: u32 = 4000;
 
 /// Returns true when a reply has reasoning: reasoning tokens in its usage, or reasoning text in
 /// the raw message.
@@ -675,12 +665,10 @@ mod tests {
     #[test]
     fn sends_a_reply_limit_to_a_local_server_when_none_is_set() {
         let config = |url: &str, max: Option<u32>| ProviderConfig { kind: "openai".into(), base_url: url.into(), max_tokens: max, ..Default::default() };
-        let mut provider = OpenAiProvider::new(config("http://127.0.0.1:8080/v1", None), "m");
-        provider.set_reply_kind(ReplyKind::Summary);
-        assert_eq!(provider.request_body(&[], &[])["max_tokens"], 16000);
-        let mut provider = OpenAiProvider::new(config("http://localhost:8080/v1", Some(4096)), "m");
-        provider.set_reply_kind(ReplyKind::Summary);
-        assert_eq!(provider.request_body(&[], &[])["max_tokens"], 4096);
+        let body = OpenAiProvider::new(config("http://127.0.0.1:8080/v1", None), "m").request_body(&[], &[]);
+        assert_eq!(body["max_tokens"], 16000);
+        let body = OpenAiProvider::new(config("http://localhost:8080/v1", Some(4096)), "m").request_body(&[], &[]);
+        assert_eq!(body["max_tokens"], 4096);
         let body = OpenAiProvider::new(config("https://api.openai.com/v1", None), "m").request_body(&[], &[]);
         assert!(body.get("max_tokens").is_none());
     }
@@ -711,16 +699,16 @@ mod tests {
     }
 
     #[test]
-    fn a_local_server_gets_a_reply_limit_of_4000_unless_thinking_is_off() {
-        let config = |url: &str, thinking: Option<&str>| ProviderConfig { kind: "openai".into(), base_url: url.into(), thinking: thinking.map(String::from), ..Default::default() };
-        assert_eq!(OpenAiProvider::new(config("http://127.0.0.1:8080/v1", None), "m").request_body(&[], &[])["max_tokens"], 4000);
-        assert_eq!(OpenAiProvider::new(config("http://127.0.0.1:8080/v1", Some("off")), "m").request_body(&[], &[])["max_tokens"], 16000);
-        assert!(OpenAiProvider::new(config("https://api.openai.com/v1", None), "m").request_body(&[], &[]).get("max_tokens").is_none());
+    fn the_reply_limit_is_unset_by_default_and_off_when_thinking_is_off() {
+        let config = |limit: Option<u32>, thinking: Option<&str>| ProviderConfig { kind: "openai".into(), base_url: "http://127.0.0.1:8080/v1".into(), reply_limit: limit, thinking: thinking.map(String::from), ..Default::default() };
+        assert_eq!(OpenAiProvider::new(config(None, None), "m").request_body(&[], &[])["max_tokens"], 16000);
+        assert_eq!(OpenAiProvider::new(config(Some(4000), None), "m").request_body(&[], &[])["max_tokens"], 4000);
+        assert_eq!(OpenAiProvider::new(config(Some(4000), Some("off")), "m").request_body(&[], &[])["max_tokens"], 16000);
     }
 
     #[test]
     fn a_cut_reply_with_no_reasoning_drops_the_limit_for_the_session() {
-        let mut provider = OpenAiProvider::new(ProviderConfig { kind: "openai".into(), base_url: "http://127.0.0.1:8080/v1".into(), ..Default::default() }, "m");
+        let mut provider = OpenAiProvider::new(ProviderConfig { kind: "openai".into(), base_url: "http://127.0.0.1:8080/v1".into(), reply_limit: Some(4000), ..Default::default() }, "m");
         let cut = |reasoning: &str| ModelResponse { finish_reason: "length".into(), raw: json!({ "choices": [{ "message": { "content": "x", "reasoning_content": reasoning } }] }), ..Default::default() };
         assert!(has_reasoning(&cut("thinking")));
         assert!(!has_reasoning(&cut("")));

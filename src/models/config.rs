@@ -277,8 +277,8 @@ pub struct ProviderConfig {
     pub thinking: Option<String>,
     /// OpenAI compatible servers: the `max_tokens` of an ordinary reply, smaller than `max_tokens`
     /// (task-2712, E29). A reply cut at this limit is kept with its reasoning and asked again once
-    /// with the normal limit. Compaction summaries use the normal limit. Unset means 4,000 for a
-    /// server on this machine unless `thinking` is `off`, and none elsewhere; 0 turns it off.
+    /// with the normal limit. Compaction summaries use the normal limit. Unset or 0 means no reply
+    /// limit, and `thinking = "off"` turns it off.
     pub reply_limit: Option<u32>,
     /// How the reply after a cut is asked for: `thinking_off` (the default) sends
     /// `chat_template_kwargs.enable_thinking: false`, `thinking_on` leaves thinking on.

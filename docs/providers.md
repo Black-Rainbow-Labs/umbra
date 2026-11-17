@@ -138,15 +138,12 @@ A local model such as Qwen streams its reasoning before its answer, in a field n
 byte and under the same field name, so the server renders the history exactly as it generated it
 and its prompt cache matches the whole conversation. For a server on this machine (`localhost`,
 `127.0.0.1`, `[::1]` or `0.0.0.0`), Umbra also sends `chat_template_kwargs.preserve_thinking: true`,
-which asks a Qwen style chat template to keep the reasoning of earlier turns. It also limits an
-ordinary reply to 4,000 tokens (`reply_limit`, below): a reply cut there while the model is still
-thinking is asked again once with thinking off, so the model acts on the thinking it already did.
+which asks a Qwen style chat template to keep the reasoning of earlier turns.
 
 | Setting | Default | What it does |
 |---|---|---|
 | `send_reasoning` | true | Send each assistant message's reasoning back to the server |
 | `preserve_thinking` | true for a server on this machine, false for any other | Send `chat_template_kwargs.preserve_thinking: true` |
-| `reply_limit` | 4000 for a server on this machine unless `thinking` is `off`, none for any other | The `max_tokens` of an ordinary reply. `0` turns it off |
 
 Each assistant message in the trajectory keeps a timing record in `extra.timing`: the total time,
 the time to the first token, and the server's own `timings` object when it sends one. The
@@ -172,7 +169,7 @@ rate can be read from the file.
 | `stream` | OpenAI compatible servers only: stream replies (default true). Set it to false for a server that rejects `stream` or `stream_options`. |
 | `send_reasoning` | OpenAI compatible servers only: send the streamed reasoning back with each assistant message (default true) |
 | `preserve_thinking` | OpenAI compatible servers only: send `chat_template_kwargs.preserve_thinking: true` (default true for a server on this machine) |
-| `reply_limit` | OpenAI compatible servers only: the `max_tokens` of an ordinary reply, below `max_tokens`. A reply cut at this limit while the model was still thinking is kept in the history with its reasoning and without its text or tool calls, the model is told "Your thinking reached the limit for one reply. Act now: send the next command, or the final answer if you are finished.", and the next request has the normal `max_tokens`. Compaction summaries always have the normal `max_tokens`. Unset means 4000 for a server on this machine (`localhost`, `127.0.0.1`, `[::1]` or `0.0.0.0`) unless `thinking` is `off`, and no reply limit elsewhere. `0` turns it off. After a cut reply with no reasoning in it, the limit is not sent again for the rest of the session, because a model that does not think gains nothing from it. |
+| `reply_limit` | OpenAI compatible servers only: the `max_tokens` of an ordinary reply, below `max_tokens`. A reply cut at this limit while the model was still thinking is kept in the history with its reasoning and without its text or tool calls, the model is told "Your thinking reached the limit for one reply. Act now: send the next command, or the final answer if you are finished.", and the next request has the normal `max_tokens`. Compaction summaries always have the normal `max_tokens`. Unset or `0` means no reply limit, and `thinking = "off"` turns it off. On the local Qwen model the eval suite uses, a limit of 4,000 lowered reasoning tokens by about 15% and the hard tier pass rate by about 7 points, so it is not on by default. After a cut reply with no reasoning in it, the limit is not sent again for the rest of the session, because a model that does not think gains nothing from it. |
 | `reply_limit_resend` | `thinking_off` (the default) asks the reply after a cut with `chat_template_kwargs.enable_thinking: false`, so it acts on the thinking it already did. `thinking_on` leaves thinking on. |
 | `replay_file` | Replay only: the script file |
 
