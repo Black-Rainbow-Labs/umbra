@@ -24,7 +24,8 @@ node evals/run.mjs proxycheck [--run <run id>]
 - `run` runs cells one at a time: for each task, each repetition, Umbra and then pi. Before the
   batch and before every cell it sends one tiny request straight to the server and waits until
   it answers within 5 seconds, because the server has one slot. Before every cell it also waits
-  while the machine has less than `EVAL_MIN_FREE_MB` (6000 by default) of free memory, and an
+  while the machine has less than `EVAL_MIN_FREE_MB` (6000 by default) of free memory or, on
+  Windows, less than `EVAL_MIN_FREE_COMMIT_MB` (16000 by default) of free commit charge, and an
   agent process that fails to start (Windows exit 0xC0000142 or 0xC0000017) is a runner error
   with no `result.json`, so a resumed run tries that cell again. `run` also takes the lock file
   `~/.umbra-evals-runner.lock` (or `EVAL_LOCK_FILE`) and stops with an error while another live

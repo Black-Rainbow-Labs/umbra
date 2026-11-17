@@ -2,19 +2,35 @@
 // request and waits until it answers quickly, so two agent runs never share the slot.
 
 import os from "node:os";
+import { spawnSync } from "node:child_process";
 import { UPSTREAM } from "../utils/config.mjs";
 
 /**
- * Waits while the machine has less free memory than `EVAL_MIN_FREE_MB` (6000 by default), so a
- * cell never starts while new processes would fail to start. Logs each wait and checks again
- * every 60 seconds.
+ * Returns the free commit charge in MB on Windows (what is left before the system commit limit,
+ * past which new processes fail to start with 0xC0000142), or Infinity elsewhere. A failed query
+ * counts as 0, because a query that cannot start means processes cannot start either.
+ */
+export function freeCommitMb() {
+  if (process.platform !== "win32") return Infinity;
+  const out = spawnSync("powershell", ["-NoProfile", "-Command", "(Get-CimInstance Win32_OperatingSystem).FreeVirtualMemory"], { encoding: "utf8", windowsHide: true, timeout: 60000 });
+  const kb = Number((out.stdout || "").trim());
+  return out.status === 0 && Number.isFinite(kb) && kb > 0 ? Math.round(kb / 1024) : 0;
+}
+
+/**
+ * Waits while the machine has less free physical memory than `EVAL_MIN_FREE_MB` (6000 by
+ * default) or, on Windows, less free commit charge than `EVAL_MIN_FREE_COMMIT_MB` (16000 by
+ * default), so a cell never starts while new processes would fail to start. Logs each wait and
+ * checks again every 60 seconds.
  */
 export async function waitForFreeMemory() {
   const minMb = Number(process.env.EVAL_MIN_FREE_MB || 6000);
+  const minCommitMb = Number(process.env.EVAL_MIN_FREE_COMMIT_MB || 16000);
   for (let attempt = 1; ; attempt += 1) {
     const freeMb = Math.round(os.freemem() / 1048576);
-    if (freeMb >= minMb) return freeMb;
-    console.log(`  low memory (attempt ${attempt}: ${freeMb} MB free, need ${minMb}); waiting 60 s`);
+    const commitMb = freeMb >= minMb ? freeCommitMb() : 0;
+    if (freeMb >= minMb && commitMb >= minCommitMb) return freeMb;
+    console.log(`  low memory (attempt ${attempt}: ${freeMb} MB free, need ${minMb}; ${commitMb === Infinity ? "n/a" : commitMb} MB commit free, need ${minCommitMb}); waiting 60 s`);
     await new Promise((resolve) => setTimeout(resolve, 60000));
   }
 }
