@@ -107,7 +107,7 @@ function refuseFailedStart(phases, scratch) {
   const failed = phases.find((p) => START_FAILURE_CODES.includes(p.exitCode));
   if (!failed) return;
   removeCreatedTree(scratch.root);
-  throw new Error(`the agent process did not start (exit ${failed.exitCode}); no result is written, so a resumed run tries this cell again`);
+  throw Object.assign(new Error(`the agent process did not start (exit ${failed.exitCode}); no result is written, and the runner tries this cell again`), { startFailure: true });
 }
 
 /**

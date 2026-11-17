@@ -63,9 +63,29 @@ function checkVersionsUnchanged(runId, versions) {
  * error is written to error.txt and the cell is left without result.json, so a resumed run
  * tries it again.
  * Before each cell it checks that the agent's installed version is the one the run started with.
+ * A cell whose agent process did not start is tried again a minute later, up to START_RETRIES times.
  * @param ctx - { task, adapter, runId, rep, sampling, model, versions }
  */
 async function runOrSkipCell(ctx) {
+  for (let attempt = 1; attempt <= START_RETRIES; attempt += 1) {
+    const outcome = await runCellOnce(ctx);
+    if (outcome !== START_FAILED) return outcome;
+    console.log(`  the agent did not start (attempt ${attempt} of ${START_RETRIES}); waiting 60 s and trying this cell again`);
+    await new Promise((resolve) => setTimeout(resolve, 60000));
+  }
+  return null;
+}
+
+// How many times a cell whose agent process did not start is tried again, a minute apart.
+const START_RETRIES = 60;
+const START_FAILED = Symbol("start failed");
+
+/**
+ * Runs one cell once, unless it already has a result. Returns the result, null for a finished
+ * cell or a runner error, or START_FAILED when the agent process did not start.
+ * @param ctx - { task, adapter, runId, rep, sampling, model, versions }
+ */
+async function runCellOnce(ctx) {
   const dir = cellDir(ctx.runId, ctx.task.id, ctx.adapter.name, ctx.rep);
   const label = `${ctx.task.id} / ${ctx.adapter.name} / rep ${ctx.rep}`;
   if (cellFinished(dir)) { console.log(`skip ${label} (finished)`); return null; }
@@ -82,7 +102,7 @@ async function runOrSkipCell(ctx) {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "error.txt"), String(error.stack || error));
     console.log(`  => RUNNER ERROR ${error.message}`);
-    return null;
+    return error.startFailure ? START_FAILED : null;
   }
 }
 
