@@ -127,13 +127,15 @@ function mapSlashPath(text, context) {
 
 /**
  * Returns true when a Windows path's drive exists and so does its first folder, if it names one.
- * `f:\nRET` inside a script is text, not a path, and fails this check.
+ * `f:\nRET` inside a script is text, not a path, and fails this check. Repeated separators are
+ * skipped, so the escaped string `C:\\\\nline2` in a script names `C:/nline2` (no such folder),
+ * while `C:\\Users` still names `C:/Users`.
  * @param text - a path starting with a drive letter and colon
  */
 function existingDrivePath(text) {
   const root = `${text[0].toUpperCase()}:/`;
   if (!fs.existsSync(root)) return false;
-  const first = text.slice(3).split(/[\\/]/)[0];
+  const first = text.slice(3).split(/[\\/]+/).filter(Boolean)[0];
   return !first || fs.existsSync(root + first);
 }
 

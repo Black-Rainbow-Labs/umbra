@@ -87,6 +87,8 @@ test("outside path rules", () => {
   assert.deepEqual(outsidePathsOf("sed -n '/start/,/end/p' a.txt > /dev/null 2>&1", context).hits, []);
   assert.deepEqual(outsidePathsOf("cat <<'EOF' > a.js\nrequire('../../x')\nEOF", context).hits, []);
   assert.deepEqual(outsidePathsOf("node -e \"console.log(1 / 2) // half\"", context).hits, []);
+  assert.deepEqual(outsidePathsOf("python -c \"src = 'and C:\\\\\\\\\\\\\\\\nline2'\"", context).hits, [], "an escaped string in a script is text");
+  assert.deepEqual(outsidePathsOf("cat C:\\\\Users\\\\someone\\\\secret.txt", context).hits.length, 1, "doubled separators in a real path still count");
 });
 
 test.after(() => fs.rmSync(RUNS, { recursive: true, force: true }));
