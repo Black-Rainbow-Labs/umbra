@@ -558,6 +558,7 @@ impl Agent {
     pub fn open_new_typed(&mut self, task: &str, typed: &str, images: Vec<ImageData>) -> Result<()> {
         let (system, instance) = self.render_prompts(task)?;
         self.messages = vec![Message::system(system), Message::user(instance).with_images(images).with_extra(json!({ "user_text": typed }))];
+        self.finish_check.start_turn(task);
         if self.parts.session.title.is_empty() {
             self.parts.session.title = initial_title(typed);
         }

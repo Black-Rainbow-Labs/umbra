@@ -216,6 +216,30 @@ fn a_reply_right_after_a_file_change_gets_one_finish_check() {
 }
 
 #[test]
+fn the_requirement_check_message_asks_once_on_a_listed_first_request() {
+    let scratch = Scratch::new("requirement-check");
+    let work = scratch.path("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(scratch.path("home/.umbra")).unwrap();
+    std::fs::write(scratch.path("home/.umbra/config.toml"), "requirement_check = \"message\"\n").unwrap();
+    let model = script(&scratch, json!([
+        { "content": "Writing.", "tool_calls": [{ "name": "bash", "arguments": { "command": "echo hello > out.txt" } }] },
+        { "content": "Checking.", "tool_calls": [{ "name": "bash", "arguments": { "command": "cat out.txt" } }] },
+        "Done.",
+        "Checked every item. Done."
+    ]));
+    let traj = scratch.path("run.traj.json");
+    let task = "Do these:\n1. write out.txt\n2. say hello\n3. keep it short\n4. use one line\n5. stop";
+    let output = run_umbra(&scratch.path("home"), &["-m", &model, "-y", "--no-mcp", "--exit-immediately", "--cwd", &slash(&work), "-o", &slash(&traj), task]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let trajectory = read_trajectory(&traj);
+    let checks: Vec<_> = trajectory["messages"].as_array().unwrap().iter().filter(|m| m["extra"]["interrupt_type"] == "FinishCheck").collect();
+    assert_eq!(checks.len(), 1, "exactly one requirement check");
+    assert!(checks[0]["content"].as_str().unwrap_or_default().contains("read the request again"), "{:?}", checks[0]);
+    assert_eq!(trajectory["info"]["submission"], "Checked every item. Done.");
+}
+
+#[test]
 fn a_reply_after_a_check_command_ends_the_turn() {
     let scratch = Scratch::new("finish-check-ran");
     let work = scratch.path("work");
