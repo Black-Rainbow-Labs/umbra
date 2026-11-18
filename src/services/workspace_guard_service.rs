@@ -146,6 +146,8 @@ impl WorkspaceGuard {
         roots.extend(program_folders(windows, &guard.git_root));
         roots.extend(path_folders());
         roots.extend(extra.iter().map(|p| guard.expand_home(p)));
+        let resolved = if windows { Vec::new() } else { resolved_roots(&roots) };
+        roots.extend(resolved);
         guard.allowed = roots.iter().filter(|r| !r.is_empty()).map(|r| normalize(r, windows)).collect();
         guard
     }
@@ -374,6 +376,14 @@ fn program_folders(windows: bool, git_root: &str) -> Vec<String> {
     out
 }
 
+/// Returns the folders the allowed folders resolve to through symlinks, where that differs. On
+/// macOS `/var` is a link to `/private/var`, so a shell in a temp workspace reports
+/// `/private/var/...` while the session started in `/var/...`.
+/// @param roots - the allowed folders
+fn resolved_roots(roots: &[String]) -> Vec<String> {
+    roots.iter().filter(|r| !r.is_empty()).filter_map(|r| std::fs::canonicalize(r).ok()).map(|p| p.to_string_lossy().into_owned()).filter(|p| !roots.contains(p)).collect()
+}
+
 /// The folders on PATH, which hold the programs commands run.
 fn path_folders() -> Vec<String> {
     let Some(path) = std::env::var_os("PATH") else { return Vec::new() };
@@ -495,6 +505,24 @@ mod tests {
         assert_eq!(g.outside_paths("cd .. && ls", &root), vec![".."]);
         assert_eq!(g.outside_paths("find / -name a", &root), vec!["/"]);
         assert_eq!(g.outside_paths("ls $HOME", &root), vec!["$HOME"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_workspace_reached_through_a_symlink_is_inside_by_either_path() {
+        let base = std::env::temp_dir().join(format!("umbra-guard-link-{}", std::process::id()));
+        let real = base.join("real").join("ws");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = base.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(base.join("real"), &link).unwrap();
+        let through_link = link.join("ws").to_string_lossy().into_owned();
+        let real_path = std::fs::canonicalize(&real).unwrap().to_string_lossy().into_owned();
+        assert_eq!(resolved_roots(&[through_link.clone()]), vec![real_path.clone()]);
+        assert!(resolved_roots(&[real_path.clone()]).is_empty(), "a folder that is already resolved adds nothing");
+        let g = WorkspaceGuard::new(Path::new(&through_link), &[], Path::new("/nonexistent/.umbra"));
+        assert!(g.allowed.contains(&normalize(&real_path, false)));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
