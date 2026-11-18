@@ -483,6 +483,7 @@ mod tests {
         g.root = normalize(&g.root_display, g.windows);
         let temp = normalize(&g.temp, g.windows);
         g.allowed = vec![g.root.clone(), temp, normalize(&g.git_root, g.windows)];
+        g.allowed.extend(program_folders(g.windows, &g.git_root).iter().map(|folder| normalize(folder, g.windows)));
         g
     }
 
