@@ -93,30 +93,31 @@ or 100% for Umbra and equal or better than pi.
 
 ### Pass rate by category (Umbra / pi)
 
-| Category | Umbra (6 reps) | pi (3 reps) |
+| Category | Umbra (6 reps) | pi |
 |---|---|---|
 | hard | 81.7% | 66.7% |
 | compaction | 94.4% | 44.4% |
 | session | 100% | 95.2% |
 | bugfix, instructions, large-output, navigate | 100% | 100% |
-| create | 95.8% (23 of 24) | 100% |
-| edit-precision | 96.7% (29 of 30) | 100% |
+| create | 95.8% (23 of 24) | 100% in 3 reps, 95.8% (23 of 24) in 6 |
+| edit-precision | 96.7% (29 of 30) | 100% in 3 reps and in 6 |
 
 ### What is behind pi, and why
 
-- **Reasoning tokens.** Four full runs of builds without a reply limit measured 307,198, 313,312,
-  338,858 and 347,577 per rep, so one run lands on either side of pi's band of 25,289 by chance.
+- **Reasoning tokens.** This row has no target. Four full runs of builds without a reply limit
+  measured 307,198, 313,312, 338,858 and 347,577 per rep, so one run lands on either side of pi's band of 25,289 by chance.
   A reply limit of 4,000 tokens (E29) brought two full runs to 264,777 and 270,635, but it made
   the model act on unfinished reasoning, and the hard tier pass rate fell from 81.6% to 74.6% over
   299 cells each, which made that row a tie. A higher limit saves too little. On this model the
   reasoning row and the hard tier row cannot both read Umbra. Per passed task Umbra uses fewer
   reasoning tokens than pi.
-- **Create and edit-precision.** Each is one failed cell in 6 reps: semver-compare (one check of
-  16) and makefile-tab-recipe. pi passed every cell of these categories in its 3 reference reps,
-  so its band is 0 and one failed Umbra cell lists the row. In three more pi reps on these
-  categories (run `pi-extra-zero-band`, kept out of the scorecard) pi failed one semver-compare
-  cell as well. Over all of this ticket's full runs Umbra failed about 4% of the bugfix, create
-  and edit-precision cells, and at that rate a pool of 6 reps with no failure is rare.
+- **Edit-precision.** pi passed every cell of bugfix, create and edit-precision in its 3
+  reference reps, so its band on those rows was 0 and one failed Umbra cell listed the row. These
+  rows are judged against 6 pi reps: the reference and three more reps (run `pi-extra-zero-band`),
+  in which pi failed one semver-compare cell. At 6 reps against 6, bugfix is 36/36 against 36/36
+  and create 23/24 against 23/24, both equal, and edit-precision is 29/30 against 30/30: one
+  makefile-tab-recipe cell. Over this ticket's full runs Umbra failed about 4% of the bugfix,
+  create and edit-precision cells.
 
 ## Experiments
 
